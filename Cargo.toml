@@ -15,8 +15,10 @@ agent-client-protocol = { version = "0.9.4", features = ["unstable_session_model
 anyhow = "1.0.101"
 async-trait = "0.1.89"
 clap = { version = "4.5.57", features = ["derive"] }
+crossterm = { version = "0.29.0", features = ["event-stream"] }
 dirs = "6.0.0"
 futures = "0.3.31"
+ratatui = "0.30.0"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 thiserror = "2.0.18"
@@ -24,5 +26,6 @@ tokio = { version = "1.49.0", features = ["full"] }
 tokio-util = { version = "0.7.18", features = ["compat"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
+tui-markdown = { version = "0.3.7", default-features = false }
 uuid = { version = "1.20.0", features = ["v4"] }
 which = "8.0.0"

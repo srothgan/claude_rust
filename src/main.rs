@@ -17,6 +17,7 @@
 mod acp;
 mod app;
 mod error;
+mod ui;
 
 use clap::Parser;
 
@@ -53,5 +54,11 @@ fn main() -> anyhow::Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
     let local_set = tokio::task::LocalSet::new();
 
-    rt.block_on(local_set.run_until(async move { app::run(cli, npx_path).await }))
+    rt.block_on(local_set.run_until(async move {
+        // Phase 1: connect (pre-TUI, errors to stderr)
+        let (mut app, conn, _child) = app::connect(cli, npx_path).await?;
+
+        // Phase 2: TUI event loop
+        app::run_tui(&mut app, conn).await
+    }))
 }

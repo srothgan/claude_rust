@@ -35,6 +35,12 @@ pub enum ClientEvent {
         request: acp::RequestPermissionRequest,
         response_tx: tokio::sync::oneshot::Sender<acp::RequestPermissionResponse>,
     },
+    /// A prompt turn completed successfully.
+    TurnComplete {
+        stop_reason: acp::StopReason,
+    },
+    /// A prompt turn failed with an error.
+    TurnError(String),
 }
 
 pub struct ClaudeClient {
