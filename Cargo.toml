@@ -11,3 +11,18 @@ categories = ["command-line-interface"]
 publish = false
 
 [dependencies]
+agent-client-protocol = { version = "0.9.4", features = ["unstable_session_model", "unstable_session_resume", "unstable_session_usage"] }
+anyhow = "1.0.101"
+async-trait = "0.1.89"
+clap = { version = "4.5.57", features = ["derive"] }
+dirs = "6.0.0"
+futures = "0.3.31"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+thiserror = "2.0.18"
+tokio = { version = "1.49.0", features = ["full"] }
+tokio-util = { version = "0.7.18", features = ["compat"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
+uuid = { version = "1.20.0", features = ["v4"] }
+which = "8.0.0"

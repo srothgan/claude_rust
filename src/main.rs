@@ -14,6 +14,44 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-fn main() {
-    println!("Hello, world!");
+mod acp;
+mod app;
+mod error;
+
+use clap::Parser;
+
+#[derive(Parser, Debug)]
+#[command(name = "claude-rust", about = "Native Rust terminal for Claude Code")]
+pub struct Cli {
+    /// Override the model (sonnet, opus, haiku)
+    #[arg(long, short)]
+    model: Option<String>,
+
+    /// Resume the last session
+    #[arg(long)]
+    resume: bool,
+
+    /// Auto-approve all tool calls (dangerous)
+    #[arg(long)]
+    yolo: bool,
+
+    /// Working directory (defaults to cwd)
+    #[arg(long, short = 'C')]
+    dir: Option<std::path::PathBuf>,
+}
+
+fn main() -> anyhow::Result<()> {
+    let cli = Cli::parse();
+
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .init();
+
+    let npx_path = which::which("npx")
+        .map_err(|_| anyhow::anyhow!("Node.js/npx not found in PATH. Install Node.js first."))?;
+
+    let rt = tokio::runtime::Runtime::new()?;
+    let local_set = tokio::task::LocalSet::new();
+
+    rt.block_on(local_set.run_until(async move { app::run(cli, npx_path).await }))
 }
