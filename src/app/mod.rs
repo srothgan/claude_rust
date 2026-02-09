@@ -31,11 +31,11 @@ use agent_client_protocol::{self as acp, Agent as _};
 use crossterm::event::{
     Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
 };
-use futures::StreamExt;
+use futures::{FutureExt as _, StreamExt};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::process::Child;
 use tokio::sync::mpsc;
 
@@ -286,9 +286,12 @@ pub async fn run_tui(app: &mut App, conn: Rc<acp::ClientSideConnection>) -> anyh
     );
 
     let mut events = EventStream::new();
-    let mut tick = tokio::time::interval(Duration::from_millis(33));
+    let tick_duration = Duration::from_millis(33);
+    let mut last_render = Instant::now();
 
     loop {
+        // Phase 1: wait for at least one event or the next frame tick
+        let time_to_next = tick_duration.saturating_sub(last_render.elapsed());
         tokio::select! {
             Some(Ok(event)) = events.next() => {
                 handle_terminal_event(app, &conn, event);
@@ -296,22 +299,41 @@ pub async fn run_tui(app: &mut App, conn: Rc<acp::ClientSideConnection>) -> anyh
             Some(event) = app.event_rx.recv() => {
                 handle_acp_event(app, event);
             }
-            _ = tick.tick() => {
-                if matches!(app.status, AppStatus::Thinking | AppStatus::Running) {
-                    app.spinner_frame = app.spinner_frame.wrapping_add(1);
+            _ = tokio::time::sleep(time_to_next) => {}
+        }
+
+        // Phase 2: drain all remaining queued events (non-blocking)
+        loop {
+            // Try terminal events first (keeps typing responsive)
+            if let Some(Some(Ok(event))) = events.next().now_or_never() {
+                handle_terminal_event(app, &conn, event);
+                continue;
+            }
+            // Then ACP events
+            match app.event_rx.try_recv() {
+                Ok(event) => {
+                    handle_acp_event(app, event);
+                    continue;
                 }
-                update_terminal_outputs(app);
-                if app.force_redraw {
-                    terminal.clear()?;
-                    app.force_redraw = false;
-                }
-                terminal.draw(|f| crate::ui::render(f, app))?;
+                Err(_) => break,
             }
         }
 
         if app.should_quit {
             break;
         }
+
+        // Phase 3: render once
+        if matches!(app.status, AppStatus::Thinking | AppStatus::Running) {
+            app.spinner_frame = app.spinner_frame.wrapping_add(1);
+        }
+        update_terminal_outputs(app);
+        if app.force_redraw {
+            terminal.clear()?;
+            app.force_redraw = false;
+        }
+        terminal.draw(|f| crate::ui::render(f, app))?;
+        last_render = Instant::now();
     }
 
     // --- Graceful shutdown ---
