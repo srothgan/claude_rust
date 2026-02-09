@@ -37,16 +37,17 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
 
     // Build paragraph once — line_count gives the real wrapped height
     let paragraph = Paragraph::new(Text::from(all_lines)).wrap(Wrap { trim: false });
-    let content_height = paragraph.line_count(area.width) as u16;
-    let viewport_height = area.height;
+    let content_height = paragraph.line_count(area.width);
+    let viewport_height = area.height as usize;
 
     if content_height <= viewport_height {
         // Short content: render in a bottom-aligned sub-rect (stacks above input)
+        let offset = (viewport_height - content_height) as u16;
         let render_area = Rect {
             x: area.x,
-            y: area.y + viewport_height - content_height,
+            y: area.y + offset,
             width: area.width,
-            height: content_height,
+            height: content_height as u16,
         };
         app.scroll_offset = 0;
         app.auto_scroll = true;
@@ -61,6 +62,6 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         if app.scroll_offset >= max_scroll {
             app.auto_scroll = true;
         }
-        frame.render_widget(paragraph.scroll((app.scroll_offset, 0)), area);
+        frame.render_widget(paragraph.scroll((app.scroll_offset as u16, 0)), area);
     }
 }

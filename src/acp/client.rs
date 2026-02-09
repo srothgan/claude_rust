@@ -77,8 +77,14 @@ fn spawn_output_reader(
         loop {
             match reader.read(&mut chunk).await {
                 Ok(0) => break,
-                Ok(n) => buffer.lock().unwrap().extend_from_slice(&chunk[..n]),
-                Err(_) => break,
+                Ok(n) => buffer
+                    .lock()
+                    .expect("output buffer lock poisoned")
+                    .extend_from_slice(&chunk[..n]),
+                Err(e) => {
+                    tracing::warn!("terminal output reader error: {e}");
+                    break;
+                }
             }
         }
     });
@@ -280,7 +286,10 @@ impl acp::Client for ClaudeClient {
 
         // Return new output since last poll (advance cursor, never clear buffer)
         let output = {
-            let buf = terminal.output_buffer.lock().unwrap();
+            let buf = terminal
+                .output_buffer
+                .lock()
+                .expect("output buffer lock poisoned");
             let new_data = &buf[terminal.output_cursor..];
             let data = String::from_utf8_lossy(new_data).to_string();
             terminal.output_cursor = buf.len();

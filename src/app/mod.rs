@@ -14,6 +14,16 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+mod input;
+mod state;
+
+// Re-export all public types so `crate::app::App`, `crate::app::BlockCache`, etc. still work.
+pub use input::InputState;
+pub use state::{
+    App, AppStatus, BlockCache, ChatMessage, MessageBlock, MessageRole, ModeInfo, ModeState,
+    PendingPermission, ToolCallInfo,
+};
+
 use crate::Cli;
 use crate::acp::client::{ClaudeClient, ClientEvent, TerminalMap};
 use crate::acp::connection;
@@ -22,262 +32,12 @@ use crossterm::event::{
     Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
 };
 use futures::StreamExt;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
 use tokio::process::Child;
 use tokio::sync::mpsc;
-
-// ---------------------------------------------------------------------------
-// App state types
-// ---------------------------------------------------------------------------
-
-pub struct ModeInfo {
-    pub id: String,
-    pub name: String,
-}
-
-pub struct ModeState {
-    pub current_mode_id: String,
-    pub current_mode_name: String,
-    pub available_modes: Vec<ModeInfo>,
-}
-
-pub struct App {
-    pub messages: Vec<ChatMessage>,
-    pub scroll_offset: u16,
-    pub auto_scroll: bool,
-    pub input: InputState,
-    pub status: AppStatus,
-    pub should_quit: bool,
-    pub session_id: Option<acp::SessionId>,
-    pub model_name: String,
-    pub cwd: String,
-    pub cwd_raw: String,
-    pub files_accessed: usize,
-    pub mode: Option<ModeState>,
-    pub permission_pending: Option<PendingPermission>,
-    pub event_tx: mpsc::UnboundedSender<ClientEvent>,
-    pub event_rx: mpsc::UnboundedReceiver<ClientEvent>,
-    pub spinner_frame: usize,
-    /// Session-level default for tool call collapsed state.
-    /// Toggled by Ctrl+O — new tool calls inherit this value.
-    pub tools_collapsed: bool,
-    /// IDs of Task tool calls currently InProgress — their children get hidden.
-    pub active_task_ids: Vec<String>,
-    /// Shared terminal process map — used to snapshot output on completion.
-    pub terminals: crate::acp::client::TerminalMap,
-    /// Force a full terminal clear on next render frame.
-    pub force_redraw: bool,
-}
-
-pub enum AppStatus {
-    Ready,
-    Thinking,
-    Running,
-    Error,
-}
-
-pub struct ChatMessage {
-    pub role: MessageRole,
-    pub blocks: Vec<MessageBlock>,
-}
-
-/// Cached rendered lines for a block. Stores a version counter so the cache
-/// is only recomputed when the block content actually changes.
-#[derive(Default)]
-pub struct BlockCache {
-    pub version: u64,
-    pub lines: Option<Vec<ratatui::text::Line<'static>>>,
-}
-
-impl BlockCache {
-    /// Bump the version to invalidate cached lines.
-    pub fn invalidate(&mut self) {
-        self.version += 1;
-    }
-}
-
-/// Ordered content block — text and tool calls interleaved as they arrive.
-pub enum MessageBlock {
-    Text(String, BlockCache),
-    ToolCall(ToolCallInfo),
-}
-
-pub enum MessageRole {
-    User,
-    Assistant,
-}
-
-pub struct ToolCallInfo {
-    pub id: String,
-    pub title: String,
-    pub kind: acp::ToolKind,
-    pub status: acp::ToolCallStatus,
-    pub content: Vec<acp::ToolCallContent>,
-    pub collapsed: bool,
-    /// The actual Claude Code tool name from meta.claudeCode.toolName
-    /// (e.g. "Task", "Glob", "mcp__acp__Read", "WebSearch")
-    pub claude_tool_name: Option<String>,
-    /// Hidden tool calls are subagent children — not rendered directly.
-    pub hidden: bool,
-    /// Terminal ID if this is an Execute tool call with a running/completed terminal.
-    pub terminal_id: Option<String>,
-    /// The shell command that was executed (e.g. "echo hello && ls -la").
-    pub terminal_command: Option<String>,
-    /// Snapshot of terminal output, updated each frame while InProgress.
-    pub terminal_output: Option<String>,
-    /// Per-block render cache for this tool call.
-    pub cache: BlockCache,
-}
-
-pub struct PendingPermission {
-    pub request: acp::RequestPermissionRequest,
-    pub response_tx: tokio::sync::oneshot::Sender<acp::RequestPermissionResponse>,
-    pub selected_index: usize,
-}
-
-// ---------------------------------------------------------------------------
-// Custom text input state
-// ---------------------------------------------------------------------------
-
-pub struct InputState {
-    pub lines: Vec<String>,
-    pub cursor_row: usize,
-    pub cursor_col: usize,
-}
-
-impl InputState {
-    pub fn new() -> Self {
-        Self {
-            lines: vec![String::new()],
-            cursor_row: 0,
-            cursor_col: 0,
-        }
-    }
-
-    pub fn text(&self) -> String {
-        self.lines.join("\n")
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.lines.len() == 1 && self.lines[0].is_empty()
-    }
-
-    pub fn clear(&mut self) {
-        self.lines = vec![String::new()];
-        self.cursor_row = 0;
-        self.cursor_col = 0;
-    }
-
-    pub fn insert_char(&mut self, c: char) {
-        let line = &mut self.lines[self.cursor_row];
-        let byte_idx = char_to_byte_index(line, self.cursor_col);
-        line.insert(byte_idx, c);
-        self.cursor_col += 1;
-    }
-
-    pub fn insert_newline(&mut self) {
-        let line = &mut self.lines[self.cursor_row];
-        let byte_idx = char_to_byte_index(line, self.cursor_col);
-        let rest = line[byte_idx..].to_string();
-        line.truncate(byte_idx);
-        self.cursor_row += 1;
-        self.lines.insert(self.cursor_row, rest);
-        self.cursor_col = 0;
-    }
-
-    pub fn insert_str(&mut self, s: &str) {
-        for c in s.chars() {
-            if c == '\n' || c == '\r' {
-                self.insert_newline();
-            } else {
-                self.insert_char(c);
-            }
-        }
-    }
-
-    pub fn delete_char_before(&mut self) {
-        if self.cursor_col > 0 {
-            let line = &mut self.lines[self.cursor_row];
-            self.cursor_col -= 1;
-            let byte_idx = char_to_byte_index(line, self.cursor_col);
-            line.remove(byte_idx);
-        } else if self.cursor_row > 0 {
-            let removed = self.lines.remove(self.cursor_row);
-            self.cursor_row -= 1;
-            self.cursor_col = self.lines[self.cursor_row].chars().count();
-            self.lines[self.cursor_row].push_str(&removed);
-        }
-    }
-
-    pub fn delete_char_after(&mut self) {
-        let line_len = self.lines[self.cursor_row].chars().count();
-        if self.cursor_col < line_len {
-            let line = &mut self.lines[self.cursor_row];
-            let byte_idx = char_to_byte_index(line, self.cursor_col);
-            line.remove(byte_idx);
-        } else if self.cursor_row + 1 < self.lines.len() {
-            let next = self.lines.remove(self.cursor_row + 1);
-            self.lines[self.cursor_row].push_str(&next);
-        }
-    }
-
-    pub fn move_left(&mut self) {
-        if self.cursor_col > 0 {
-            self.cursor_col -= 1;
-        } else if self.cursor_row > 0 {
-            self.cursor_row -= 1;
-            self.cursor_col = self.lines[self.cursor_row].chars().count();
-        }
-    }
-
-    pub fn move_right(&mut self) {
-        let line_len = self.lines[self.cursor_row].chars().count();
-        if self.cursor_col < line_len {
-            self.cursor_col += 1;
-        } else if self.cursor_row + 1 < self.lines.len() {
-            self.cursor_row += 1;
-            self.cursor_col = 0;
-        }
-    }
-
-    pub fn move_up(&mut self) {
-        if self.cursor_row > 0 {
-            self.cursor_row -= 1;
-            let line_len = self.lines[self.cursor_row].chars().count();
-            self.cursor_col = self.cursor_col.min(line_len);
-        }
-    }
-
-    pub fn move_down(&mut self) {
-        if self.cursor_row + 1 < self.lines.len() {
-            self.cursor_row += 1;
-            let line_len = self.lines[self.cursor_row].chars().count();
-            self.cursor_col = self.cursor_col.min(line_len);
-        }
-    }
-
-    pub fn move_home(&mut self) {
-        self.cursor_col = 0;
-    }
-
-    pub fn move_end(&mut self) {
-        self.cursor_col = self.lines[self.cursor_row].chars().count();
-    }
-
-    pub fn line_count(&self) -> u16 {
-        self.lines.len() as u16
-    }
-}
-
-/// Convert a character index to a byte index within a string.
-fn char_to_byte_index(s: &str, char_idx: usize) -> usize {
-    s.char_indices()
-        .nth(char_idx)
-        .map(|(i, _)| i)
-        .unwrap_or(s.len())
-}
 
 // ---------------------------------------------------------------------------
 // Pre-TUI connection phase
@@ -502,9 +262,10 @@ pub async fn connect(
         event_rx,
         spinner_frame: 0,
         tools_collapsed: true,
-        active_task_ids: Vec::new(),
+        active_task_ids: HashSet::new(),
         terminals: std::rc::Rc::clone(&terminals),
         force_redraw: false,
+        tool_call_index: HashMap::new(),
     };
 
     Ok((app, conn, child, terminals))
@@ -525,7 +286,7 @@ pub async fn run_tui(app: &mut App, conn: Rc<acp::ClientSideConnection>) -> anyh
     );
 
     let mut events = EventStream::new();
-    let mut tick = tokio::time::interval(Duration::from_millis(16));
+    let mut tick = tokio::time::interval(Duration::from_millis(33));
 
     loop {
         tokio::select! {
@@ -607,17 +368,20 @@ fn update_terminal_outputs(app: &mut App) {
             if let MessageBlock::ToolCall(tc) = block {
                 if let Some(ref tid) = tc.terminal_id {
                     if let Some(terminal) = terminals.get(tid.as_str()) {
-                        let buf = terminal.output_buffer.lock().unwrap();
-                        if buf.is_empty() {
+                        let buf = terminal
+                            .output_buffer
+                            .lock()
+                            .expect("output buffer lock poisoned");
+                        let current_len = buf.len();
+                        if current_len == 0 || current_len == tc.terminal_output_len {
                             continue;
                         }
                         let snapshot = String::from_utf8_lossy(&buf).to_string();
                         drop(buf);
 
-                        if tc.terminal_output.as_deref() != Some(&snapshot) {
-                            tc.terminal_output = Some(snapshot);
-                            tc.cache.invalidate();
-                        }
+                        tc.terminal_output = Some(snapshot);
+                        tc.terminal_output_len = current_len;
+                        tc.cache.invalidate();
                     }
                 }
             }
@@ -645,7 +409,7 @@ fn handle_terminal_event(app: &mut App, conn: &Rc<acp::ClientSideConnection>, ev
     }
 }
 
-const MOUSE_SCROLL_LINES: u16 = 3;
+const MOUSE_SCROLL_LINES: usize = 3;
 
 fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
     match mouse.kind {
@@ -925,13 +689,24 @@ fn shorten_tool_title(title: &str, cwd_raw: &str) -> String {
     if cwd_raw.is_empty() {
         return title.to_string();
     }
+
+    // Quick check: if title doesn't contain any part of cwd, skip normalization
+    // Use the first path component of cwd as a heuristic
+    let cwd_start = cwd_raw
+        .split(['/', '\\'])
+        .find(|s| !s.is_empty())
+        .unwrap_or(cwd_raw);
+    if !title.contains(cwd_start) {
+        return title.to_string();
+    }
+
     // Normalize both to forward slashes for matching
     let cwd_norm = cwd_raw.replace('\\', "/");
     let title_norm = title.replace('\\', "/");
 
-    // Try with trailing slash first (strips the separator too)
+    // Ensure cwd ends with slash so we strip the separator too
     let with_sep = if cwd_norm.ends_with('/') {
-        cwd_norm.clone()
+        cwd_norm
     } else {
         format!("{cwd_norm}/")
     };
@@ -939,8 +714,7 @@ fn shorten_tool_title(title: &str, cwd_raw: &str) -> String {
     if title_norm.contains(&with_sep) {
         return title_norm.replace(&with_sep, "");
     }
-    // Fallback: strip cwd without trailing slash (rare, but handles edge cases)
-    title_norm.replace(&cwd_norm, "")
+    title_norm
 }
 
 /// Return a human-readable name for a SessionUpdate variant (for debug logging).
@@ -957,6 +731,84 @@ fn session_update_name(update: &acp::SessionUpdate) -> &'static str {
         acp::SessionUpdate::ConfigOptionUpdate(_) => "ConfigOptionUpdate",
         acp::SessionUpdate::UsageUpdate(_) => "UsageUpdate",
         _ => "Unknown",
+    }
+}
+
+fn handle_tool_call(app: &mut App, tc: acp::ToolCall) {
+    let title = tc.title.clone();
+    let kind = tc.kind;
+    let id_str = tc.tool_call_id.to_string();
+    tracing::debug!(
+        "ToolCall: id={id_str} title={title} kind={kind:?} status={:?} content_blocks={}",
+        tc.status,
+        tc.content.len()
+    );
+
+    // Extract claude_tool_name from meta.claudeCode.toolName
+    let claude_tool_name = tc.meta.as_ref().and_then(|m| {
+        m.get("claudeCode")
+            .and_then(|v| v.get("toolName"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+    });
+
+    let is_task = claude_tool_name.as_deref() == Some("Task");
+
+    // If a Task is active and this is NOT itself a Task, it's a subagent child — hide it
+    let hidden = !is_task && app.has_active_tasks();
+
+    // Track new Task tool calls as active subagents
+    if is_task {
+        app.insert_active_task(id_str.clone());
+    }
+
+    let tool_info = ToolCallInfo {
+        id: id_str,
+        title: shorten_tool_title(&tc.title, &app.cwd_raw),
+        kind,
+        status: tc.status,
+        content: tc.content,
+        collapsed: app.tools_collapsed,
+        claude_tool_name,
+        hidden,
+        terminal_id: None,
+        terminal_command: None,
+        terminal_output: None,
+        terminal_output_len: 0,
+        cache: BlockCache::default(),
+    };
+
+    // Attach to current assistant message — update existing or add new
+    let msg_idx = app.messages.len().saturating_sub(1);
+    let existing_pos = app.lookup_tool_call(&tool_info.id);
+    let is_assistant = app
+        .messages
+        .last()
+        .is_some_and(|m| matches!(m.role, MessageRole::Assistant));
+
+    if is_assistant {
+        if let Some((mi, bi)) = existing_pos {
+            if let Some(MessageBlock::ToolCall(existing)) =
+                app.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
+            {
+                existing.title = tool_info.title.clone();
+                existing.status = tool_info.status;
+                existing.content = tool_info.content.clone();
+                existing.kind = tool_info.kind;
+                existing.claude_tool_name = tool_info.claude_tool_name.clone();
+                existing.cache.invalidate();
+            }
+        } else if let Some(last) = app.messages.last_mut() {
+            let block_idx = last.blocks.len();
+            let tc_id = tool_info.id.clone();
+            last.blocks.push(MessageBlock::ToolCall(tool_info));
+            app.index_tool_call(tc_id, msg_idx, block_idx);
+        }
+    }
+
+    app.status = AppStatus::Running;
+    if !hidden {
+        app.files_accessed += 1;
     }
 }
 
@@ -986,77 +838,7 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
             }
         }
         acp::SessionUpdate::ToolCall(tc) => {
-            let title = tc.title.clone();
-            let kind = tc.kind;
-            let id_str = tc.tool_call_id.to_string();
-            tracing::debug!(
-                "ToolCall: id={id_str} title={title} kind={kind:?} status={:?} content_blocks={}",
-                tc.status,
-                tc.content.len()
-            );
-
-            // Extract claude_tool_name from meta.claudeCode.toolName
-            let claude_tool_name = tc.meta.as_ref().and_then(|m| {
-                m.get("claudeCode")
-                    .and_then(|v| v.get("toolName"))
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string())
-            });
-
-            let is_task = claude_tool_name.as_deref() == Some("Task");
-
-            // If a Task is active and this is NOT itself a Task, it's a subagent child — hide it
-            let hidden = !is_task && !app.active_task_ids.is_empty();
-
-            // Track new Task tool calls as active subagents
-            if is_task {
-                app.active_task_ids.push(id_str.clone());
-            }
-
-            let tool_info = ToolCallInfo {
-                id: id_str,
-                title: shorten_tool_title(&tc.title, &app.cwd_raw),
-                kind,
-                status: tc.status,
-                content: tc.content,
-                collapsed: app.tools_collapsed,
-                claude_tool_name,
-                hidden,
-                terminal_id: None,
-                terminal_command: None,
-                terminal_output: None,
-                cache: BlockCache::default(),
-            };
-
-            // Attach to current assistant message — update existing or add new
-            if let Some(last) = app.messages.last_mut() {
-                if matches!(last.role, MessageRole::Assistant) {
-                    // Check if this tool call ID already exists (update in place)
-                    let mut found = false;
-                    for block in &mut last.blocks {
-                        if let MessageBlock::ToolCall(existing) = block {
-                            if existing.id == tool_info.id {
-                                existing.title = tool_info.title.clone();
-                                existing.status = tool_info.status;
-                                existing.content = tool_info.content.clone();
-                                existing.kind = tool_info.kind;
-                                existing.claude_tool_name = tool_info.claude_tool_name.clone();
-                                existing.cache.invalidate();
-                                found = true;
-                                break;
-                            }
-                        }
-                    }
-                    if !found {
-                        last.blocks.push(MessageBlock::ToolCall(tool_info));
-                    }
-                }
-            }
-
-            app.status = AppStatus::Running;
-            if !hidden {
-                app.files_accessed += 1;
-            }
+            handle_tool_call(app, tc);
         }
         acp::SessionUpdate::ToolCallUpdate(tcu) => {
             // Find and update the tool call by id (in-place)
@@ -1073,56 +855,53 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
                 tcu.fields.status,
                 Some(acp::ToolCallStatus::Completed) | Some(acp::ToolCallStatus::Failed)
             ) {
-                app.active_task_ids.retain(|id| id != &id_str);
+                app.remove_active_task(&id_str);
             }
 
-            for msg in app.messages.iter_mut().rev() {
-                for block in &mut msg.blocks {
-                    if let MessageBlock::ToolCall(tc) = block {
-                        if tc.id == id_str {
-                            if let Some(status) = tcu.fields.status {
-                                tc.status = status;
-                            }
-                            if let Some(title) = &tcu.fields.title {
-                                tc.title = shorten_tool_title(title, &app.cwd_raw);
-                            }
-                            if let Some(content) = tcu.fields.content {
-                                // Extract terminal_id and command from Terminal content blocks
-                                for cb in &content {
-                                    if let acp::ToolCallContent::Terminal(t) = cb {
-                                        let tid = t.terminal_id.to_string();
-                                        // Look up the command from the shared terminal map
-                                        if let Some(terminal) = app.terminals.borrow().get(&tid) {
-                                            tc.terminal_command = Some(terminal.command.clone());
-                                        }
-                                        tc.terminal_id = Some(tid);
-                                    }
+            if let Some((mi, bi)) = app.lookup_tool_call(&id_str) {
+                if let Some(MessageBlock::ToolCall(tc)) =
+                    app.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
+                {
+                    if let Some(status) = tcu.fields.status {
+                        tc.status = status;
+                    }
+                    if let Some(title) = &tcu.fields.title {
+                        tc.title = shorten_tool_title(title, &app.cwd_raw);
+                    }
+                    if let Some(content) = tcu.fields.content {
+                        // Extract terminal_id and command from Terminal content blocks
+                        for cb in &content {
+                            if let acp::ToolCallContent::Terminal(t) = cb {
+                                let tid = t.terminal_id.to_string();
+                                if let Some(terminal) = app.terminals.borrow().get(&tid) {
+                                    tc.terminal_command = Some(terminal.command.clone());
                                 }
-                                tc.content = content;
+                                tc.terminal_id = Some(tid);
                             }
-                            // Update claude_tool_name from update meta if present
-                            if let Some(ref meta) = tcu.meta {
-                                if let Some(name) = meta
-                                    .get("claudeCode")
-                                    .and_then(|v| v.get("toolName"))
-                                    .and_then(|v| v.as_str())
-                                {
-                                    tc.claude_tool_name = Some(name.to_string());
-                                }
-                            }
-                            if matches!(
-                                tc.status,
-                                acp::ToolCallStatus::Completed | acp::ToolCallStatus::Failed
-                            ) {
-                                tc.collapsed = app.tools_collapsed;
-                            }
-                            tc.cache.invalidate();
-                            return;
+                        }
+                        tc.content = content;
+                    }
+                    // Update claude_tool_name from update meta if present
+                    if let Some(ref meta) = tcu.meta {
+                        if let Some(name) = meta
+                            .get("claudeCode")
+                            .and_then(|v| v.get("toolName"))
+                            .and_then(|v| v.as_str())
+                        {
+                            tc.claude_tool_name = Some(name.to_string());
                         }
                     }
+                    if matches!(
+                        tc.status,
+                        acp::ToolCallStatus::Completed | acp::ToolCallStatus::Failed
+                    ) {
+                        tc.collapsed = app.tools_collapsed;
+                    }
+                    tc.cache.invalidate();
                 }
+            } else {
+                tracing::warn!("ToolCallUpdate: id={id_str} not found in index");
             }
-            tracing::warn!("ToolCallUpdate: id={id_str} not found in any message");
         }
         acp::SessionUpdate::UserMessageChunk(_) => {
             // Our own message echoed back — we already display it

@@ -23,6 +23,7 @@ pub struct AppLayout {
     pub input_sep: Rect,
     pub permission: Option<Rect>,
     pub input: Rect,
+    pub input_bottom_sep: Rect,
     pub footer: Option<Rect>,
 }
 
@@ -35,41 +36,35 @@ pub fn compute(
     let input_height = input_lines.max(1);
     let header_height: u16 = if show_header { 1 } else { 0 };
     let header_sep_height: u16 = if show_header { 1 } else { 0 };
+    let zero = Rect::new(area.x, area.y, area.width, 0);
 
     if area.height < 8 {
         // Ultra-compact: no header, no separator, no footer, no permission
         let [body, input] =
             Layout::vertical([Constraint::Min(1), Constraint::Length(input_height)]).areas(area);
         AppLayout {
-            header: Rect::new(area.x, area.y, area.width, 0),
-            header_sep: Rect::new(area.x, area.y, area.width, 0),
+            header: zero,
+            header_sep: zero,
             body,
             input_sep: Rect::new(area.x, input.y, area.width, 0),
             permission: None,
             input,
+            input_bottom_sep: zero,
             footer: None,
         }
     } else if permission_height > 0 {
-        let [
-            header,
-            header_sep,
-            body,
-            input_sep,
-            permission,
-            input,
-            _spacer,
-            footer,
-        ] = Layout::vertical([
-            Constraint::Length(header_height),
-            Constraint::Length(header_sep_height),
-            Constraint::Min(3),
-            Constraint::Length(1),
-            Constraint::Length(permission_height),
-            Constraint::Length(input_height),
-            Constraint::Length(1),
-            Constraint::Length(1),
-        ])
-        .areas(area);
+        let [header, header_sep, body, input_sep, permission, input, input_bottom_sep, footer] =
+            Layout::vertical([
+                Constraint::Length(header_height),
+                Constraint::Length(header_sep_height),
+                Constraint::Min(3),
+                Constraint::Length(1),
+                Constraint::Length(permission_height),
+                Constraint::Length(input_height),
+                Constraint::Length(1),
+                Constraint::Length(1),
+            ])
+            .areas(area);
         AppLayout {
             header,
             header_sep,
@@ -77,19 +72,21 @@ pub fn compute(
             input_sep,
             permission: Some(permission),
             input,
+            input_bottom_sep,
             footer: Some(footer),
         }
     } else {
-        let [header, header_sep, body, input_sep, input, _spacer, footer] = Layout::vertical([
-            Constraint::Length(header_height),
-            Constraint::Length(header_sep_height),
-            Constraint::Min(3),
-            Constraint::Length(1),
-            Constraint::Length(input_height),
-            Constraint::Length(1),
-            Constraint::Length(1),
-        ])
-        .areas(area);
+        let [header, header_sep, body, input_sep, input, input_bottom_sep, footer] =
+            Layout::vertical([
+                Constraint::Length(header_height),
+                Constraint::Length(header_sep_height),
+                Constraint::Min(3),
+                Constraint::Length(1),
+                Constraint::Length(input_height),
+                Constraint::Length(1),
+                Constraint::Length(1),
+            ])
+            .areas(area);
         AppLayout {
             header,
             header_sep,
@@ -97,6 +94,7 @@ pub fn compute(
             input_sep,
             permission: None,
             input,
+            input_bottom_sep,
             footer: Some(footer),
         }
     }

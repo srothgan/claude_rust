@@ -34,7 +34,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let perm_height = permission_dialog::required_height(app);
     let areas = layout::compute(
         frame.area(),
-        app.input.line_count(),
+        input::visual_line_count(app, frame.area().width),
         perm_height,
         !app.messages.is_empty(),
     );
@@ -52,7 +52,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         chat::render(frame, areas.body, app);
     }
 
-    // Input separator
+    // Input separator (above)
     render_separator(frame, areas.input_sep);
 
     // Permission dialog (inline, pushes messages up)
@@ -62,6 +62,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     // Input
     input::render(frame, areas.input, app);
+
+    // Input separator (below)
+    render_separator(frame, areas.input_bottom_sep);
 
     // Footer: mode pill left, command hints right
     if let Some(footer_area) = areas.footer {

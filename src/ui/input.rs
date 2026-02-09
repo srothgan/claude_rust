@@ -23,12 +23,25 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Paragraph, Wrap};
+
+/// Horizontal padding to match header/footer inset.
+const INPUT_PAD: u16 = 2;
 
 /// Prompt prefix width: "❯ " = 2 columns
 const PROMPT_WIDTH: u16 = 2;
 
+/// Maximum input area height (lines) to prevent the input from consuming the entire screen.
+const MAX_INPUT_HEIGHT: u16 = 12;
+
 pub fn render(frame: &mut Frame, area: Rect, app: &App) {
+    let padded = Rect {
+        x: area.x + INPUT_PAD,
+        y: area.y,
+        width: area.width.saturating_sub(INPUT_PAD * 2),
+        height: area.height,
+    };
+
     if app.input.is_empty() {
         // Placeholder
         let line = Line::from(vec![
@@ -38,10 +51,10 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             ),
             Span::styled("Type a message...", Style::default().fg(theme::DIM)),
         ]);
-        frame.render_widget(Paragraph::new(line), area);
+        frame.render_widget(Paragraph::new(line), padded);
 
         // Cursor after prompt char
-        frame.set_cursor_position((area.x + PROMPT_WIDTH, area.y));
+        frame.set_cursor_position((padded.x + PROMPT_WIDTH, padded.y));
         return;
     }
 
@@ -65,13 +78,61 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         })
         .collect();
 
-    let paragraph = Paragraph::new(lines);
-    frame.render_widget(paragraph, area);
+    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
+    frame.render_widget(paragraph, padded);
 
-    // Place terminal cursor
-    let cursor_x = area.x + PROMPT_WIDTH + app.input.cursor_col as u16;
-    let cursor_y = area.y + app.input.cursor_row as u16;
-    if cursor_x < area.right() && cursor_y < area.bottom() {
-        frame.set_cursor_position((cursor_x, cursor_y));
+    // Place terminal cursor accounting for visual wrapping.
+    let content_width = padded.width.saturating_sub(PROMPT_WIDTH) as usize;
+    if content_width == 0 {
+        return;
     }
+
+    let mut visual_row: u16 = 0;
+    for row in 0..app.input.lines.len() {
+        let line_chars = app.input.lines[row].chars().count();
+        let wrapped_lines = if content_width > 0 {
+            // Each logical line takes ceil(chars / content_width) visual lines, at least 1
+            ((line_chars + content_width) / content_width).max(1) as u16
+        } else {
+            1
+        };
+
+        if row == app.input.cursor_row {
+            // Cursor is on this logical line — find the visual position within it
+            let cursor_col = app.input.cursor_col;
+            let wrap_row = (cursor_col / content_width) as u16;
+            let wrap_col = (cursor_col % content_width) as u16;
+
+            let cursor_x = padded.x + PROMPT_WIDTH + wrap_col;
+            let cursor_y = padded.y + visual_row + wrap_row;
+
+            if cursor_x < padded.right() && cursor_y < padded.bottom() {
+                frame.set_cursor_position((cursor_x, cursor_y));
+            }
+            return;
+        }
+        visual_row += wrapped_lines;
+    }
+}
+
+/// Compute the number of visual lines the input occupies, accounting for wrapping.
+/// Used by the layout to allocate the correct input area height.
+pub fn visual_line_count(app: &App, area_width: u16) -> u16 {
+    if app.input.is_empty() {
+        return 1;
+    }
+    let content_width = area_width
+        .saturating_sub(INPUT_PAD * 2)
+        .saturating_sub(PROMPT_WIDTH) as usize;
+    if content_width == 0 {
+        return app.input.line_count();
+    }
+
+    let mut total: u16 = 0;
+    for line in &app.input.lines {
+        let chars = line.chars().count();
+        let wrapped = ((chars + content_width) / content_width).max(1) as u16;
+        total = total.saturating_add(wrapped);
+    }
+    total.min(MAX_INPUT_HEIGHT)
 }

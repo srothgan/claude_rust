@@ -20,6 +20,7 @@ use agent_client_protocol as acp;
 use ansi_to_tui::IntoText as _;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
+use similar::{ChangeTag, TextDiff};
 
 const SPINNER_FRAMES: &[char] = &[
     '\u{280B}', '\u{2819}', '\u{2839}', '\u{2838}', '\u{283C}', '\u{2834}', '\u{2826}', '\u{2827}',
@@ -120,11 +121,8 @@ pub fn render_message(
 /// Render a text block with caching. Only calls tui_markdown when cache is stale.
 /// `bg` is an optional background color overlay (used for user messages).
 fn render_text_cached(text: &str, cache: &mut BlockCache, bg: Option<Color>) -> Vec<Line<'static>> {
-    // Check if cache is fresh (version 0 means lines were stored and not invalidated since)
-    if let Some(ref cached_lines) = cache.lines {
-        if cache.version == 0 {
-            return cached_lines.clone();
-        }
+    if let Some(cached_lines) = cache.get() {
+        return cached_lines.clone();
     }
 
     // Cache miss — render from markdown
@@ -149,23 +147,21 @@ fn render_text_cached(text: &str, cache: &mut BlockCache, bg: Option<Color>) -> 
         })
         .collect();
 
-    cache.lines = Some(fresh.clone());
-    cache.version = 0; // Mark as clean
-    fresh
+    cache.store(fresh);
+    // unwrap is safe: we just stored the lines above
+    cache.get().unwrap().clone()
 }
 
 /// Render a tool call with caching. Only re-renders when cache is stale.
 fn render_tool_call_cached(tc: &mut ToolCallInfo, width: u16) -> Vec<Line<'static>> {
-    if let Some(ref cached_lines) = tc.cache.lines {
-        if tc.cache.version == 0 {
-            return cached_lines.clone();
-        }
+    if let Some(cached_lines) = tc.cache.get() {
+        return cached_lines.clone();
     }
 
     let fresh = render_tool_call(tc, width);
-    tc.cache.lines = Some(fresh.clone());
-    tc.cache.version = 0;
-    fresh
+    tc.cache.store(fresh);
+    // unwrap is safe: we just stored the lines above
+    tc.cache.get().unwrap().clone()
 }
 
 /// Max visible output lines for Execute/Bash tool calls.
@@ -370,8 +366,9 @@ fn content_summary(tc: &ToolCallInfo) -> String {
         if let Some(ref output) = tc.terminal_output {
             let last = output.lines().rev().find(|l| !l.trim().is_empty());
             if let Some(line) = last {
-                return if line.len() > 80 {
-                    format!("{}...", &line[..77])
+                return if line.chars().count() > 80 {
+                    let truncated: String = line.chars().take(77).collect();
+                    format!("{truncated}...")
                 } else {
                     line.to_string()
                 };
@@ -398,8 +395,9 @@ fn content_summary(tc: &ToolCallInfo) -> String {
                 if let acp::ContentBlock::Text(text) = &c.content {
                     let stripped = strip_outer_code_fence(&text.text);
                     let first = stripped.lines().next().unwrap_or("");
-                    return if first.len() > 60 {
-                        format!("{}...", &first[..57])
+                    return if first.chars().count() > 60 {
+                        let truncated: String = first.chars().take(57).collect();
+                        format!("{truncated}...")
                     } else {
                         first.to_string()
                     };
@@ -524,9 +522,9 @@ fn strip_outer_code_fence(text: &str) -> String {
     text.to_string()
 }
 
-/// Render a diff with green/red coloring and +/- prefixes.
-/// The ACP Diff struct provides old_text/new_text, not a unified diff string.
-/// We generate a simple line-based diff from those.
+/// Render a diff with proper unified-style output using the `similar` crate.
+/// The ACP Diff struct provides old_text/new_text — we compute the actual
+/// line-level changes and show only changed lines with context.
 fn render_diff(diff: &acp::Diff) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
 
@@ -543,20 +541,32 @@ fn render_diff(diff: &acp::Diff) -> Vec<Line<'static>> {
             .add_modifier(Modifier::BOLD),
     )));
 
-    // Show removed lines from old_text (if any) then added lines from new_text
-    if let Some(old) = &diff.old_text {
-        for old_line in old.lines() {
-            lines.push(Line::from(Span::styled(
-                format!("- {old_line}"),
-                Style::default().fg(Color::Red),
-            )));
+    let old = diff.old_text.as_deref().unwrap_or("");
+    let new = &diff.new_text;
+    let text_diff = TextDiff::from_lines(old, new);
+
+    for change in text_diff.iter_all_changes() {
+        let value = change.as_str().unwrap_or("").trim_end_matches('\n');
+        match change.tag() {
+            ChangeTag::Delete => {
+                lines.push(Line::from(Span::styled(
+                    format!("- {value}"),
+                    Style::default().fg(Color::Red),
+                )));
+            }
+            ChangeTag::Insert => {
+                lines.push(Line::from(Span::styled(
+                    format!("+ {value}"),
+                    Style::default().fg(Color::Green),
+                )));
+            }
+            ChangeTag::Equal => {
+                lines.push(Line::from(Span::styled(
+                    format!("  {value}"),
+                    Style::default().fg(theme::DIM),
+                )));
+            }
         }
-    }
-    for new_line in diff.new_text.lines() {
-        lines.push(Line::from(Span::styled(
-            format!("+ {new_line}"),
-            Style::default().fg(Color::Green),
-        )));
     }
 
     lines
