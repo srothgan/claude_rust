@@ -31,10 +31,8 @@ pub const ROLE_ASSISTANT: Color = RUST_ORANGE;
 pub const USER_MSG_BG: Color = Color::Rgb(40, 44, 52);
 
 // Tool status icons
-pub const ICON_PENDING: &str = "◌";
-pub const ICON_RUNNING: &str = "⏵";
-pub const ICON_COMPLETED: &str = "✓";
-pub const ICON_FAILED: &str = "✗";
+pub const ICON_COMPLETED: &str = "\u{2713}"; // ✓
+pub const ICON_FAILED: &str = "\u{2717}"; // ✗
 
 // Status colors
 pub const STATUS_ERROR: Color = Color::Red;

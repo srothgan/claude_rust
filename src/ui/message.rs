@@ -104,7 +104,7 @@ pub fn render_message(
                         if !prev_was_tool && lines.len() > 1 {
                             lines.push(Line::default());
                         }
-                        lines.extend(render_tool_call_cached(tc, width));
+                        lines.extend(render_tool_call_cached(tc, width, spinner.frame));
                         prev_was_tool = true;
                     }
                 }
@@ -118,6 +118,39 @@ pub fn render_message(
     lines
 }
 
+/// Preprocess markdown that tui_markdown doesn't handle well.
+/// Headings (`# Title`) become `**Title**` (bold) with a blank line before.
+/// Handles variations: `#Title`, `#  Title`, `  ## Title  `, etc.
+/// Links are left as-is -- tui_markdown handles `[title](url)` natively.
+fn preprocess_markdown(text: &str) -> String {
+    let mut result = String::with_capacity(text.len());
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('#') {
+            // Strip all leading '#' characters
+            let after_hashes = trimmed.trim_start_matches('#');
+            // Extract heading content (trim spaces between # and text, and trailing)
+            let content = after_hashes.trim();
+            if !content.is_empty() {
+                // Blank line before heading for visual separation
+                if !result.is_empty() && !result.ends_with("\n\n") {
+                    result.push('\n');
+                }
+                result.push_str("**");
+                result.push_str(content);
+                result.push_str("**\n");
+                continue;
+            }
+        }
+        result.push_str(line);
+        result.push('\n');
+    }
+    if !text.ends_with('\n') {
+        result.pop();
+    }
+    result
+}
+
 /// Render a text block with caching. Only calls tui_markdown when cache is stale.
 /// `bg` is an optional background color overlay (used for user messages).
 fn render_text_cached(text: &str, cache: &mut BlockCache, bg: Option<Color>) -> Vec<Line<'static>> {
@@ -125,8 +158,10 @@ fn render_text_cached(text: &str, cache: &mut BlockCache, bg: Option<Color>) -> 
         return cached_lines.clone();
     }
 
-    // Cache miss — render from markdown
-    let rendered = tui_markdown::from_str(text);
+    // Cache miss — preprocess headings (tui_markdown doesn't handle them well),
+    // then render from markdown.
+    let preprocessed = preprocess_markdown(text);
+    let rendered = tui_markdown::from_str(&preprocessed);
     let fresh: Vec<Line<'static>> = rendered
         .lines
         .into_iter()
@@ -153,15 +188,25 @@ fn render_text_cached(text: &str, cache: &mut BlockCache, bg: Option<Color>) -> 
 }
 
 /// Render a tool call with caching. Only re-renders when cache is stale.
-fn render_tool_call_cached(tc: &mut ToolCallInfo, width: u16) -> Vec<Line<'static>> {
-    if let Some(cached_lines) = tc.cache.get() {
-        return cached_lines.clone();
+/// InProgress tool calls skip caching because the icon color pulses each frame.
+fn render_tool_call_cached(tc: &mut ToolCallInfo, width: u16, spinner_frame: usize) -> Vec<Line<'static>> {
+    let is_in_progress = matches!(tc.status, acp::ToolCallStatus::InProgress | acp::ToolCallStatus::Pending);
+
+    // Skip cache for in-progress tool calls (icon pulses)
+    if !is_in_progress {
+        if let Some(cached_lines) = tc.cache.get() {
+            return cached_lines.clone();
+        }
     }
 
-    let fresh = render_tool_call(tc, width);
-    tc.cache.store(fresh);
-    // unwrap is safe: we just stored the lines above
-    tc.cache.get().unwrap().clone()
+    let fresh = render_tool_call(tc, width, spinner_frame);
+
+    // Only cache completed/failed tool calls
+    if !is_in_progress {
+        tc.cache.store(fresh.clone());
+    }
+
+    fresh
 }
 
 /// Max visible output lines for Execute/Bash tool calls.
@@ -249,13 +294,13 @@ fn render_permission_lines(perm: &InlinePermission) -> Vec<Line<'static>> {
     ]
 }
 
-fn render_tool_call(tc: &ToolCallInfo, width: u16) -> Vec<Line<'static>> {
+fn render_tool_call(tc: &ToolCallInfo, width: u16, spinner_frame: usize) -> Vec<Line<'static>> {
     // Execute/Bash tool calls get a distinct rendering
     if matches!(tc.kind, acp::ToolKind::Execute) {
-        return render_execute_tool_call(tc, width);
+        return render_execute_tool_call(tc, width, spinner_frame);
     }
 
-    let (icon, icon_color) = status_icon(tc.status);
+    let (icon, icon_color) = status_icon(tc.status, spinner_frame);
     let (kind_icon, _kind_name) = theme::tool_kind_label(tc.kind, tc.claude_tool_name.as_deref());
 
     let mut title_spans = vec![
@@ -327,10 +372,18 @@ fn render_tool_call(tc: &ToolCallInfo, width: u16) -> Vec<Line<'static>> {
     lines
 }
 
-fn status_icon(status: acp::ToolCallStatus) -> (&'static str, Color) {
+/// Spinner frames as `&'static str` for use in status_icon return type.
+const SPINNER_STRS: &[&str] = &[
+    "\u{280B}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283C}",
+    "\u{2834}", "\u{2826}", "\u{2827}", "\u{2807}", "\u{280F}",
+];
+
+fn status_icon(status: acp::ToolCallStatus, spinner_frame: usize) -> (&'static str, Color) {
     match status {
-        acp::ToolCallStatus::Pending => (theme::ICON_PENDING, theme::DIM),
-        acp::ToolCallStatus::InProgress => (theme::ICON_RUNNING, theme::RUST_ORANGE),
+        acp::ToolCallStatus::Pending | acp::ToolCallStatus::InProgress => {
+            let s = SPINNER_STRS[spinner_frame % SPINNER_STRS.len()];
+            (s, theme::RUST_ORANGE)
+        }
         acp::ToolCallStatus::Completed => (theme::ICON_COMPLETED, theme::RUST_ORANGE),
         acp::ToolCallStatus::Failed => (theme::ICON_FAILED, theme::STATUS_ERROR),
         _ => ("?", theme::DIM),
@@ -348,8 +401,8 @@ fn status_icon(status: acp::ToolCallStatus) -> (&'static str, Color) {
 /// Left border on all content lines, right border only on top/bottom rules.
 /// Top/bottom rules stretch to the full terminal width.
 /// Output is capped at TERMINAL_MAX_LINES (tail).
-fn render_execute_tool_call(tc: &ToolCallInfo, width: u16) -> Vec<Line<'static>> {
-    let (status_icon_str, icon_color) = status_icon(tc.status);
+fn render_execute_tool_call(tc: &ToolCallInfo, width: u16, spinner_frame: usize) -> Vec<Line<'static>> {
+    let (status_icon_str, icon_color) = status_icon(tc.status, spinner_frame);
     let border = Style::default().fg(theme::DIM);
     let mut lines: Vec<Line<'static>> = Vec::new();
 
