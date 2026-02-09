@@ -98,6 +98,10 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
         hints.push(Span::styled("esc", Style::default().fg(Color::White)));
         hints.push(Span::styled(": cancel", Style::default().fg(theme::DIM)));
     }
+    hints.push(dot.clone());
+    hints.push(Span::styled("ctrl+o", Style::default().fg(Color::White)));
+    let tool_hint = if app.tools_collapsed { ": open tools" } else { ": close tools" };
+    hints.push(Span::styled(tool_hint, Style::default().fg(theme::DIM)));
     hints.push(dot);
     hints.push(Span::styled("ctrl+c", Style::default().fg(Color::White)));
     hints.push(Span::styled(": quit", Style::default().fg(theme::DIM)));

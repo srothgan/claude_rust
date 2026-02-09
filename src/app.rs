@@ -50,6 +50,11 @@ pub struct App {
     pub event_tx: mpsc::UnboundedSender<ClientEvent>,
     pub event_rx: mpsc::UnboundedReceiver<ClientEvent>,
     pub spinner_frame: usize,
+    /// Session-level default for tool call collapsed state.
+    /// Toggled by Ctrl+O — new tool calls inherit this value.
+    pub tools_collapsed: bool,
+    /// IDs of Task tool calls currently InProgress — their children get hidden.
+    pub active_task_ids: Vec<String>,
 }
 
 pub enum AppStatus {
@@ -84,6 +89,11 @@ pub struct ToolCallInfo {
     pub status: acp::ToolCallStatus,
     pub content: Vec<acp::ToolCallContent>,
     pub collapsed: bool,
+    /// The actual Claude Code tool name from meta.claudeCode.toolName
+    /// (e.g. "Task", "Glob", "mcp__acp__Read", "WebSearch")
+    pub claude_tool_name: Option<String>,
+    /// Hidden tool calls are subagent children — not rendered directly.
+    pub hidden: bool,
 }
 
 pub struct PendingPermission {
@@ -345,6 +355,8 @@ pub async fn connect(
         event_tx,
         event_rx,
         spinner_frame: 0,
+        tools_collapsed: true,
+        active_task_ids: Vec::new(),
     };
 
     Ok((app, conn, child))
@@ -502,6 +514,10 @@ fn handle_normal_key(
         (KeyCode::Down, _) => app.input.move_down(),
         (KeyCode::Home, _) => app.input.move_home(),
         (KeyCode::End, _) => app.input.move_end(),
+        // Ctrl+O: toggle expand/collapse on all tool calls
+        (KeyCode::Char('o'), m) if m.contains(KeyModifiers::CONTROL) => {
+            toggle_all_tool_calls(app);
+        }
         // Editing
         (KeyCode::Backspace, _) => app.input.delete_char_before(),
         (KeyCode::Delete, _) => app.input.delete_char_after(),
@@ -569,6 +585,18 @@ fn respond_permission(app: &mut App, override_index: Option<usize>) {
                     acp::SelectedPermissionOutcome::new(opt.option_id.clone()),
                 ),
             ));
+        }
+    }
+}
+
+/// Toggle the session-level collapsed preference and apply to all tool calls.
+fn toggle_all_tool_calls(app: &mut App) {
+    app.tools_collapsed = !app.tools_collapsed;
+    for msg in &mut app.messages {
+        for block in &mut msg.blocks {
+            if let MessageBlock::ToolCall(tc) = block {
+                tc.collapsed = app.tools_collapsed;
+            }
         }
     }
 }
@@ -703,13 +731,33 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
             let id_str = tc.tool_call_id.to_string();
             tracing::debug!("ToolCall: id={id_str} title={title} kind={kind:?} status={:?}", tc.status);
 
+            // Extract claude_tool_name from meta.claudeCode.toolName
+            let claude_tool_name = tc.meta.as_ref().and_then(|m| {
+                m.get("claudeCode")
+                    .and_then(|v| v.get("toolName"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+            });
+
+            let is_task = claude_tool_name.as_deref() == Some("Task");
+
+            // If a Task is active and this is NOT itself a Task, it's a subagent child — hide it
+            let hidden = !is_task && !app.active_task_ids.is_empty();
+
+            // Track new Task tool calls as active subagents
+            if is_task {
+                app.active_task_ids.push(id_str.clone());
+            }
+
             let tool_info = ToolCallInfo {
                 id: id_str,
                 title: shorten_tool_title(&tc.title, &app.cwd_raw),
                 kind,
                 status: tc.status,
                 content: tc.content,
-                collapsed: false,
+                collapsed: app.tools_collapsed,
+                claude_tool_name,
+                hidden,
             };
 
             // Attach to current assistant message — update existing or add new
@@ -724,6 +772,7 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
                                 existing.status = tool_info.status;
                                 existing.content = tool_info.content.clone();
                                 existing.kind = tool_info.kind;
+                                existing.claude_tool_name = tool_info.claude_tool_name.clone();
                                 found = true;
                                 break;
                             }
@@ -736,12 +785,20 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
             }
 
             app.status = AppStatus::Running(shorten_tool_title(&title, &app.cwd_raw));
-            app.files_accessed += 1;
+            if !hidden {
+                app.files_accessed += 1;
+            }
         }
         acp::SessionUpdate::ToolCallUpdate(tcu) => {
             // Find and update the tool call by id (in-place)
             let id_str = tcu.tool_call_id.to_string();
             tracing::debug!("ToolCallUpdate: id={id_str} new_title={:?} new_status={:?}", tcu.fields.title, tcu.fields.status);
+
+            // If this is a Task completing, remove from active list
+            if matches!(tcu.fields.status, Some(acp::ToolCallStatus::Completed) | Some(acp::ToolCallStatus::Failed)) {
+                app.active_task_ids.retain(|id| id != &id_str);
+            }
+
             for msg in app.messages.iter_mut().rev() {
                 for block in &mut msg.blocks {
                     if let MessageBlock::ToolCall(tc) = block {
@@ -755,11 +812,20 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
                             if let Some(content) = tcu.fields.content {
                                 tc.content = content;
                             }
+                            // Update claude_tool_name from update meta if present
+                            if let Some(ref meta) = tcu.meta {
+                                if let Some(name) = meta.get("claudeCode")
+                                    .and_then(|v| v.get("toolName"))
+                                    .and_then(|v| v.as_str())
+                                {
+                                    tc.claude_tool_name = Some(name.to_string());
+                                }
+                            }
                             if matches!(
                                 tc.status,
                                 acp::ToolCallStatus::Completed | acp::ToolCallStatus::Failed
                             ) {
-                                tc.collapsed = true;
+                                tc.collapsed = app.tools_collapsed;
                             }
                             return;
                         }
