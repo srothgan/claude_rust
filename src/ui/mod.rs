@@ -20,7 +20,6 @@ mod input;
 mod layout;
 mod message;
 pub mod theme;
-mod welcome;
 
 use crate::app::App;
 use ratatui::Frame;
@@ -33,21 +32,17 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let areas = layout::compute(
         frame.area(),
         input::visual_line_count(app, frame.area().width),
-        !app.messages.is_empty(),
+        true,
     );
 
-    // Header bar (hidden on welcome screen)
+    // Header bar (always visible)
     if areas.header.height > 0 {
         header::render(frame, areas.header, app);
         render_separator(frame, areas.header_sep);
     }
 
-    // Body: welcome screen or chat
-    if app.messages.is_empty() {
-        welcome::render(frame, areas.body, app);
-    } else {
-        chat::render(frame, areas.body, app);
-    }
+    // Body: chat (includes welcome text when no messages yet)
+    chat::render(frame, areas.body, app);
 
     // Input separator (above)
     render_separator(frame, areas.input_sep);

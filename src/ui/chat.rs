@@ -16,9 +16,11 @@
 
 use crate::app::{App, AppStatus};
 use crate::ui::message::{self, SpinnerState};
+use crate::ui::theme;
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::text::Text;
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Paragraph, Wrap};
 
 pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
@@ -29,6 +31,10 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     };
 
     let mut all_lines = Vec::new();
+
+    // Welcome text always at the top
+    all_lines.extend(welcome_lines(app));
+
     for msg in &mut app.messages {
         // Per-block caching is handled inside render_message — each text block
         // and tool call maintains its own cache, only re-rendering on mutation.
@@ -64,4 +70,58 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         }
         frame.render_widget(paragraph.scroll((app.scroll_offset as u16, 0)), area);
     }
+}
+
+const FERRIS_SAYS: &[&str] = &[
+    r" _________________________________ ",
+    r"< Welcome back to Claude, in Rust! >",
+    r" --------------------------------- ",
+    r"        \             ",
+    r"         \            ",
+    r"            _~^~^~_  ",
+    r"        \) /  o o  \ (/",
+    r"          '_   -   _' ",
+    r"          / '-----' \ ",
+];
+
+fn welcome_lines(app: &App) -> Vec<Line<'static>> {
+    let pad = "  ";
+    let mut lines = Vec::new();
+
+    // Ferris with speech bubble
+    for art_line in FERRIS_SAYS {
+        lines.push(Line::from(Span::styled(
+            format!("{pad}{art_line}"),
+            Style::default().fg(theme::RUST_ORANGE),
+        )));
+    }
+
+    lines.push(Line::default());
+    lines.push(Line::default());
+
+    // Model and cwd
+    lines.push(Line::from(vec![
+        Span::styled(format!("{pad}Model: "), Style::default().fg(theme::DIM)),
+        Span::styled(
+            app.model_name.clone(),
+            Style::default()
+                .fg(theme::RUST_ORANGE)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]));
+    lines.push(Line::from(Span::styled(
+        format!("{pad}cwd:   {}", app.cwd),
+        Style::default().fg(theme::DIM),
+    )));
+
+    lines.push(Line::default());
+
+    // Tips
+    lines.push(Line::from(Span::styled(
+        format!("{pad}Tips: Enter to send, Shift+Enter for newline, Ctrl+C to quit"),
+        Style::default().fg(theme::DIM),
+    )));
+    lines.push(Line::default());
+
+    lines
 }
