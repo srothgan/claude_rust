@@ -24,24 +24,11 @@ pub const DIM: Color = Color::DarkGray;
 pub const PROMPT_CHAR: &str = "❯";
 pub const SEPARATOR_CHAR: &str = "─";
 
-// Model family colors
-pub const MODEL_SONNET: Color = Color::Magenta;
-pub const MODEL_OPUS: Color = Color::Red;
-pub const MODEL_HAIKU: Color = Color::Green;
-
 // Role header colors
-pub const ROLE_USER: Color = Color::White;
 pub const ROLE_ASSISTANT: Color = RUST_ORANGE;
-pub const ROLE_SYSTEM: Color = Color::Yellow;
 
 // User message background
 pub const USER_MSG_BG: Color = Color::Rgb(40, 44, 52);
-
-// Tool kind colors (muted, no bright green/cyan)
-pub const TOOL_READ: Color = Color::White;
-pub const TOOL_EDIT: Color = Color::White;
-pub const TOOL_EXECUTE: Color = Color::White;
-pub const TOOL_SEARCH: Color = Color::White;
 
 // Tool status icons
 pub const ICON_PENDING: &str = "◌";
@@ -49,23 +36,8 @@ pub const ICON_RUNNING: &str = "⏵";
 pub const ICON_COMPLETED: &str = "✓";
 pub const ICON_FAILED: &str = "✗";
 
-// Status colors (used by tool call rendering in message.rs)
-pub const STATUS_RUNNING: Color = Color::Cyan;
+// Status colors
 pub const STATUS_ERROR: Color = Color::Red;
-
-/// Return a color for the model based on its name.
-pub fn model_color(name: &str) -> Color {
-    let lower = name.to_lowercase();
-    if lower.contains("opus") {
-        MODEL_OPUS
-    } else if lower.contains("haiku") {
-        MODEL_HAIKU
-    } else if lower.contains("sonnet") {
-        MODEL_SONNET
-    } else {
-        RUST_ORANGE
-    }
-}
 
 /// Tool kind icon + label pair. Monochrome Unicode symbols.
 /// If `claude_tool_name` is provided, override icon/label for specific tools.
@@ -95,15 +67,5 @@ pub fn tool_kind_label(
         ToolKind::Fetch => ("⊕", "Fetch"),
         ToolKind::SwitchMode => ("⊙", "Mode"),
         _ => ("○", "Tool"),
-    }
-}
-
-/// Map a tool kind to its color.
-pub fn tool_kind_color(kind: agent_client_protocol::ToolKind) -> Color {
-    match kind {
-        agent_client_protocol::ToolKind::Read => TOOL_READ,
-        agent_client_protocol::ToolKind::Edit => TOOL_EDIT,
-        agent_client_protocol::ToolKind::Execute => TOOL_EXECUTE,
-        _ => TOOL_SEARCH,
     }
 }

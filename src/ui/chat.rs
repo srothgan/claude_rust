@@ -16,16 +16,16 @@
 
 use crate::app::{App, AppStatus};
 use crate::ui::message::{self, SpinnerState};
+use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::Text;
 use ratatui::widgets::{Paragraph, Wrap};
-use ratatui::Frame;
 
 pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     // Snapshot spinner state before the loop so we can take &mut msg
     let spinner = SpinnerState {
         frame: app.spinner_frame,
-        is_active: matches!(app.status, AppStatus::Thinking | AppStatus::Running(_)),
+        is_active: matches!(app.status, AppStatus::Thinking | AppStatus::Running),
     };
 
     let mut all_lines = Vec::new();

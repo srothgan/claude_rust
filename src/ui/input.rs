@@ -19,11 +19,11 @@
 
 use crate::app::App;
 use crate::ui::theme;
+use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
-use ratatui::Frame;
 
 /// Prompt prefix width: "❯ " = 2 columns
 const PROMPT_WIDTH: u16 = 2;

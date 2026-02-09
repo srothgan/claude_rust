@@ -39,9 +39,7 @@ pub enum ClientEvent {
         response_tx: tokio::sync::oneshot::Sender<acp::RequestPermissionResponse>,
     },
     /// A prompt turn completed successfully.
-    TurnComplete {
-        stop_reason: acp::StopReason,
-    },
+    TurnComplete,
     /// A prompt turn failed with an error.
     TurnError(String),
 }
@@ -138,9 +136,9 @@ impl acp::Client for ClaudeClient {
                 })?;
 
             return Ok(acp::RequestPermissionResponse::new(
-                acp::RequestPermissionOutcome::Selected(
-                    acp::SelectedPermissionOutcome::new(allow_option.option_id.clone()),
-                ),
+                acp::RequestPermissionOutcome::Selected(acp::SelectedPermissionOutcome::new(
+                    allow_option.option_id.clone(),
+                )),
             ));
         }
 
@@ -157,8 +155,9 @@ impl acp::Client for ClaudeClient {
             })?;
 
         response_rx.await.map_err(|_| {
-            acp::Error::internal_error()
-                .data(serde_json::Value::String("Permission dialog cancelled".into()))
+            acp::Error::internal_error().data(serde_json::Value::String(
+                "Permission dialog cancelled".into(),
+            ))
         })
     }
 
@@ -274,8 +273,9 @@ impl acp::Client for ClaudeClient {
         let tid = req.terminal_id.to_string();
         let mut terminals = self.terminals.borrow_mut();
         let terminal = terminals.get_mut(tid.as_str()).ok_or_else(|| {
-            acp::Error::internal_error()
-                .data(serde_json::Value::String(format!("Terminal not found: {tid}")))
+            acp::Error::internal_error().data(serde_json::Value::String(format!(
+                "Terminal not found: {tid}"
+            )))
         })?;
 
         // Return new output since last poll (advance cursor, never clear buffer)
@@ -312,7 +312,8 @@ impl acp::Client for ClaudeClient {
         let tid = req.terminal_id.to_string();
         let mut terminals = self.terminals.borrow_mut();
         if let Some(terminal) = terminals.get_mut(tid.as_str()) {
-            terminal.child.kill().await.map_err(io_err)?;
+            // start_kill sends the signal synchronously — no await needed
+            terminal.child.start_kill().map_err(io_err)?;
         }
         Ok(acp::KillTerminalCommandResponse::new())
     }

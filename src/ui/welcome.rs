@@ -16,11 +16,11 @@
 
 use crate::app::App;
 use crate::ui::theme;
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
-use ratatui::Frame;
 
 // Ferris with speech bubble (ferris-says style)
 const FERRIS_SAYS: &[&str] = &[
@@ -44,11 +44,8 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     let box_height = area.height.clamp(MIN_BOX_HEIGHT, MAX_BOX_HEIGHT);
 
     // Place the box at the top, remaining space is empty
-    let [box_area, _rest] = Layout::vertical([
-        Constraint::Length(box_height),
-        Constraint::Min(0),
-    ])
-    .areas(area);
+    let [box_area, _rest] =
+        Layout::vertical([Constraint::Length(box_height), Constraint::Min(0)]).areas(area);
 
     // Title embedded in the top border
     let title = format!(" claude-rust v{} ", env!("CARGO_PKG_VERSION"));
@@ -129,7 +126,12 @@ fn render_left_panel(frame: &mut Frame, area: Rect, app: &App) {
 
 fn render_divider(frame: &mut Frame, area: Rect) {
     let lines: Vec<Line<'static>> = (0..area.height)
-        .map(|_| Line::from(Span::styled("\u{2502}", Style::default().fg(theme::RUST_ORANGE))))
+        .map(|_| {
+            Line::from(Span::styled(
+                "\u{2502}",
+                Style::default().fg(theme::RUST_ORANGE),
+            ))
+        })
         .collect();
     frame.render_widget(Paragraph::new(lines), area);
 }

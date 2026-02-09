@@ -26,18 +26,20 @@ pub struct AppLayout {
     pub footer: Option<Rect>,
 }
 
-pub fn compute(area: Rect, input_lines: u16, permission_height: u16, show_header: bool) -> AppLayout {
+pub fn compute(
+    area: Rect,
+    input_lines: u16,
+    permission_height: u16,
+    show_header: bool,
+) -> AppLayout {
     let input_height = input_lines.max(1);
     let header_height: u16 = if show_header { 1 } else { 0 };
     let header_sep_height: u16 = if show_header { 1 } else { 0 };
 
     if area.height < 8 {
         // Ultra-compact: no header, no separator, no footer, no permission
-        let [body, input] = Layout::vertical([
-            Constraint::Min(1),
-            Constraint::Length(input_height),
-        ])
-        .areas(area);
+        let [body, input] =
+            Layout::vertical([Constraint::Min(1), Constraint::Length(input_height)]).areas(area);
         AppLayout {
             header: Rect::new(area.x, area.y, area.width, 0),
             header_sep: Rect::new(area.x, area.y, area.width, 0),
@@ -48,7 +50,16 @@ pub fn compute(area: Rect, input_lines: u16, permission_height: u16, show_header
             footer: None,
         }
     } else if permission_height > 0 {
-        let [header, header_sep, body, input_sep, permission, input, _spacer, footer] = Layout::vertical([
+        let [
+            header,
+            header_sep,
+            body,
+            input_sep,
+            permission,
+            input,
+            _spacer,
+            footer,
+        ] = Layout::vertical([
             Constraint::Length(header_height),
             Constraint::Length(header_sep_height),
             Constraint::Min(3),

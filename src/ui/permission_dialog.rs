@@ -17,11 +17,11 @@
 use crate::app::App;
 use crate::ui::theme;
 use agent_client_protocol::PermissionOptionKind;
+use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
-use ratatui::Frame;
 
 /// Border color for the permission dialog
 const BORDER_COLOR: Color = Color::Rgb(100, 100, 100);
@@ -58,7 +58,12 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         .border_style(Style::default().fg(BORDER_COLOR))
         .title(Line::from(vec![
             Span::raw(" "),
-            Span::styled(title, Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                title,
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::raw(" "),
         ]));
 
@@ -67,7 +72,10 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
 
     for (i, opt) in pending.request.options.iter().enumerate() {
         let is_selected = i == pending.selected_index;
-        let is_allow = matches!(opt.kind, PermissionOptionKind::AllowOnce | PermissionOptionKind::AllowAlways);
+        let is_allow = matches!(
+            opt.kind,
+            PermissionOptionKind::AllowOnce | PermissionOptionKind::AllowAlways
+        );
 
         let (icon, icon_color) = if is_allow {
             ("\u{2713}", Color::Green) // ✓
@@ -81,7 +89,9 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         if is_selected {
             spans.push(Span::styled(
                 " \u{25b8} ",
-                Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(theme::RUST_ORANGE)
+                    .add_modifier(Modifier::BOLD),
             ));
         } else {
             spans.push(Span::raw("   "));
@@ -95,7 +105,9 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
 
         // Option name
         let name_style = if is_selected {
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(Color::Gray)
         };

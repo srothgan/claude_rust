@@ -16,7 +16,6 @@
 
 mod acp;
 mod app;
-mod error;
 mod ui;
 
 use clap::Parser;
@@ -47,8 +46,7 @@ fn main() -> anyhow::Result<()> {
     // Write tracing logs to debug.log file so they don't corrupt the TUI.
     // Activate by setting RUST_LOG env var (e.g. RUST_LOG=debug).
     if std::env::var("RUST_LOG").is_ok() {
-        let log_file = std::fs::File::create("debug.log")
-            .expect("Failed to create debug.log");
+        let log_file = std::fs::File::create("debug.log").expect("Failed to create debug.log");
         tracing_subscriber::fmt()
             .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
             .with_writer(log_file)

@@ -24,15 +24,20 @@ pub mod theme;
 mod welcome;
 
 use crate::app::App;
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
-use ratatui::Frame;
 
 pub fn render(frame: &mut Frame, app: &mut App) {
     let perm_height = permission_dialog::required_height(app);
-    let areas = layout::compute(frame.area(), app.input.line_count(), perm_height, !app.messages.is_empty());
+    let areas = layout::compute(
+        frame.area(),
+        app.input.line_count(),
+        perm_height,
+        !app.messages.is_empty(),
+    );
 
     // Header bar (hidden on welcome screen)
     if areas.header.height > 0 {
@@ -100,28 +105,40 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
     // Right side: only novel keybindings (not enter/quit/etc)
     let dot = Span::styled("  \u{00b7}  ", Style::default().fg(theme::DIM));
     let mut hints: Vec<Span> = Vec::new();
-    if matches!(app.status, crate::app::AppStatus::Thinking | crate::app::AppStatus::Running(_)) {
+    if matches!(
+        app.status,
+        crate::app::AppStatus::Thinking | crate::app::AppStatus::Running
+    ) {
         hints.push(Span::styled("esc", Style::default().fg(Color::White)));
         hints.push(Span::styled(": cancel", Style::default().fg(theme::DIM)));
     }
     // Mode cycling hint (only if multiple modes available)
-    if app.mode.as_ref().is_some_and(|m| m.available_modes.len() > 1) {
-        if !hints.is_empty() { hints.push(dot.clone()); }
+    if app
+        .mode
+        .as_ref()
+        .is_some_and(|m| m.available_modes.len() > 1)
+    {
+        if !hints.is_empty() {
+            hints.push(dot.clone());
+        }
         hints.push(Span::styled("shift+tab", Style::default().fg(Color::White)));
         hints.push(Span::styled(": mode", Style::default().fg(theme::DIM)));
     }
-    if !hints.is_empty() { hints.push(dot.clone()); }
+    if !hints.is_empty() {
+        hints.push(dot.clone());
+    }
     hints.push(Span::styled("ctrl+o", Style::default().fg(Color::White)));
-    let tool_hint = if app.tools_collapsed { ": expand tools" } else { ": collapse tools" };
+    let tool_hint = if app.tools_collapsed {
+        ": expand tools"
+    } else {
+        ": collapse tools"
+    };
     hints.push(Span::styled(tool_hint, Style::default().fg(theme::DIM)));
     let right = Line::from(hints);
 
     let left_width = left.width() as u16;
-    let [left_area, right_area] = Layout::horizontal([
-        Constraint::Length(left_width),
-        Constraint::Fill(1),
-    ])
-    .areas(padded);
+    let [left_area, right_area] =
+        Layout::horizontal([Constraint::Length(left_width), Constraint::Fill(1)]).areas(padded);
 
     frame.render_widget(Paragraph::new(left), left_area);
     frame.render_widget(

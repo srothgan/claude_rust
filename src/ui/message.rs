@@ -22,8 +22,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
 const SPINNER_FRAMES: &[char] = &[
-    '\u{280B}', '\u{2819}', '\u{2839}', '\u{2838}',
-    '\u{283C}', '\u{2834}', '\u{2826}', '\u{2827}',
+    '\u{280B}', '\u{2819}', '\u{2839}', '\u{2838}', '\u{283C}', '\u{2834}', '\u{2826}', '\u{2827}',
     '\u{2807}', '\u{280F}',
 ];
 
@@ -41,7 +40,11 @@ pub struct SpinnerState {
 /// Render a single chat message into a `Vec<Line>`, using per-block caches.
 /// Takes `&mut` so block caches can be updated.
 /// `spinner` is only used for the "Thinking..." animation on empty assistant messages.
-pub fn render_message(msg: &mut ChatMessage, spinner: &SpinnerState, width: u16) -> Vec<Line<'static>> {
+pub fn render_message(
+    msg: &mut ChatMessage,
+    spinner: &SpinnerState,
+    width: u16,
+) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
 
     match msg.role {
@@ -49,9 +52,7 @@ pub fn render_message(msg: &mut ChatMessage, spinner: &SpinnerState, width: u16)
             // "User" label in gray bold
             lines.push(Line::from(Span::styled(
                 "User",
-                Style::default()
-                    .fg(theme::DIM)
-                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
             )));
 
             // User message: markdown-rendered with background overlay
@@ -108,21 +109,6 @@ pub fn render_message(msg: &mut ChatMessage, spinner: &SpinnerState, width: u16)
                 }
             }
         }
-        MessageRole::System => {
-            lines.push(Line::from(Span::styled(
-                "System",
-                Style::default()
-                    .fg(theme::ROLE_SYSTEM)
-                    .add_modifier(Modifier::BOLD),
-            )));
-            for block in &mut msg.blocks {
-                if let MessageBlock::Text(text, _) = block {
-                    for text_line in text.lines() {
-                        lines.push(Line::from(text_line.to_string()));
-                    }
-                }
-            }
-        }
     }
 
     // Blank separator between messages
@@ -133,11 +119,7 @@ pub fn render_message(msg: &mut ChatMessage, spinner: &SpinnerState, width: u16)
 
 /// Render a text block with caching. Only calls tui_markdown when cache is stale.
 /// `bg` is an optional background color overlay (used for user messages).
-fn render_text_cached(
-    text: &str,
-    cache: &mut BlockCache,
-    bg: Option<Color>,
-) -> Vec<Line<'static>> {
+fn render_text_cached(text: &str, cache: &mut BlockCache, bg: Option<Color>) -> Vec<Line<'static>> {
     // Check if cache is fresh (version 0 means lines were stored and not invalidated since)
     if let Some(ref cached_lines) = cache.lines {
         if cache.version == 0 {
@@ -228,7 +210,10 @@ fn render_tool_call(tc: &ToolCallInfo, width: u16) -> Vec<Line<'static>> {
     }
 
     // Diffs (Edit tool) are always shown — user needs to see changes
-    let has_diff = tc.content.iter().any(|c| matches!(c, acp::ToolCallContent::Diff(_)));
+    let has_diff = tc
+        .content
+        .iter()
+        .any(|c| matches!(c, acp::ToolCallContent::Diff(_)));
 
     if tc.collapsed && !has_diff {
         // Collapsed: show summary + ctrl+o hint
@@ -246,7 +231,7 @@ fn render_tool_call(tc: &ToolCallInfo, width: u16) -> Vec<Line<'static>> {
             let prefix = if i == last_idx {
                 "  \u{2514}\u{2500} " // └─
             } else {
-                "  \u{2502}  "         // │
+                "  \u{2502}  " // │
             };
             let mut spans = vec![Span::styled(prefix.to_string(), pipe_style)];
             spans.extend(content_line.spans);
@@ -294,8 +279,16 @@ fn render_execute_tool_call(tc: &ToolCallInfo, width: u16) -> Vec<Line<'static>>
     let top_fill: String = "\u{2500}".repeat(fill);
     lines.push(Line::from(vec![
         Span::styled("  \u{256D}\u{2500}", border),
-        Span::styled(format!(" {status_icon_str} "), Style::default().fg(icon_color)),
-        Span::styled("Bash ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            format!(" {status_icon_str} "),
+            Style::default().fg(icon_color),
+        ),
+        Span::styled(
+            "Bash ",
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled(tc.title.clone(), Style::default().fg(Color::White)),
         Span::styled(format!(" {top_fill}\u{256E}"), border),
     ]));
@@ -304,7 +297,12 @@ fn render_execute_tool_call(tc: &ToolCallInfo, width: u16) -> Vec<Line<'static>>
     if let Some(ref cmd) = tc.terminal_command {
         lines.push(Line::from(vec![
             Span::styled("  \u{2502} ", border),
-            Span::styled("$ ", Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "$ ",
+                Style::default()
+                    .fg(theme::RUST_ORANGE)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::styled(cmd.clone(), Style::default().fg(Color::Yellow)),
         ]));
     }
@@ -389,7 +387,8 @@ fn content_summary(tc: &ToolCallInfo) -> String {
     for content in &tc.content {
         match content {
             acp::ToolCallContent::Diff(diff) => {
-                let name = diff.path
+                let name = diff
+                    .path
                     .file_name()
                     .map(|f| f.to_string_lossy().into_owned())
                     .unwrap_or_else(|| diff.path.to_string_lossy().into_owned());
@@ -494,7 +493,11 @@ fn lang_from_title(title: &str) -> String {
         .find_map(|token| {
             let ext = token.rsplit('.').next()?;
             // Ignore if the "extension" is the whole token (no dot found)
-            if ext.len() < token.len() { Some(ext.to_lowercase()) } else { None }
+            if ext.len() < token.len() {
+                Some(ext.to_lowercase())
+            } else {
+                None
+            }
         })
         .unwrap_or_default()
 }
@@ -513,8 +516,8 @@ fn strip_outer_code_fence(text: &str) -> String {
             }
             // Also handle closing fence followed by newline
             let after_trimmed = after_opening.trim_end();
-            if after_trimmed.ends_with("```") {
-                return after_trimmed[..after_trimmed.len() - 3].trim_end().to_string();
+            if let Some(stripped) = after_trimmed.strip_suffix("```") {
+                return stripped.trim_end().to_string();
             }
         }
     }
@@ -528,13 +531,16 @@ fn render_diff(diff: &acp::Diff) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
 
     // File path header
-    let name = diff.path
+    let name = diff
+        .path
         .file_name()
         .map(|f| f.to_string_lossy().into_owned())
         .unwrap_or_else(|| diff.path.to_string_lossy().into_owned());
     lines.push(Line::from(Span::styled(
         name,
-        Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD),
     )));
 
     // Show removed lines from old_text (if any) then added lines from new_text

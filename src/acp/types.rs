@@ -16,55 +16,5 @@
 
 //! Re-exports of commonly used ACP types for convenience.
 
-pub use agent_client_protocol::{
-    // Connection & handshake
-    ClientSideConnection, InitializeRequest, InitializeResponse,
-    // Client trait
-    Client,
-    // Agent trait (for calling into the adapter)
-    Agent,
-    // Session management
-    NewSessionRequest, NewSessionResponse, SessionId,
-    LoadSessionRequest, LoadSessionResponse,
-    // Prompting
-    PromptRequest, PromptResponse, ContentBlock, TextContent, StopReason,
-    // Streaming updates
-    SessionNotification, SessionUpdate,
-    // Permissions
-    RequestPermissionRequest, RequestPermissionResponse,
-    RequestPermissionOutcome, SelectedPermissionOutcome,
-    PermissionOption, PermissionOptionKind,
-    // Capabilities
-    ClientCapabilities, FileSystemCapability, Implementation,
-    // Authentication
-    AuthenticateRequest, AuthenticateResponse,
-    // File operations
-    ReadTextFileRequest, ReadTextFileResponse,
-    WriteTextFileRequest, WriteTextFileResponse,
-    // Terminal operations
-    CreateTerminalRequest, CreateTerminalResponse,
-    TerminalOutputRequest, TerminalOutputResponse,
-    KillTerminalCommandRequest, KillTerminalCommandResponse,
-    WaitForTerminalExitRequest, WaitForTerminalExitResponse,
-    ReleaseTerminalRequest, ReleaseTerminalResponse,
-    // Tool calls
-    ToolCall, ToolCallUpdate, ToolCallStatus,
-    // Protocol version
-    ProtocolVersion,
-    // Terminal exit
-    TerminalExitStatus,
-    // Session models (unstable_session_model)
-    ModelId, SessionModelState, ModelInfo,
-    SetSessionModelRequest, SetSessionModelResponse,
-    // Session modes
-    SessionModeState, SessionMode, SessionModeId,
-    SetSessionModeRequest, SetSessionModeResponse,
-    // Session usage (unstable_session_usage) — logged only, not displayed yet
-    UsageUpdate, Cost,
-    // Session notifications
-    CurrentModeUpdate,
-    // Cancel
-    CancelNotification,
-    // Error codes
-    ErrorCode,
-};
+// Re-exports removed — all modules use `agent_client_protocol as acp` directly.
+// This file is kept as the module declaration point for `crate::acp::types`.

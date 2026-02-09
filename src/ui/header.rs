@@ -16,11 +16,11 @@
 
 use crate::app::App;
 use crate::ui::theme;
+use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
-use ratatui::Frame;
 
 const HEADER_PAD: u16 = 2;
 
@@ -46,7 +46,10 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         sep,
         // Model name
         Span::styled("Model: ", Style::default().fg(theme::DIM)),
-        Span::styled(&app.model_name, Style::default().fg(ratatui::style::Color::White)),
+        Span::styled(
+            &app.model_name,
+            Style::default().fg(ratatui::style::Color::White),
+        ),
     ];
 
     let line = Line::from(spans);

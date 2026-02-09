@@ -56,14 +56,10 @@ pub async fn spawn_adapter(
     let stdin_compat = child_stdin.compat_write();
     let stdout_compat = child_stdout.compat();
 
-    let (connection, io_future) = acp::ClientSideConnection::new(
-        client,
-        stdin_compat,
-        stdout_compat,
-        |fut| {
+    let (connection, io_future) =
+        acp::ClientSideConnection::new(client, stdin_compat, stdout_compat, |fut| {
             tokio::task::spawn_local(fut);
-        },
-    );
+        });
 
     // Spawn the I/O handler on the LocalSet
     tokio::task::spawn_local(async move {

@@ -14,18 +14,17 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use crate::acp::client::{ClientEvent, ClaudeClient, TerminalMap};
-use crate::acp::connection;
 use crate::Cli;
+use crate::acp::client::{ClaudeClient, ClientEvent, TerminalMap};
+use crate::acp::connection;
 use agent_client_protocol::{self as acp, Agent as _};
 use crossterm::event::{
-    Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent,
-    MouseEventKind,
+    Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
 };
 use futures::StreamExt;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::process::Child;
 use tokio::sync::mpsc;
 
@@ -75,14 +74,13 @@ pub struct App {
 pub enum AppStatus {
     Ready,
     Thinking,
-    Running(String),
-    Error(String),
+    Running,
+    Error,
 }
 
 pub struct ChatMessage {
     pub role: MessageRole,
     pub blocks: Vec<MessageBlock>,
-    pub timestamp: Instant,
 }
 
 /// Cached rendered lines for a block. Stores a version counter so the cache
@@ -109,7 +107,6 @@ pub enum MessageBlock {
 pub enum MessageRole {
     User,
     Assistant,
-    System,
 }
 
 pub struct ToolCallInfo {
@@ -313,11 +310,9 @@ pub async fn connect(
             acp::InitializeRequest::new(acp::ProtocolVersion::LATEST)
                 .client_capabilities(
                     acp::ClientCapabilities::new()
-                        .fs(
-                            acp::FileSystemCapability::new()
-                                .read_text_file(true)
-                                .write_text_file(true),
-                        )
+                        .fs(acp::FileSystemCapability::new()
+                            .read_text_file(true)
+                            .write_text_file(true))
                         .terminal(true),
                 )
                 .client_info(acp::Implementation::new(
@@ -369,7 +364,8 @@ pub async fn connect(
                 let sid = session_id.clone();
                 authenticate_and_retry(&conn, &init_response, || {
                     conn.load_session(acp::LoadSessionRequest::new(sid, &cwd))
-                }).await?
+                })
+                .await?
             }
             Err(err) => return Err(err.into()),
         };
@@ -382,7 +378,8 @@ pub async fn connect(
                 let cwd = cwd.clone();
                 let resp = authenticate_and_retry(&conn, &init_response, || {
                     conn.new_session(acp::NewSessionRequest::new(&cwd))
-                }).await?;
+                })
+                .await?;
                 (resp.session_id, resp.models, resp.modes)
             }
             Err(err) => return Err(err.into()),
@@ -435,7 +432,10 @@ pub async fn connect(
 
     // Log available modes for debugging
     if let Some(ref m) = mode {
-        tracing::info!("Available modes: {:?}", m.available_modes.iter().map(|m| &m.id).collect::<Vec<_>>());
+        tracing::info!(
+            "Available modes: {:?}",
+            m.available_modes.iter().map(|m| &m.id).collect::<Vec<_>>()
+        );
         tracing::info!("Current mode: {}", m.current_mode_id);
     }
 
@@ -443,18 +443,16 @@ pub async fn connect(
     if cli.yolo {
         if let Some(ref m) = mode {
             // Find a bypass/yolo mode — try common IDs
-            let yolo_mode = m.available_modes.iter().find(|mi| {
-                mi.id == "bypassPermissions" || mi.id == "dontAsk"
-            });
+            let yolo_mode = m
+                .available_modes
+                .iter()
+                .find(|mi| mi.id == "bypassPermissions" || mi.id == "dontAsk");
             if let Some(target) = yolo_mode {
                 let target_id = target.id.clone();
                 let target_name = target.name.clone();
                 let mode_id = acp::SessionModeId::new(target_id.as_str());
-                conn.set_session_mode(acp::SetSessionModeRequest::new(
-                    session_id.clone(),
-                    mode_id,
-                ))
-                .await?;
+                conn.set_session_mode(acp::SetSessionModeRequest::new(session_id.clone(), mode_id))
+                    .await?;
                 tracing::info!("YOLO: switched to mode '{}'", target_id);
                 // Update local mode state to reflect the switch
                 if let Some(ref mut ms) = mode {
@@ -462,7 +460,9 @@ pub async fn connect(
                     ms.current_mode_name = target_name;
                 }
             } else {
-                tracing::warn!("YOLO: no bypass-permissions or do-not-ask mode found in available modes");
+                tracing::warn!(
+                    "YOLO: no bypass-permissions or do-not-ask mode found in available modes"
+                );
             }
         }
     }
@@ -514,10 +514,7 @@ pub async fn connect(
 // TUI event loop
 // ---------------------------------------------------------------------------
 
-pub async fn run_tui(
-    app: &mut App,
-    conn: Rc<acp::ClientSideConnection>,
-) -> anyhow::Result<()> {
+pub async fn run_tui(app: &mut App, conn: Rc<acp::ClientSideConnection>) -> anyhow::Result<()> {
     let mut terminal = ratatui::init();
 
     // Enable bracketed paste and mouse capture (ignore error on unsupported terminals)
@@ -539,7 +536,7 @@ pub async fn run_tui(
                 handle_acp_event(app, event);
             }
             _ = tick.tick() => {
-                if matches!(app.status, AppStatus::Thinking | AppStatus::Running(_)) {
+                if matches!(app.status, AppStatus::Thinking | AppStatus::Running) {
                     app.spinner_frame = app.spinner_frame.wrapping_add(1);
                 }
                 update_terminal_outputs(app);
@@ -561,16 +558,18 @@ pub async fn run_tui(
     // Dismiss any pending permission dialog (reject)
     if let Some(pending) = app.permission_pending.take() {
         if let Some(last_opt) = pending.request.options.last() {
-            let _ = pending.response_tx.send(acp::RequestPermissionResponse::new(
-                acp::RequestPermissionOutcome::Selected(
-                    acp::SelectedPermissionOutcome::new(last_opt.option_id.clone()),
-                ),
-            ));
+            let _ = pending
+                .response_tx
+                .send(acp::RequestPermissionResponse::new(
+                    acp::RequestPermissionOutcome::Selected(acp::SelectedPermissionOutcome::new(
+                        last_opt.option_id.clone(),
+                    )),
+                ));
         }
     }
 
     // Cancel any active turn and give the adapter a moment to clean up
-    if matches!(app.status, AppStatus::Thinking | AppStatus::Running(_)) {
+    if matches!(app.status, AppStatus::Thinking | AppStatus::Running) {
         if let Some(sid) = app.session_id.clone() {
             let _ = conn.cancel(acp::CancelNotification::new(sid)).await;
         }
@@ -626,11 +625,7 @@ fn update_terminal_outputs(app: &mut App) {
     }
 }
 
-fn handle_terminal_event(
-    app: &mut App,
-    conn: &Rc<acp::ClientSideConnection>,
-    event: Event,
-) {
+fn handle_terminal_event(app: &mut App, conn: &Rc<acp::ClientSideConnection>, event: Event) {
     match event {
         Event::Key(key) if key.kind == KeyEventKind::Press => {
             if app.permission_pending.is_some() {
@@ -666,11 +661,7 @@ fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
     }
 }
 
-fn handle_normal_key(
-    app: &mut App,
-    conn: &Rc<acp::ClientSideConnection>,
-    key: KeyEvent,
-) {
+fn handle_normal_key(app: &mut App, conn: &Rc<acp::ClientSideConnection>, key: KeyEvent) {
     match (key.code, key.modifiers) {
         // Ctrl+C: quit (graceful shutdown handles cancel + cleanup)
         (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL) => {
@@ -678,7 +669,7 @@ fn handle_normal_key(
         }
         // Esc: cancel current turn if thinking/running
         (KeyCode::Esc, _) => {
-            if matches!(app.status, AppStatus::Thinking | AppStatus::Running(_)) {
+            if matches!(app.status, AppStatus::Thinking | AppStatus::Running) {
                 if let Some(sid) = app.session_id.clone() {
                     let conn = Rc::clone(conn);
                     tokio::task::spawn_local(async move {
@@ -751,10 +742,14 @@ fn handle_normal_key(
                     // Optimistic UI update (CurrentModeUpdate will confirm)
                     let next_id = next.id.clone();
                     let next_name = next.name.clone();
-                    let modes = mode.available_modes.iter().map(|m| ModeInfo {
-                        id: m.id.clone(),
-                        name: m.name.clone(),
-                    }).collect();
+                    let modes = mode
+                        .available_modes
+                        .iter()
+                        .map(|m| ModeInfo {
+                            id: m.id.clone(),
+                            name: m.name.clone(),
+                        })
+                        .collect();
                     app.mode = Some(ModeState {
                         current_mode_id: next_id,
                         current_mode_name: next_name,
@@ -825,11 +820,13 @@ fn respond_permission(app: &mut App, override_index: Option<usize>) {
     if let Some(pending) = app.permission_pending.take() {
         let idx = override_index.unwrap_or(pending.selected_index);
         if let Some(opt) = pending.request.options.get(idx) {
-            let _ = pending.response_tx.send(acp::RequestPermissionResponse::new(
-                acp::RequestPermissionOutcome::Selected(
-                    acp::SelectedPermissionOutcome::new(opt.option_id.clone()),
-                ),
-            ));
+            let _ = pending
+                .response_tx
+                .send(acp::RequestPermissionResponse::new(
+                    acp::RequestPermissionOutcome::Selected(acp::SelectedPermissionOutcome::new(
+                        opt.option_id.clone(),
+                    )),
+                ));
         }
     }
 }
@@ -860,13 +857,11 @@ fn submit_input(app: &mut App, conn: &Rc<acp::ClientSideConnection>) {
     app.messages.push(ChatMessage {
         role: MessageRole::User,
         blocks: vec![MessageBlock::Text(text.clone(), BlockCache::default())],
-        timestamp: Instant::now(),
     });
     // Create empty assistant message immediately — message.rs shows thinking indicator
     app.messages.push(ChatMessage {
         role: MessageRole::Assistant,
         blocks: Vec::new(),
-        timestamp: Instant::now(),
     });
     app.input.clear();
     app.status = AppStatus::Thinking;
@@ -886,9 +881,7 @@ fn submit_input(app: &mut App, conn: &Rc<acp::ClientSideConnection>) {
         {
             Ok(resp) => {
                 tracing::debug!("PromptResponse: stop_reason={:?}", resp.stop_reason);
-                let _ = tx.send(ClientEvent::TurnComplete {
-                    stop_reason: resp.stop_reason,
-                });
+                let _ = tx.send(ClientEvent::TurnComplete);
             }
             Err(e) => {
                 let _ = tx.send(ClientEvent::TurnError(e.to_string()));
@@ -914,11 +907,12 @@ fn handle_acp_event(app: &mut App, event: ClientEvent) {
                 selected_index: 0,
             });
         }
-        ClientEvent::TurnComplete { .. } => {
+        ClientEvent::TurnComplete => {
             app.status = AppStatus::Ready;
         }
         ClientEvent::TurnError(msg) => {
-            app.status = AppStatus::Error(msg);
+            tracing::error!("Turn error: {msg}");
+            app.status = AppStatus::Error;
         }
     }
 }
@@ -979,7 +973,8 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
                             t.push_str(&text.text);
                             cache.invalidate();
                         } else {
-                            last.blocks.push(MessageBlock::Text(text.text.clone(), BlockCache::default()));
+                            last.blocks
+                                .push(MessageBlock::Text(text.text.clone(), BlockCache::default()));
                         }
                         return;
                     }
@@ -987,7 +982,6 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
                 app.messages.push(ChatMessage {
                     role: MessageRole::Assistant,
                     blocks: vec![MessageBlock::Text(text.text.clone(), BlockCache::default())],
-                    timestamp: Instant::now(),
                 });
             }
         }
@@ -995,7 +989,11 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
             let title = tc.title.clone();
             let kind = tc.kind;
             let id_str = tc.tool_call_id.to_string();
-            tracing::debug!("ToolCall: id={id_str} title={title} kind={kind:?} status={:?} content_blocks={}", tc.status, tc.content.len());
+            tracing::debug!(
+                "ToolCall: id={id_str} title={title} kind={kind:?} status={:?} content_blocks={}",
+                tc.status,
+                tc.content.len()
+            );
 
             // Extract claude_tool_name from meta.claudeCode.toolName
             let claude_tool_name = tc.meta.as_ref().and_then(|m| {
@@ -1055,7 +1053,7 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
                 }
             }
 
-            app.status = AppStatus::Running(shorten_tool_title(&title, &app.cwd_raw));
+            app.status = AppStatus::Running;
             if !hidden {
                 app.files_accessed += 1;
             }
@@ -1064,10 +1062,17 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
             // Find and update the tool call by id (in-place)
             let id_str = tcu.tool_call_id.to_string();
             let has_content = tcu.fields.content.as_ref().map(|c| c.len()).unwrap_or(0);
-            tracing::debug!("ToolCallUpdate: id={id_str} new_title={:?} new_status={:?} content_blocks={has_content}", tcu.fields.title, tcu.fields.status);
+            tracing::debug!(
+                "ToolCallUpdate: id={id_str} new_title={:?} new_status={:?} content_blocks={has_content}",
+                tcu.fields.title,
+                tcu.fields.status
+            );
 
             // If this is a Task completing, remove from active list
-            if matches!(tcu.fields.status, Some(acp::ToolCallStatus::Completed) | Some(acp::ToolCallStatus::Failed)) {
+            if matches!(
+                tcu.fields.status,
+                Some(acp::ToolCallStatus::Completed) | Some(acp::ToolCallStatus::Failed)
+            ) {
                 app.active_task_ids.retain(|id| id != &id_str);
             }
 
@@ -1097,7 +1102,8 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
                             }
                             // Update claude_tool_name from update meta if present
                             if let Some(ref meta) = tcu.meta {
-                                if let Some(name) = meta.get("claudeCode")
+                                if let Some(name) = meta
+                                    .get("claudeCode")
                                     .and_then(|v| v.get("toolName"))
                                     .and_then(|v| v.as_str())
                                 {
@@ -1128,7 +1134,10 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
             tracing::debug!("Plan update: {:?}", plan);
         }
         acp::SessionUpdate::AvailableCommandsUpdate(cmds) => {
-            tracing::debug!("Available commands: {} commands", cmds.available_commands.len());
+            tracing::debug!(
+                "Available commands: {} commands",
+                cmds.available_commands.len()
+            );
         }
         acp::SessionUpdate::CurrentModeUpdate(update) => {
             if let Some(ref mut mode) = app.mode {
@@ -1146,7 +1155,12 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
             tracing::debug!("Config update: {:?}", config);
         }
         acp::SessionUpdate::UsageUpdate(usage) => {
-            tracing::debug!("UsageUpdate: used={} size={} cost={:?}", usage.used, usage.size, usage.cost);
+            tracing::debug!(
+                "UsageUpdate: used={} size={} cost={:?}",
+                usage.used,
+                usage.size,
+                usage.cost
+            );
         }
         _ => {
             tracing::debug!("Unhandled session update");
