@@ -16,7 +16,7 @@
 
 use crate::app::App;
 use crate::ui::message;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::Rect;
 use ratatui::text::Text;
 use ratatui::widgets::{Paragraph, Wrap};
 use ratatui::Frame;
@@ -30,30 +30,32 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         }
     }
 
-    let content = Text::from(all_lines);
-    let content_height = content.height() as u16;
+    // Build paragraph once — line_count gives the real wrapped height
+    let paragraph = Paragraph::new(Text::from(all_lines)).wrap(Wrap { trim: false });
+    let content_height = paragraph.line_count(area.width) as u16;
     let viewport_height = area.height;
 
-    if content_height >= viewport_height {
-        // Content fills or exceeds viewport — use scroll
-        if app.auto_scroll {
-            app.scroll_offset = content_height.saturating_sub(viewport_height);
-        }
-
-        let paragraph = Paragraph::new(content)
-            .wrap(Wrap { trim: false })
-            .scroll((app.scroll_offset, 0));
-
-        frame.render_widget(paragraph, area);
+    if content_height <= viewport_height {
+        // Short content: render in a bottom-aligned sub-rect (stacks above input)
+        let render_area = Rect {
+            x: area.x,
+            y: area.y + viewport_height - content_height,
+            width: area.width,
+            height: content_height,
+        };
+        app.scroll_offset = 0;
+        app.auto_scroll = true;
+        frame.render_widget(paragraph, render_area);
     } else {
-        // Content shorter than viewport — bottom-align via layout spacer
-        let [_spacer, content_area] = Layout::vertical([
-            Constraint::Fill(1),
-            Constraint::Length(content_height),
-        ])
-        .areas(area);
-
-        let paragraph = Paragraph::new(content).wrap(Wrap { trim: false });
-        frame.render_widget(paragraph, content_area);
+        // Long content: scroll within the full viewport
+        let max_scroll = content_height - viewport_height;
+        app.scroll_offset = app.scroll_offset.min(max_scroll);
+        if app.auto_scroll {
+            app.scroll_offset = max_scroll;
+        }
+        if app.scroll_offset >= max_scroll {
+            app.auto_scroll = true;
+        }
+        frame.render_widget(paragraph.scroll((app.scroll_offset, 0)), area);
     }
 }

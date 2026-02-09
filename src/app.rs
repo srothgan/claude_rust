@@ -19,7 +19,8 @@ use crate::acp::connection;
 use crate::Cli;
 use agent_client_protocol::{self as acp, Agent as _};
 use crossterm::event::{
-    Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
+    Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent,
+    MouseEventKind,
 };
 use futures::StreamExt;
 use std::path::PathBuf;
@@ -42,6 +43,7 @@ pub struct App {
     pub session_id: Option<acp::SessionId>,
     pub model_name: String,
     pub cwd: String,
+    pub cwd_raw: String,
     pub files_accessed: usize,
     pub tokens_used: (u64, u64),
     pub permission_pending: Option<PendingPermission>,
@@ -335,6 +337,7 @@ pub async fn connect(
         should_quit: false,
         session_id: Some(session_id),
         model_name,
+        cwd_raw: cwd.to_string_lossy().to_string(),
         cwd: cwd_display,
         files_accessed: 0,
         tokens_used: (0, 0),
@@ -357,10 +360,11 @@ pub async fn run_tui(
 ) -> anyhow::Result<()> {
     let mut terminal = ratatui::init();
 
-    // Enable bracketed paste (ignore error on unsupported terminals)
+    // Enable bracketed paste and mouse capture (ignore error on unsupported terminals)
     let _ = crossterm::execute!(
         std::io::stdout(),
-        crossterm::event::EnableBracketedPaste
+        crossterm::event::EnableBracketedPaste,
+        crossterm::event::EnableMouseCapture
     );
 
     let mut events = EventStream::new();
@@ -389,7 +393,8 @@ pub async fn run_tui(
 
     let _ = crossterm::execute!(
         std::io::stdout(),
-        crossterm::event::DisableBracketedPaste
+        crossterm::event::DisableBracketedPaste,
+        crossterm::event::DisableMouseCapture
     );
     ratatui::restore();
 
@@ -413,10 +418,29 @@ fn handle_terminal_event(
                 handle_normal_key(app, conn, key);
             }
         }
+        Event::Mouse(mouse) => {
+            handle_mouse_event(app, mouse);
+        }
         Event::Paste(text) => {
             app.input.insert_str(&text);
         }
         // Resize is handled automatically by ratatui
+        _ => {}
+    }
+}
+
+const MOUSE_SCROLL_LINES: u16 = 3;
+
+fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
+    match mouse.kind {
+        MouseEventKind::ScrollUp => {
+            app.scroll_offset = app.scroll_offset.saturating_sub(MOUSE_SCROLL_LINES);
+            app.auto_scroll = false;
+        }
+        MouseEventKind::ScrollDown => {
+            app.scroll_offset = app.scroll_offset.saturating_add(MOUSE_SCROLL_LINES);
+            // auto_scroll re-engagement handled by chat::render clamping
+        }
         _ => {}
     }
 }
@@ -471,10 +495,8 @@ fn handle_normal_key(
             app.auto_scroll = false;
         }
         (KeyCode::Down, m) if m.contains(KeyModifiers::CONTROL) => {
-            // Ctrl+Down: scroll chat down
+            // Ctrl+Down: scroll chat down (clamped in chat::render)
             app.scroll_offset = app.scroll_offset.saturating_add(1);
-            // Re-enable auto_scroll if we scrolled to bottom
-            // (exact check happens in chat::render)
         }
         (KeyCode::Up, _) => app.input.move_up(),
         (KeyCode::Down, _) => app.input.move_down(),
@@ -626,6 +648,32 @@ fn handle_acp_event(app: &mut App, event: ClientEvent) {
     }
 }
 
+/// Shorten absolute paths in tool titles to relative paths based on cwd.
+/// e.g. "Read C:\Users\me\project\src\main.rs" → "Read src/main.rs"
+/// Handles both `/` and `\` separators on all platforms since the ACP adapter
+/// may use either regardless of the host OS.
+fn shorten_tool_title(title: &str, cwd_raw: &str) -> String {
+    if cwd_raw.is_empty() {
+        return title.to_string();
+    }
+    // Normalize both to forward slashes for matching
+    let cwd_norm = cwd_raw.replace('\\', "/");
+    let title_norm = title.replace('\\', "/");
+
+    // Try with trailing slash first (strips the separator too)
+    let with_sep = if cwd_norm.ends_with('/') {
+        cwd_norm.clone()
+    } else {
+        format!("{cwd_norm}/")
+    };
+
+    if title_norm.contains(&with_sep) {
+        return title_norm.replace(&with_sep, "");
+    }
+    // Fallback: strip cwd without trailing slash (rare, but handles edge cases)
+    title_norm.replace(&cwd_norm, "")
+}
+
 fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
     match update {
         acp::SessionUpdate::AgentMessageChunk(chunk) => {
@@ -657,7 +705,7 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
 
             let tool_info = ToolCallInfo {
                 id: id_str,
-                title: tc.title,
+                title: shorten_tool_title(&tc.title, &app.cwd_raw),
                 kind,
                 status: tc.status,
                 content: tc.content,
@@ -687,7 +735,7 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
                 }
             }
 
-            app.status = AppStatus::Running(title);
+            app.status = AppStatus::Running(shorten_tool_title(&title, &app.cwd_raw));
             app.files_accessed += 1;
         }
         acp::SessionUpdate::ToolCallUpdate(tcu) => {
@@ -702,7 +750,7 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
                                 tc.status = status;
                             }
                             if let Some(title) = &tcu.fields.title {
-                                tc.title = title.clone();
+                                tc.title = shorten_tool_title(title, &app.cwd_raw);
                             }
                             if let Some(content) = tcu.fields.content {
                                 tc.content = content;
