@@ -15,6 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 mod chat;
+mod header;
 mod input;
 mod layout;
 mod message;
@@ -31,7 +32,13 @@ use ratatui::Frame;
 
 pub fn render(frame: &mut Frame, app: &mut App) {
     let perm_height = permission_dialog::required_height(app);
-    let areas = layout::compute(frame.area(), app.input.line_count(), perm_height);
+    let areas = layout::compute(frame.area(), app.input.line_count(), perm_height, !app.messages.is_empty());
+
+    // Header bar (hidden on welcome screen)
+    if areas.header.height > 0 {
+        header::render(frame, areas.header, app);
+        render_separator(frame, areas.header_sep);
+    }
 
     // Body: welcome screen or chat
     if app.messages.is_empty() {
@@ -51,7 +58,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     // Input
     input::render(frame, areas.input, app);
 
-    // Footer: token stats left, command hints right
+    // Footer: mode pill left, command hints right
     if let Some(footer_area) = areas.footer {
         render_footer(frame, footer_area, app);
     }
@@ -59,8 +66,18 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
 const FOOTER_PAD: u16 = 2;
 
+/// Returns a color for the given mode ID.
+fn mode_color(mode_id: &str) -> Color {
+    match mode_id {
+        "default" => theme::DIM,
+        "plan" => Color::Blue,
+        "acceptEdits" => Color::Yellow,
+        "bypassPermissions" | "dontAsk" => Color::Red,
+        _ => Color::Magenta,
+    }
+}
+
 fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
-    // Inset area with padding on both sides
     let padded = Rect {
         x: area.x + FOOTER_PAD,
         y: area.y,
@@ -68,49 +85,41 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
         height: area.height,
     };
 
-    // Left side: token usage stats
-    let (input_tokens, output_tokens) = app.tokens_used;
-    let total = input_tokens + output_tokens;
-    let left = Line::from(vec![
-        Span::styled(
-            format!("{}k", total / 1000),
-            Style::default().fg(theme::DIM),
-        ),
-        Span::styled(" tokens", Style::default().fg(theme::DIM)),
-        Span::styled("  \u{2502}  ", Style::default().fg(theme::DIM)),
-        Span::styled(
-            format!("${:.2}", cost_estimate(input_tokens, output_tokens)),
-            Style::default().fg(theme::DIM),
-        ),
-    ]);
+    // Left side: mode pill
+    let left = if let Some(ref mode) = app.mode {
+        let color = mode_color(&mode.current_mode_id);
+        Line::from(vec![
+            Span::styled("[", Style::default().fg(color)),
+            Span::styled(&mode.current_mode_name, Style::default().fg(color)),
+            Span::styled("]", Style::default().fg(color)),
+        ])
+    } else {
+        Line::default()
+    };
 
-    // Right side: command hints in "key: action" format
+    // Right side: only novel keybindings (not enter/quit/etc)
     let dot = Span::styled("  \u{00b7}  ", Style::default().fg(theme::DIM));
-    let mut hints = vec![
-        Span::styled("enter", Style::default().fg(Color::White)),
-        Span::styled(": send", Style::default().fg(theme::DIM)),
-        dot.clone(),
-        Span::styled("shift+enter", Style::default().fg(Color::White)),
-        Span::styled(": newline", Style::default().fg(theme::DIM)),
-    ];
+    let mut hints: Vec<Span> = Vec::new();
     if matches!(app.status, crate::app::AppStatus::Thinking | crate::app::AppStatus::Running(_)) {
-        hints.push(dot.clone());
         hints.push(Span::styled("esc", Style::default().fg(Color::White)));
         hints.push(Span::styled(": cancel", Style::default().fg(theme::DIM)));
     }
-    hints.push(dot.clone());
+    // Mode cycling hint (only if multiple modes available)
+    if app.mode.as_ref().is_some_and(|m| m.available_modes.len() > 1) {
+        if !hints.is_empty() { hints.push(dot.clone()); }
+        hints.push(Span::styled("shift+tab", Style::default().fg(Color::White)));
+        hints.push(Span::styled(": mode", Style::default().fg(theme::DIM)));
+    }
+    if !hints.is_empty() { hints.push(dot.clone()); }
     hints.push(Span::styled("ctrl+o", Style::default().fg(Color::White)));
-    let tool_hint = if app.tools_collapsed { ": open tools" } else { ": close tools" };
+    let tool_hint = if app.tools_collapsed { ": expand tools" } else { ": collapse tools" };
     hints.push(Span::styled(tool_hint, Style::default().fg(theme::DIM)));
-    hints.push(dot);
-    hints.push(Span::styled("ctrl+c", Style::default().fg(Color::White)));
-    hints.push(Span::styled(": quit", Style::default().fg(theme::DIM)));
     let right = Line::from(hints);
 
-    let right_width = right.width() as u16;
+    let left_width = left.width() as u16;
     let [left_area, right_area] = Layout::horizontal([
+        Constraint::Length(left_width),
         Constraint::Fill(1),
-        Constraint::Length(right_width),
     ])
     .areas(padded);
 
@@ -119,11 +128,6 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
         Paragraph::new(right).alignment(ratatui::layout::Alignment::Right),
         right_area,
     );
-}
-
-fn cost_estimate(input_tokens: u64, output_tokens: u64) -> f64 {
-    // Rough: $3/M input, $15/M output (Sonnet pricing)
-    (input_tokens as f64 * 3.0 / 1_000_000.0) + (output_tokens as f64 * 15.0 / 1_000_000.0)
 }
 
 fn render_separator(frame: &mut Frame, area: Rect) {

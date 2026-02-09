@@ -17,6 +17,8 @@
 use ratatui::layout::{Constraint, Layout, Rect};
 
 pub struct AppLayout {
+    pub header: Rect,
+    pub header_sep: Rect,
     pub body: Rect,
     pub input_sep: Rect,
     pub permission: Option<Rect>,
@@ -24,17 +26,21 @@ pub struct AppLayout {
     pub footer: Option<Rect>,
 }
 
-pub fn compute(area: Rect, input_lines: u16, permission_height: u16) -> AppLayout {
+pub fn compute(area: Rect, input_lines: u16, permission_height: u16, show_header: bool) -> AppLayout {
     let input_height = input_lines.max(1);
+    let header_height: u16 = if show_header { 1 } else { 0 };
+    let header_sep_height: u16 = if show_header { 1 } else { 0 };
 
-    if area.height < 6 {
-        // Ultra-compact: no separator, no footer, no permission
+    if area.height < 8 {
+        // Ultra-compact: no header, no separator, no footer, no permission
         let [body, input] = Layout::vertical([
             Constraint::Min(1),
             Constraint::Length(input_height),
         ])
         .areas(area);
         AppLayout {
+            header: Rect::new(area.x, area.y, area.width, 0),
+            header_sep: Rect::new(area.x, area.y, area.width, 0),
             body,
             input_sep: Rect::new(area.x, input.y, area.width, 0),
             permission: None,
@@ -42,8 +48,9 @@ pub fn compute(area: Rect, input_lines: u16, permission_height: u16) -> AppLayou
             footer: None,
         }
     } else if permission_height > 0 {
-        // With permission dialog: body, sep, permission, input, spacer, footer
-        let [body, input_sep, permission, input, _spacer, footer] = Layout::vertical([
+        let [header, header_sep, body, input_sep, permission, input, _spacer, footer] = Layout::vertical([
+            Constraint::Length(header_height),
+            Constraint::Length(header_sep_height),
             Constraint::Min(3),
             Constraint::Length(1),
             Constraint::Length(permission_height),
@@ -53,6 +60,8 @@ pub fn compute(area: Rect, input_lines: u16, permission_height: u16) -> AppLayou
         ])
         .areas(area);
         AppLayout {
+            header,
+            header_sep,
             body,
             input_sep,
             permission: Some(permission),
@@ -60,7 +69,9 @@ pub fn compute(area: Rect, input_lines: u16, permission_height: u16) -> AppLayou
             footer: Some(footer),
         }
     } else {
-        let [body, input_sep, input, _spacer, footer] = Layout::vertical([
+        let [header, header_sep, body, input_sep, input, _spacer, footer] = Layout::vertical([
+            Constraint::Length(header_height),
+            Constraint::Length(header_sep_height),
             Constraint::Min(3),
             Constraint::Length(1),
             Constraint::Length(input_height),
@@ -69,6 +80,8 @@ pub fn compute(area: Rect, input_lines: u16, permission_height: u16) -> AppLayou
         ])
         .areas(area);
         AppLayout {
+            header,
+            header_sep,
             body,
             input_sep,
             permission: None,

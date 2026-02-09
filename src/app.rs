@@ -33,6 +33,17 @@ use tokio::sync::mpsc;
 // App state types
 // ---------------------------------------------------------------------------
 
+pub struct ModeInfo {
+    pub id: String,
+    pub name: String,
+}
+
+pub struct ModeState {
+    pub current_mode_id: String,
+    pub current_mode_name: String,
+    pub available_modes: Vec<ModeInfo>,
+}
+
 pub struct App {
     pub messages: Vec<ChatMessage>,
     pub scroll_offset: u16,
@@ -45,7 +56,7 @@ pub struct App {
     pub cwd: String,
     pub cwd_raw: String,
     pub files_accessed: usize,
-    pub tokens_used: (u64, u64),
+    pub mode: Option<ModeState>,
     pub permission_pending: Option<PendingPermission>,
     pub event_tx: mpsc::UnboundedSender<ClientEvent>,
     pub event_rx: mpsc::UnboundedReceiver<ClientEvent>,
@@ -57,6 +68,8 @@ pub struct App {
     pub active_task_ids: Vec<String>,
     /// Shared terminal process map — used to snapshot output on completion.
     pub terminals: crate::acp::client::TerminalMap,
+    /// Force a full terminal clear on next render frame.
+    pub force_redraw: bool,
 }
 
 pub enum AppStatus {
@@ -316,36 +329,143 @@ pub async fn connect(
 
     tracing::info!("Connected to agent: {:?}", init_response);
 
-    // TODO: Detect actual model from session/turn response (see ROADMAP.md)
-    let model_name = "Opus 4.6".to_string();
+    // Helper: authenticate if needed and retry the given async operation.
+    async fn authenticate_and_retry<F, Fut, T>(
+        conn: &acp::ClientSideConnection,
+        init_response: &acp::InitializeResponse,
+        f: F,
+    ) -> anyhow::Result<T>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<T, agent_client_protocol::Error>>,
+    {
+        tracing::info!("Authentication required, triggering auth flow...");
+        let method = init_response.auth_methods.first().ok_or_else(|| {
+            anyhow::anyhow!(
+                "Agent requires authentication but advertised no auth methods.\n\
+                 Try running `claude /login` first."
+            )
+        })?;
+        eprintln!(
+            "Authentication required. Method: {} ({})",
+            method.name,
+            method.description.as_deref().unwrap_or("no description")
+        );
+        conn.authenticate(acp::AuthenticateRequest::new(method.id.clone()))
+            .await?;
+        Ok(f().await?)
+    }
 
-    // Try to create a session. If AuthRequired, authenticate first.
-    let session_id = match conn.new_session(acp::NewSessionRequest::new(&cwd)).await {
-        Ok(resp) => resp.session_id,
-        Err(err) if err.code == acp::ErrorCode::AuthRequired => {
-            tracing::info!("Authentication required, triggering auth flow...");
-
-            let method = init_response.auth_methods.first().ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Agent requires authentication but advertised no auth methods.\n\
-                     Try running `claude /login` first."
-                )
-            })?;
-
-            eprintln!(
-                "Authentication required. Method: {} ({})",
-                method.name,
-                method.description.as_deref().unwrap_or("no description")
-            );
-
-            conn.authenticate(acp::AuthenticateRequest::new(method.id.clone()))
-                .await?;
-
-            let resp = conn.new_session(acp::NewSessionRequest::new(&cwd)).await?;
-            resp.session_id
+    // Create or resume session
+    let (session_id, resp_models, resp_modes) = if let Some(ref sid) = cli.resume {
+        // --resume <session_id>: load existing session
+        eprintln!("Resuming session {}...", sid);
+        let session_id = acp::SessionId::new(sid.as_str());
+        let load_req = acp::LoadSessionRequest::new(session_id.clone(), &cwd);
+        let resp = match conn.load_session(load_req).await {
+            Ok(resp) => resp,
+            Err(err) if err.code == acp::ErrorCode::AuthRequired => {
+                let cwd = cwd.clone();
+                let sid = session_id.clone();
+                authenticate_and_retry(&conn, &init_response, || {
+                    conn.load_session(acp::LoadSessionRequest::new(sid, &cwd))
+                }).await?
+            }
+            Err(err) => return Err(err.into()),
+        };
+        (session_id, resp.models, resp.modes)
+    } else {
+        // New session (with auth retry)
+        match conn.new_session(acp::NewSessionRequest::new(&cwd)).await {
+            Ok(resp) => (resp.session_id, resp.models, resp.modes),
+            Err(err) if err.code == acp::ErrorCode::AuthRequired => {
+                let cwd = cwd.clone();
+                let resp = authenticate_and_retry(&conn, &init_response, || {
+                    conn.new_session(acp::NewSessionRequest::new(&cwd))
+                }).await?;
+                (resp.session_id, resp.models, resp.modes)
+            }
+            Err(err) => return Err(err.into()),
         }
-        Err(err) => return Err(err.into()),
     };
+
+    // Extract model name from session response
+    let mut model_name = resp_models
+        .as_ref()
+        .and_then(|m| {
+            m.available_models
+                .iter()
+                .find(|info| info.model_id == m.current_model_id)
+                .map(|info| info.name.clone())
+        })
+        .unwrap_or_else(|| "Unknown model".to_string());
+
+    // --model override: switch after session creation
+    if let Some(ref model_str) = cli.model {
+        conn.set_session_model(acp::SetSessionModelRequest::new(
+            session_id.clone(),
+            acp::ModelId::new(model_str.as_str()),
+        ))
+        .await?;
+        model_name = model_str.clone();
+    }
+
+    // Extract mode state from session response
+    let mut mode = resp_modes.map(|ms| {
+        let current_id = ms.current_mode_id.to_string();
+        let available: Vec<ModeInfo> = ms
+            .available_modes
+            .iter()
+            .map(|m| ModeInfo {
+                id: m.id.to_string(),
+                name: m.name.clone(),
+            })
+            .collect();
+        let current_name = available
+            .iter()
+            .find(|m| m.id == current_id)
+            .map(|m| m.name.clone())
+            .unwrap_or_else(|| current_id.clone());
+        ModeState {
+            current_mode_id: current_id,
+            current_mode_name: current_name,
+            available_modes: available,
+        }
+    });
+
+    // Log available modes for debugging
+    if let Some(ref m) = mode {
+        tracing::info!("Available modes: {:?}", m.available_modes.iter().map(|m| &m.id).collect::<Vec<_>>());
+        tracing::info!("Current mode: {}", m.current_mode_id);
+    }
+
+    // --yolo: switch to bypass-permissions mode via the adapter
+    if cli.yolo {
+        if let Some(ref m) = mode {
+            // Find a bypass/yolo mode — try common IDs
+            let yolo_mode = m.available_modes.iter().find(|mi| {
+                mi.id == "bypassPermissions" || mi.id == "dontAsk"
+            });
+            if let Some(target) = yolo_mode {
+                let target_id = target.id.clone();
+                let target_name = target.name.clone();
+                let mode_id = acp::SessionModeId::new(target_id.as_str());
+                conn.set_session_mode(acp::SetSessionModeRequest::new(
+                    session_id.clone(),
+                    mode_id,
+                ))
+                .await?;
+                tracing::info!("YOLO: switched to mode '{}'", target_id);
+                // Update local mode state to reflect the switch
+                if let Some(ref mut ms) = mode {
+                    ms.current_mode_id = target_id;
+                    ms.current_mode_name = target_name;
+                }
+            } else {
+                tracing::warn!("YOLO: no bypass-permissions or do-not-ask mode found in available modes");
+            }
+        }
+    }
 
     tracing::info!("Session created: {:?}", session_id);
 
@@ -376,7 +496,7 @@ pub async fn connect(
         cwd_raw: cwd.to_string_lossy().to_string(),
         cwd: cwd_display,
         files_accessed: 0,
-        tokens_used: (0, 0),
+        mode,
         permission_pending: None,
         event_tx,
         event_rx,
@@ -384,6 +504,7 @@ pub async fn connect(
         tools_collapsed: true,
         active_task_ids: Vec::new(),
         terminals: std::rc::Rc::clone(&terminals),
+        force_redraw: false,
     };
 
     Ok((app, conn, child, terminals))
@@ -422,6 +543,10 @@ pub async fn run_tui(
                     app.spinner_frame = app.spinner_frame.wrapping_add(1);
                 }
                 update_terminal_outputs(app);
+                if app.force_redraw {
+                    terminal.clear()?;
+                    app.force_redraw = false;
+                }
                 terminal.draw(|f| crate::ui::render(f, app))?;
             }
         }
@@ -431,6 +556,27 @@ pub async fn run_tui(
         }
     }
 
+    // --- Graceful shutdown ---
+
+    // Dismiss any pending permission dialog (reject)
+    if let Some(pending) = app.permission_pending.take() {
+        if let Some(last_opt) = pending.request.options.last() {
+            let _ = pending.response_tx.send(acp::RequestPermissionResponse::new(
+                acp::RequestPermissionOutcome::Selected(
+                    acp::SelectedPermissionOutcome::new(last_opt.option_id.clone()),
+                ),
+            ));
+        }
+    }
+
+    // Cancel any active turn and give the adapter a moment to clean up
+    if matches!(app.status, AppStatus::Thinking | AppStatus::Running(_)) {
+        if let Some(sid) = app.session_id.clone() {
+            let _ = conn.cancel(acp::CancelNotification::new(sid)).await;
+        }
+    }
+
+    // Restore terminal
     let _ = crossterm::execute!(
         std::io::stdout(),
         crossterm::event::DisableBracketedPaste,
@@ -526,17 +672,8 @@ fn handle_normal_key(
     key: KeyEvent,
 ) {
     match (key.code, key.modifiers) {
-        // Ctrl+C: cancel if active, otherwise quit
+        // Ctrl+C: quit (graceful shutdown handles cancel + cleanup)
         (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL) => {
-            if matches!(app.status, AppStatus::Thinking | AppStatus::Running(_)) {
-                // Cancel the active turn first, then quit
-                if let Some(sid) = app.session_id.clone() {
-                    let conn = Rc::clone(conn);
-                    tokio::task::spawn_local(async move {
-                        let _ = conn.cancel(acp::CancelNotification::new(sid)).await;
-                    });
-                }
-            }
             app.should_quit = true;
         }
         // Esc: cancel current turn if thinking/running
@@ -580,6 +717,51 @@ fn handle_normal_key(
         // Ctrl+O: toggle expand/collapse on all tool calls
         (KeyCode::Char('o'), m) if m.contains(KeyModifiers::CONTROL) => {
             toggle_all_tool_calls(app);
+        }
+        // Ctrl+L: force full terminal redraw
+        (KeyCode::Char('l'), m) if m.contains(KeyModifiers::CONTROL) => {
+            app.force_redraw = true;
+        }
+        // Shift+Tab: cycle session mode
+        (KeyCode::BackTab, _) => {
+            if let Some(ref mode) = app.mode {
+                if mode.available_modes.len() > 1 {
+                    let current_idx = mode
+                        .available_modes
+                        .iter()
+                        .position(|m| m.id == mode.current_mode_id)
+                        .unwrap_or(0);
+                    let next_idx = (current_idx + 1) % mode.available_modes.len();
+                    let next = &mode.available_modes[next_idx];
+
+                    // Fire-and-forget mode switch
+                    if let Some(sid) = app.session_id.clone() {
+                        let mode_id = acp::SessionModeId::new(next.id.as_str());
+                        let conn = Rc::clone(conn);
+                        tokio::task::spawn_local(async move {
+                            if let Err(e) = conn
+                                .set_session_mode(acp::SetSessionModeRequest::new(sid, mode_id))
+                                .await
+                            {
+                                tracing::error!("Failed to set mode: {e}");
+                            }
+                        });
+                    }
+
+                    // Optimistic UI update (CurrentModeUpdate will confirm)
+                    let next_id = next.id.clone();
+                    let next_name = next.name.clone();
+                    let modes = mode.available_modes.iter().map(|m| ModeInfo {
+                        id: m.id.clone(),
+                        name: m.name.clone(),
+                    }).collect();
+                    app.mode = Some(ModeState {
+                        current_mode_id: next_id,
+                        current_mode_name: next_name,
+                        available_modes: modes,
+                    });
+                }
+            }
         }
         // Editing
         (KeyCode::Backspace, _) => app.input.delete_char_before(),
@@ -703,6 +885,7 @@ fn submit_input(app: &mut App, conn: &Rc<acp::ClientSideConnection>) {
             .await
         {
             Ok(resp) => {
+                tracing::debug!("PromptResponse: stop_reason={:?}", resp.stop_reason);
                 let _ = tx.send(ClientEvent::TurnComplete {
                     stop_reason: resp.stop_reason,
                 });
@@ -766,7 +949,25 @@ fn shorten_tool_title(title: &str, cwd_raw: &str) -> String {
     title_norm.replace(&cwd_norm, "")
 }
 
+/// Return a human-readable name for a SessionUpdate variant (for debug logging).
+fn session_update_name(update: &acp::SessionUpdate) -> &'static str {
+    match update {
+        acp::SessionUpdate::AgentMessageChunk(_) => "AgentMessageChunk",
+        acp::SessionUpdate::ToolCall(_) => "ToolCall",
+        acp::SessionUpdate::ToolCallUpdate(_) => "ToolCallUpdate",
+        acp::SessionUpdate::UserMessageChunk(_) => "UserMessageChunk",
+        acp::SessionUpdate::AgentThoughtChunk(_) => "AgentThoughtChunk",
+        acp::SessionUpdate::Plan(_) => "Plan",
+        acp::SessionUpdate::AvailableCommandsUpdate(_) => "AvailableCommandsUpdate",
+        acp::SessionUpdate::CurrentModeUpdate(_) => "CurrentModeUpdate",
+        acp::SessionUpdate::ConfigOptionUpdate(_) => "ConfigOptionUpdate",
+        acp::SessionUpdate::UsageUpdate(_) => "UsageUpdate",
+        _ => "Unknown",
+    }
+}
+
 fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
+    tracing::debug!("SessionUpdate variant: {}", session_update_name(&update));
     match update {
         acp::SessionUpdate::AgentMessageChunk(chunk) => {
             if let acp::ContentBlock::Text(text) = chunk.content {
@@ -917,6 +1118,38 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
             }
             tracing::warn!("ToolCallUpdate: id={id_str} not found in any message");
         }
-        _ => {}
+        acp::SessionUpdate::UserMessageChunk(_) => {
+            // Our own message echoed back — we already display it
+        }
+        acp::SessionUpdate::AgentThoughtChunk(chunk) => {
+            tracing::debug!("Agent thought: {:?}", chunk);
+        }
+        acp::SessionUpdate::Plan(plan) => {
+            tracing::debug!("Plan update: {:?}", plan);
+        }
+        acp::SessionUpdate::AvailableCommandsUpdate(cmds) => {
+            tracing::debug!("Available commands: {} commands", cmds.available_commands.len());
+        }
+        acp::SessionUpdate::CurrentModeUpdate(update) => {
+            if let Some(ref mut mode) = app.mode {
+                let mode_id = update.current_mode_id.to_string();
+                if let Some(info) = mode.available_modes.iter().find(|m| m.id == mode_id) {
+                    mode.current_mode_name = info.name.clone();
+                    mode.current_mode_id = mode_id;
+                } else {
+                    mode.current_mode_name = mode_id.clone();
+                    mode.current_mode_id = mode_id;
+                }
+            }
+        }
+        acp::SessionUpdate::ConfigOptionUpdate(config) => {
+            tracing::debug!("Config update: {:?}", config);
+        }
+        acp::SessionUpdate::UsageUpdate(usage) => {
+            tracing::debug!("UsageUpdate: used={} size={} cost={:?}", usage.used, usage.size, usage.cost);
+        }
+        _ => {
+            tracing::debug!("Unhandled session update");
+        }
     }
 }

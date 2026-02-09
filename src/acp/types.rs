@@ -25,6 +25,7 @@ pub use agent_client_protocol::{
     Agent,
     // Session management
     NewSessionRequest, NewSessionResponse, SessionId,
+    LoadSessionRequest, LoadSessionResponse,
     // Prompting
     PromptRequest, PromptResponse, ContentBlock, TextContent, StopReason,
     // Streaming updates
@@ -52,4 +53,18 @@ pub use agent_client_protocol::{
     ProtocolVersion,
     // Terminal exit
     TerminalExitStatus,
+    // Session models (unstable_session_model)
+    ModelId, SessionModelState, ModelInfo,
+    SetSessionModelRequest, SetSessionModelResponse,
+    // Session modes
+    SessionModeState, SessionMode, SessionModeId,
+    SetSessionModeRequest, SetSessionModeResponse,
+    // Session usage (unstable_session_usage) — logged only, not displayed yet
+    UsageUpdate, Cost,
+    // Session notifications
+    CurrentModeUpdate,
+    // Cancel
+    CancelNotification,
+    // Error codes
+    ErrorCode,
 };

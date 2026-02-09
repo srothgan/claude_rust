@@ -28,9 +28,9 @@ pub struct Cli {
     #[arg(long, short)]
     model: Option<String>,
 
-    /// Resume the last session
+    /// Resume a previous session by ID
     #[arg(long)]
-    resume: bool,
+    resume: Option<String>,
 
     /// Auto-approve all tool calls (dangerous)
     #[arg(long)]
