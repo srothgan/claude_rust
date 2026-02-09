@@ -44,9 +44,17 @@ pub struct Cli {
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
+    // Write tracing logs to debug.log file so they don't corrupt the TUI.
+    // Activate by setting RUST_LOG env var (e.g. RUST_LOG=debug).
+    if std::env::var("RUST_LOG").is_ok() {
+        let log_file = std::fs::File::create("debug.log")
+            .expect("Failed to create debug.log");
+        tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .with_writer(log_file)
+            .with_ansi(false)
+            .init();
+    }
 
     let npx_path = which::which("npx")
         .map_err(|_| anyhow::anyhow!("Node.js/npx not found in PATH. Install Node.js first."))?;

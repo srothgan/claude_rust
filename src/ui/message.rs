@@ -99,11 +99,15 @@ pub fn render_message(msg: &ChatMessage, app: &App) -> Text<'static> {
                         prev_was_tool = false;
                     }
                     MessageBlock::ToolCall(tc) => {
+                        // Skip hidden tool calls (subagent children)
+                        if tc.hidden {
+                            continue;
+                        }
                         // Add half-spacing when transitioning from text to tools
                         if !prev_was_tool && lines.len() > 1 {
                             lines.push(Line::default());
                         }
-                        lines.push(render_tool_call(tc));
+                        lines.extend(render_tool_call(tc));
                         prev_was_tool = true;
                     }
                 }
@@ -132,7 +136,7 @@ pub fn render_message(msg: &ChatMessage, app: &App) -> Text<'static> {
     Text::from(lines)
 }
 
-fn render_tool_call(tc: &ToolCallInfo) -> Line<'static> {
+fn render_tool_call(tc: &ToolCallInfo) -> Vec<Line<'static>> {
     let (icon, icon_color) = match tc.status {
         acp::ToolCallStatus::Pending => (theme::ICON_PENDING, theme::DIM),
         acp::ToolCallStatus::InProgress => (theme::ICON_RUNNING, theme::RUST_ORANGE),
@@ -141,9 +145,9 @@ fn render_tool_call(tc: &ToolCallInfo) -> Line<'static> {
         _ => ("?", theme::DIM),
     };
 
-    let (kind_icon, kind_name) = theme::tool_kind_label(tc.kind);
+    let (kind_icon, kind_name) = theme::tool_kind_label(tc.kind, tc.claude_tool_name.as_deref());
 
-    let mut spans = vec![
+    let mut title_spans = vec![
         Span::styled(format!("  {icon} "), Style::default().fg(icon_color)),
         Span::styled(
             format!("{kind_icon} "),
@@ -163,9 +167,199 @@ fn render_tool_call(tc: &ToolCallInfo) -> Line<'static> {
     let rendered = tui_markdown::from_str(&tc.title);
     if let Some(first_line) = rendered.lines.into_iter().next() {
         for span in first_line.spans {
-            spans.push(Span::styled(span.content.into_owned(), span.style));
+            title_spans.push(Span::styled(span.content.into_owned(), span.style));
         }
     }
 
-    Line::from(spans)
+    let mut lines = vec![Line::from(title_spans)];
+
+    // Content area below the title with corner bracket prefix
+    let pipe_style = Style::default().fg(theme::DIM);
+
+    if tc.content.is_empty() {
+        return lines;
+    }
+
+    // Diffs (Edit tool) are always shown — user needs to see changes
+    let has_diff = tc.content.iter().any(|c| matches!(c, acp::ToolCallContent::Diff(_)));
+
+    if tc.collapsed && !has_diff {
+        // Collapsed: show summary + ctrl+o hint
+        let summary = content_summary(tc);
+        lines.push(Line::from(vec![
+            Span::styled("  \u{2514}\u{2500} ", pipe_style),
+            Span::styled(summary, Style::default().fg(theme::DIM)),
+            Span::styled("  ctrl+o to expand", Style::default().fg(theme::DIM)),
+        ]));
+    } else {
+        // Expanded: render full content with │ prefix on each line
+        let content_lines = render_tool_content(tc);
+        let last_idx = content_lines.len().saturating_sub(1);
+        for (i, content_line) in content_lines.into_iter().enumerate() {
+            let prefix = if i == last_idx {
+                "  \u{2514}\u{2500} " // └─
+            } else {
+                "  \u{2502}  "         // │
+            };
+            let mut spans = vec![Span::styled(prefix.to_string(), pipe_style)];
+            spans.extend(content_line.spans);
+            lines.push(Line::from(spans));
+        }
+    }
+
+    lines
+}
+
+/// One-line summary for collapsed tool calls.
+fn content_summary(tc: &ToolCallInfo) -> String {
+    for content in &tc.content {
+        match content {
+            acp::ToolCallContent::Diff(diff) => {
+                let name = diff.path
+                    .file_name()
+                    .map(|f| f.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| diff.path.to_string_lossy().into_owned());
+                return name;
+            }
+            acp::ToolCallContent::Content(c) => {
+                if let acp::ContentBlock::Text(text) = &c.content {
+                    let stripped = strip_outer_code_fence(&text.text);
+                    let first = stripped.lines().next().unwrap_or("");
+                    return if first.len() > 60 {
+                        format!("{}...", &first[..57])
+                    } else {
+                        first.to_string()
+                    };
+                }
+            }
+            acp::ToolCallContent::Terminal(term) => {
+                return format!("terminal {}", term.terminal_id);
+            }
+            _ => {}
+        }
+    }
+    String::new()
+}
+
+/// Render the full content of a tool call as lines.
+fn render_tool_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+
+    for content in &tc.content {
+        match content {
+            acp::ToolCallContent::Diff(diff) => {
+                lines.extend(render_diff(diff));
+            }
+            acp::ToolCallContent::Content(c) => {
+                if let acp::ContentBlock::Text(text) = &c.content {
+                    let stripped = strip_outer_code_fence(&text.text);
+                    let md_source = if is_markdown_file(&tc.title) {
+                        // Render markdown files as-is
+                        stripped
+                    } else {
+                        // Wrap code files in a fenced block for syntax highlighting
+                        let lang = lang_from_title(&tc.title);
+                        format!("```{lang}\n{stripped}\n```")
+                    };
+                    let rendered = tui_markdown::from_str(&md_source);
+                    for line in rendered.lines {
+                        let owned: Vec<Span<'static>> = line
+                            .spans
+                            .into_iter()
+                            .map(|s| Span::styled(s.content.into_owned(), s.style))
+                            .collect();
+                        lines.push(Line::from(owned));
+                    }
+                }
+            }
+            acp::ToolCallContent::Terminal(term) => {
+                lines.push(Line::from(Span::styled(
+                    format!("terminal {}", term.terminal_id),
+                    Style::default().fg(theme::DIM),
+                )));
+            }
+            _ => {}
+        }
+    }
+
+    lines
+}
+
+/// Check if a tool call title references a markdown file.
+fn is_markdown_file(title: &str) -> bool {
+    let lower = title.to_lowercase();
+    lower.ends_with(".md") || lower.ends_with(".mdx") || lower.ends_with(".markdown")
+}
+
+/// Extract a language tag from the file extension in a tool call title.
+/// Returns the raw extension (e.g. "rs", "py", "toml") which syntect
+/// can resolve to the correct syntax definition. Falls back to empty string.
+fn lang_from_title(title: &str) -> String {
+    // Title may be "src/main.rs" or "Read src/main.rs" — find last path-like token
+    title
+        .split_whitespace()
+        .rev()
+        .find_map(|token| {
+            let ext = token.rsplit('.').next()?;
+            // Ignore if the "extension" is the whole token (no dot found)
+            if ext.len() < token.len() { Some(ext.to_lowercase()) } else { None }
+        })
+        .unwrap_or_default()
+}
+
+/// Strip an outer markdown code fence if the text is entirely wrapped in one.
+/// The ACP adapter often wraps file contents in ``` fences.
+fn strip_outer_code_fence(text: &str) -> String {
+    let trimmed = text.trim();
+    if trimmed.starts_with("```") {
+        // Find end of first line (the opening fence, possibly with a language tag)
+        if let Some(first_newline) = trimmed.find('\n') {
+            let after_opening = &trimmed[first_newline + 1..];
+            // Check if it ends with a closing fence
+            if let Some(body) = after_opening.strip_suffix("```") {
+                return body.trim_end().to_string();
+            }
+            // Also handle closing fence followed by newline
+            let after_trimmed = after_opening.trim_end();
+            if after_trimmed.ends_with("```") {
+                return after_trimmed[..after_trimmed.len() - 3].trim_end().to_string();
+            }
+        }
+    }
+    text.to_string()
+}
+
+/// Render a diff with green/red coloring and +/- prefixes.
+/// The ACP Diff struct provides old_text/new_text, not a unified diff string.
+/// We generate a simple line-based diff from those.
+fn render_diff(diff: &acp::Diff) -> Vec<Line<'static>> {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+
+    // File path header
+    let name = diff.path
+        .file_name()
+        .map(|f| f.to_string_lossy().into_owned())
+        .unwrap_or_else(|| diff.path.to_string_lossy().into_owned());
+    lines.push(Line::from(Span::styled(
+        name,
+        Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+    )));
+
+    // Show removed lines from old_text (if any) then added lines from new_text
+    if let Some(old) = &diff.old_text {
+        for old_line in old.lines() {
+            lines.push(Line::from(Span::styled(
+                format!("- {old_line}"),
+                Style::default().fg(Color::Red),
+            )));
+        }
+    }
+    for new_line in diff.new_text.lines() {
+        lines.push(Line::from(Span::styled(
+            format!("+ {new_line}"),
+            Style::default().fg(Color::Green),
+        )));
+    }
+
+    lines
 }

@@ -68,7 +68,21 @@ pub fn model_color(name: &str) -> Color {
 }
 
 /// Tool kind icon + label pair. Monochrome Unicode symbols.
-pub fn tool_kind_label(kind: agent_client_protocol::ToolKind) -> (&'static str, &'static str) {
+/// If `claude_tool_name` is provided, override icon/label for specific tools.
+pub fn tool_kind_label(
+    kind: agent_client_protocol::ToolKind,
+    claude_tool_name: Option<&str>,
+) -> (&'static str, &'static str) {
+    // Override for specific Claude Code tool names
+    if let Some(name) = claude_tool_name {
+        match name {
+            "Task" => return ("◇", "Agent"),
+            "WebSearch" => return ("⊕", "Search"),
+            "WebFetch" => return ("⊕", "Fetch"),
+            _ => {}
+        }
+    }
+
     use agent_client_protocol::ToolKind;
     match kind {
         ToolKind::Read => ("⬚", "Read"),
@@ -78,8 +92,8 @@ pub fn tool_kind_label(kind: agent_client_protocol::ToolKind) -> (&'static str, 
         ToolKind::Search => ("⌕", "Find"),
         ToolKind::Execute => ("⟩", "Bash"),
         ToolKind::Think => ("❖", "Think"),
-        ToolKind::Fetch => ("↯", "Fetch"),
-        ToolKind::SwitchMode => ("⊕", "Mode"),
+        ToolKind::Fetch => ("⊕", "Fetch"),
+        ToolKind::SwitchMode => ("⊙", "Mode"),
         _ => ("○", "Tool"),
     }
 }
