@@ -171,7 +171,19 @@ const TERMINAL_MAX_LINES: usize = 12;
 
 /// Render inline permission options on a single compact line.
 /// Format: `▸ ✓ Allow once (y)  ·  ✓ Allow always (a)  ·  ✗ Reject (n)`
+/// Unfocused permissions are dimmed to indicate they don't have keyboard input.
 fn render_permission_lines(perm: &InlinePermission) -> Vec<Line<'static>> {
+    // Unfocused permissions: show a dimmed "waiting for focus" line
+    if !perm.focused {
+        return vec![
+            Line::default(),
+            Line::from(Span::styled(
+                "  \u{25cb} Waiting for input\u{2026} (\u{2191}\u{2193} to focus)",
+                Style::default().fg(theme::DIM),
+            )),
+        ];
+    }
+
     let mut spans: Vec<Span<'static>> = Vec::new();
     let dot = Span::styled("  \u{00b7}  ", Style::default().fg(theme::DIM));
 
@@ -231,7 +243,7 @@ fn render_permission_lines(perm: &InlinePermission) -> Vec<Line<'static>> {
         Line::default(),
         Line::from(spans),
         Line::from(Span::styled(
-            "\u{2190}\u{2192} select  enter confirm  esc reject",
+            "\u{2190}\u{2192} select  \u{2191}\u{2193} next  enter confirm  esc reject",
             Style::default().fg(theme::DIM),
         )),
     ]

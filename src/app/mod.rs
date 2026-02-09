@@ -257,7 +257,7 @@ pub async fn connect(
         cwd: cwd_display,
         files_accessed: 0,
         mode,
-        permission_pending_tool_id: None,
+        pending_permission_ids: Vec::new(),
         event_tx,
         event_rx,
         spinner_frame: 0,
@@ -316,20 +316,23 @@ pub async fn run_tui(app: &mut App, conn: Rc<acp::ClientSideConnection>) -> anyh
 
     // --- Graceful shutdown ---
 
-    // Dismiss any pending inline permission (reject via last option)
-    if app.permission_pending_tool_id.is_some() {
-        if let Some(tc) = get_pending_permission_tc(app) {
-            if let Some(pending) = tc.pending_permission.take() {
-                if let Some(last_opt) = pending.options.last() {
-                    let _ = pending.response_tx.send(acp::RequestPermissionResponse::new(
-                        acp::RequestPermissionOutcome::Selected(
-                            acp::SelectedPermissionOutcome::new(last_opt.option_id.clone()),
-                        ),
-                    ));
+    // Dismiss all pending inline permissions (reject via last option)
+    for tool_id in std::mem::take(&mut app.pending_permission_ids) {
+        if let Some((mi, bi)) = app.tool_call_index.get(&tool_id).copied() {
+            if let Some(MessageBlock::ToolCall(tc)) =
+                app.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
+            {
+                if let Some(pending) = tc.pending_permission.take() {
+                    if let Some(last_opt) = pending.options.last() {
+                        let _ = pending.response_tx.send(acp::RequestPermissionResponse::new(
+                            acp::RequestPermissionOutcome::Selected(
+                                acp::SelectedPermissionOutcome::new(last_opt.option_id.clone()),
+                            ),
+                        ));
+                    }
                 }
             }
         }
-        app.permission_pending_tool_id = None;
     }
 
     // Cancel any active turn and give the adapter a moment to clean up
@@ -395,7 +398,7 @@ fn update_terminal_outputs(app: &mut App) {
 fn handle_terminal_event(app: &mut App, conn: &Rc<acp::ClientSideConnection>, event: Event) {
     match event {
         Event::Key(key) if key.kind == KeyEventKind::Press => {
-            if app.permission_pending_tool_id.is_some() {
+            if !app.pending_permission_ids.is_empty() {
                 handle_permission_key(app, key);
             } else {
                 handle_normal_key(app, conn, key);
@@ -534,10 +537,11 @@ fn handle_normal_key(app: &mut App, conn: &Rc<acp::ClientSideConnection>, key: K
     }
 }
 
-/// Look up the tool call that currently has a pending permission.
+/// Look up the tool call that currently has keyboard focus for its permission.
+/// This is the first entry in `pending_permission_ids`.
 /// Returns mutable reference to its `ToolCallInfo`.
-fn get_pending_permission_tc(app: &mut App) -> Option<&mut ToolCallInfo> {
-    let tool_id = app.permission_pending_tool_id.as_ref()?;
+fn get_focused_permission_tc(app: &mut App) -> Option<&mut ToolCallInfo> {
+    let tool_id = app.pending_permission_ids.first()?;
     let (mi, bi) = app.tool_call_index.get(tool_id).copied()?;
     match app.messages.get_mut(mi)?.blocks.get_mut(bi)? {
         MessageBlock::ToolCall(tc) if tc.pending_permission.is_some() => Some(tc),
@@ -545,15 +549,54 @@ fn get_pending_permission_tc(app: &mut App) -> Option<&mut ToolCallInfo> {
     }
 }
 
+/// Set the `focused` flag on a permission at the given index in `pending_permission_ids`.
+/// Also invalidates the tool call's render cache.
+fn set_permission_focused(app: &mut App, queue_index: usize, focused: bool) {
+    let Some(tool_id) = app.pending_permission_ids.get(queue_index) else {
+        return;
+    };
+    let Some((mi, bi)) = app.tool_call_index.get(tool_id).copied() else {
+        return;
+    };
+    if let Some(MessageBlock::ToolCall(tc)) =
+        app.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
+    {
+        if let Some(ref mut perm) = tc.pending_permission {
+            perm.focused = focused;
+        }
+        tc.cache.invalidate();
+    }
+}
+
 fn handle_permission_key(app: &mut App, key: KeyEvent) {
-    let option_count = get_pending_permission_tc(app)
+    let option_count = get_focused_permission_tc(app)
         .and_then(|tc| tc.pending_permission.as_ref())
         .map(|p| p.options.len())
         .unwrap_or(0);
 
     match key.code {
+        // Up / Down: cycle focus between pending permissions
+        KeyCode::Up | KeyCode::Down if app.pending_permission_ids.len() > 1 => {
+            // Unfocus the current (first) permission
+            set_permission_focused(app, 0, false);
+
+            if key.code == KeyCode::Down {
+                // Move first to end (rotate forward)
+                let first = app.pending_permission_ids.remove(0);
+                app.pending_permission_ids.push(first);
+            } else {
+                // Move last to front (rotate backward)
+                let last = app.pending_permission_ids.pop().unwrap();
+                app.pending_permission_ids.insert(0, last);
+            }
+
+            // Focus the new first permission
+            set_permission_focused(app, 0, true);
+            // Scroll to the newly focused permission's tool call
+            app.auto_scroll = true;
+        }
         KeyCode::Left => {
-            if let Some(tc) = get_pending_permission_tc(app) {
+            if let Some(tc) = get_focused_permission_tc(app) {
                 if let Some(ref mut p) = tc.pending_permission {
                     p.selected_index = p.selected_index.saturating_sub(1);
                     tc.cache.invalidate();
@@ -561,7 +604,7 @@ fn handle_permission_key(app: &mut App, key: KeyEvent) {
             }
         }
         KeyCode::Right => {
-            if let Some(tc) = get_pending_permission_tc(app) {
+            if let Some(tc) = get_focused_permission_tc(app) {
                 if let Some(ref mut p) = tc.pending_permission {
                     if p.selected_index + 1 < option_count {
                         p.selected_index += 1;
@@ -596,10 +639,12 @@ fn handle_permission_key(app: &mut App, key: KeyEvent) {
 }
 
 fn respond_permission(app: &mut App, override_index: Option<usize>) {
-    let tool_id = match app.permission_pending_tool_id.take() {
-        Some(id) => id,
-        None => return,
-    };
+    if app.pending_permission_ids.is_empty() {
+        return;
+    }
+    // Remove the focused (first) permission from the queue.
+    let tool_id = app.pending_permission_ids.remove(0);
+
     let Some((mi, bi)) = app.tool_call_index.get(&tool_id).copied() else {
         return;
     };
@@ -623,6 +668,9 @@ fn respond_permission(app: &mut App, override_index: Option<usize>) {
         }
         tc.cache.invalidate();
     }
+
+    // Focus the next permission in the queue (now at index 0), if any.
+    set_permission_focused(app, 0, true);
 }
 
 /// Toggle the session-level collapsed preference and apply to all tool calls.
@@ -700,13 +748,15 @@ fn handle_acp_event(app: &mut App, event: ClientEvent) {
                 if let Some(MessageBlock::ToolCall(tc)) =
                     app.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
                 {
+                    let is_first = app.pending_permission_ids.is_empty();
                     tc.pending_permission = Some(InlinePermission {
                         options: request.options,
                         response_tx,
                         selected_index: 0,
+                        focused: is_first,
                     });
                     tc.cache.invalidate();
-                    app.permission_pending_tool_id = Some(tool_id);
+                    app.pending_permission_ids.push(tool_id);
                     app.auto_scroll = true;
                 }
             } else {
@@ -806,8 +856,9 @@ fn handle_tool_call(app: &mut App, tc: acp::ToolCall) {
 
     let is_task = claude_tool_name.as_deref() == Some("Task");
 
-    // If a Task is active and this is NOT itself a Task, it's a subagent child — hide it
-    let hidden = !is_task && app.has_active_tasks();
+    // Subagent children are never hidden — they need to be visible so
+    // permission prompts render and the user can interact with them.
+    let hidden = false;
 
     // Track new Task tool calls as active subagents
     if is_task {

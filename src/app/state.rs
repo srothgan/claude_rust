@@ -47,9 +47,10 @@ pub struct App {
     pub cwd_raw: String,
     pub files_accessed: usize,
     pub mode: Option<ModeState>,
-    /// ID of the tool call that currently has a pending permission prompt.
-    /// Used for keyboard routing — only one permission can be active at a time.
-    pub permission_pending_tool_id: Option<String>,
+    /// Tool call IDs with pending permission prompts, ordered by arrival.
+    /// The first entry is the "focused" permission that receives keyboard input.
+    /// Up / Down arrow keys cycle focus through the list.
+    pub pending_permission_ids: Vec<String>,
     pub event_tx: mpsc::UnboundedSender<ClientEvent>,
     pub event_rx: mpsc::UnboundedReceiver<ClientEvent>,
     pub spinner_frame: usize,
@@ -69,12 +70,6 @@ pub struct App {
 }
 
 impl App {
-    /// Returns true if any Task tool calls are currently in-progress.
-    #[must_use]
-    pub fn has_active_tasks(&self) -> bool {
-        !self.active_task_ids.is_empty()
-    }
-
     /// Track a Task tool call as active (in-progress subagent).
     pub fn insert_active_task(&mut self, id: String) {
         self.active_task_ids.insert(id);
@@ -189,4 +184,8 @@ pub struct InlinePermission {
     pub options: Vec<acp::PermissionOption>,
     pub response_tx: tokio::sync::oneshot::Sender<acp::RequestPermissionResponse>,
     pub selected_index: usize,
+    /// Whether this permission currently has keyboard focus.
+    /// When multiple permissions are pending, only the focused one
+    /// shows the selection arrow and accepts Left/Right/Enter input.
+    pub focused: bool,
 }
