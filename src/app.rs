@@ -70,9 +70,24 @@ pub struct ChatMessage {
     pub timestamp: Instant,
 }
 
+/// Cached rendered lines for a block. Stores a version counter so the cache
+/// is only recomputed when the block content actually changes.
+#[derive(Default)]
+pub struct BlockCache {
+    pub version: u64,
+    pub lines: Option<Vec<ratatui::text::Line<'static>>>,
+}
+
+impl BlockCache {
+    /// Bump the version to invalidate cached lines.
+    pub fn invalidate(&mut self) {
+        self.version += 1;
+    }
+}
+
 /// Ordered content block — text and tool calls interleaved as they arrive.
 pub enum MessageBlock {
-    Text(String),
+    Text(String, BlockCache),
     ToolCall(ToolCallInfo),
 }
 
@@ -94,6 +109,8 @@ pub struct ToolCallInfo {
     pub claude_tool_name: Option<String>,
     /// Hidden tool calls are subagent children — not rendered directly.
     pub hidden: bool,
+    /// Per-block render cache for this tool call.
+    pub cache: BlockCache,
 }
 
 pub struct PendingPermission {
@@ -596,6 +613,7 @@ fn toggle_all_tool_calls(app: &mut App) {
         for block in &mut msg.blocks {
             if let MessageBlock::ToolCall(tc) = block {
                 tc.collapsed = app.tools_collapsed;
+                tc.cache.invalidate();
             }
         }
     }
@@ -613,7 +631,7 @@ fn submit_input(app: &mut App, conn: &Rc<acp::ClientSideConnection>) {
 
     app.messages.push(ChatMessage {
         role: MessageRole::User,
-        blocks: vec![MessageBlock::Text(text.clone())],
+        blocks: vec![MessageBlock::Text(text.clone(), BlockCache::default())],
         timestamp: Instant::now(),
     });
     // Create empty assistant message immediately — message.rs shows thinking indicator
@@ -710,17 +728,18 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
                 if let Some(last) = app.messages.last_mut() {
                     if matches!(last.role, MessageRole::Assistant) {
                         // Append to last Text block if it exists, else push new one
-                        if let Some(MessageBlock::Text(t)) = last.blocks.last_mut() {
+                        if let Some(MessageBlock::Text(t, cache)) = last.blocks.last_mut() {
                             t.push_str(&text.text);
+                            cache.invalidate();
                         } else {
-                            last.blocks.push(MessageBlock::Text(text.text.clone()));
+                            last.blocks.push(MessageBlock::Text(text.text.clone(), BlockCache::default()));
                         }
                         return;
                     }
                 }
                 app.messages.push(ChatMessage {
                     role: MessageRole::Assistant,
-                    blocks: vec![MessageBlock::Text(text.text.clone())],
+                    blocks: vec![MessageBlock::Text(text.text.clone(), BlockCache::default())],
                     timestamp: Instant::now(),
                 });
             }
@@ -758,6 +777,7 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
                 collapsed: app.tools_collapsed,
                 claude_tool_name,
                 hidden,
+                cache: BlockCache::default(),
             };
 
             // Attach to current assistant message — update existing or add new
@@ -773,6 +793,7 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
                                 existing.content = tool_info.content.clone();
                                 existing.kind = tool_info.kind;
                                 existing.claude_tool_name = tool_info.claude_tool_name.clone();
+                                existing.cache.invalidate();
                                 found = true;
                                 break;
                             }
@@ -827,6 +848,7 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
                             ) {
                                 tc.collapsed = app.tools_collapsed;
                             }
+                            tc.cache.invalidate();
                             return;
                         }
                     }
