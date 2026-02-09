@@ -18,6 +18,9 @@ use agent_client_protocol::{self as acp};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::rc::Rc;
+use std::sync::{Arc, Mutex};
+use tokio::io::AsyncReadExt;
 use tokio::sync::mpsc;
 
 /// Convert an `std::io::Error` into an `acp::Error` with the appropriate JSON-RPC
@@ -43,15 +46,44 @@ pub enum ClientEvent {
     TurnError(String),
 }
 
+/// Shared handle to all spawned terminal processes.
+/// Kept accessible so the app can kill them on exit.
+pub type TerminalMap = Rc<RefCell<HashMap<String, TerminalProcess>>>;
+
 pub struct ClaudeClient {
     event_tx: mpsc::UnboundedSender<ClientEvent>,
     auto_approve: bool,
-    terminals: RefCell<HashMap<String, TerminalProcess>>,
+    terminals: TerminalMap,
     cwd: PathBuf,
 }
 
-struct TerminalProcess {
+pub(crate) struct TerminalProcess {
     child: tokio::process::Child,
+    /// Accumulated stdout+stderr — append-only, never cleared.
+    /// Shared with background reader tasks via Arc.
+    pub(crate) output_buffer: Arc<Mutex<Vec<u8>>>,
+    /// Byte offset: how much of output_buffer has already been returned
+    /// by `terminal_output` polls. Only the adapter advances this.
+    output_cursor: usize,
+    /// The shell command that was executed (e.g. "echo hello && ls -la").
+    pub(crate) command: String,
+}
+
+/// Spawn a background task that reads from an async reader into a shared buffer.
+fn spawn_output_reader(
+    mut reader: impl tokio::io::AsyncRead + Unpin + 'static,
+    buffer: Arc<Mutex<Vec<u8>>>,
+) {
+    tokio::task::spawn_local(async move {
+        let mut chunk = [0u8; 4096];
+        loop {
+            match reader.read(&mut chunk).await {
+                Ok(0) => break,
+                Ok(n) => buffer.lock().unwrap().extend_from_slice(&chunk[..n]),
+                Err(_) => break,
+            }
+        }
+    });
 }
 
 impl ClaudeClient {
@@ -59,14 +91,28 @@ impl ClaudeClient {
         event_tx: mpsc::UnboundedSender<ClientEvent>,
         auto_approve: bool,
         cwd: PathBuf,
-    ) -> Self {
-        Self {
-            event_tx,
-            auto_approve,
-            terminals: RefCell::new(HashMap::new()),
-            cwd,
-        }
+    ) -> (Self, TerminalMap) {
+        let terminals = Rc::new(RefCell::new(HashMap::new()));
+        (
+            Self {
+                event_tx,
+                auto_approve,
+                terminals: Rc::clone(&terminals),
+                cwd,
+            },
+            terminals,
+        )
     }
+}
+
+/// Kill all spawned terminal child processes. Call on app exit.
+pub fn kill_all_terminals(terminals: &TerminalMap) {
+    let mut map = terminals.borrow_mut();
+    for (_, terminal) in map.iter_mut() {
+        // start_kill is synchronous — sends the kill signal without awaiting
+        let _ = terminal.child.start_kill();
+    }
+    map.clear();
 }
 
 #[async_trait::async_trait(?Send)]
@@ -169,20 +215,54 @@ impl acp::Client for ClaudeClient {
     ) -> acp::Result<acp::CreateTerminalResponse> {
         let cwd = req.cwd.unwrap_or_else(|| self.cwd.clone());
 
-        let child = tokio::process::Command::new(&req.command)
-            .args(&req.args)
+        // The ACP adapter sends the full shell command as req.command
+        // (e.g. "echo hello && ls -la"). We must wrap it in a shell.
+        let mut cmd = if cfg!(windows) {
+            let mut c = tokio::process::Command::new("cmd.exe");
+            c.arg("/C").arg(&req.command);
+            c
+        } else {
+            let mut c = tokio::process::Command::new("sh");
+            c.arg("-c").arg(&req.command);
+            c
+        };
+        // Append any extra args the adapter may send (typically empty)
+        cmd.args(&req.args);
+
+        let mut child = cmd
             .current_dir(&cwd)
-            .stdin(std::process::Stdio::piped())
+            .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .envs(req.env.iter().map(|e| (&e.name, &e.value)))
+            // Force colored output — programs disable colors when stdout is piped.
+            // These env vars cover most CLI tools across ecosystems.
+            .env("FORCE_COLOR", "1")
+            .env("CLICOLOR_FORCE", "1")
+            .env("CARGO_TERM_COLOR", "always")
             .spawn()
             .map_err(io_err)?;
 
+        let output_buffer = Arc::new(Mutex::new(Vec::new()));
+
+        // Spawn background tasks to drain stdout and stderr into the shared buffer
+        if let Some(stdout) = child.stdout.take() {
+            spawn_output_reader(stdout, Arc::clone(&output_buffer));
+        }
+        if let Some(stderr) = child.stderr.take() {
+            spawn_output_reader(stderr, Arc::clone(&output_buffer));
+        }
+
         let terminal_id = uuid::Uuid::new_v4().to_string();
-        self.terminals
-            .borrow_mut()
-            .insert(terminal_id.clone(), TerminalProcess { child });
+        self.terminals.borrow_mut().insert(
+            terminal_id.clone(),
+            TerminalProcess {
+                child,
+                output_buffer,
+                output_cursor: 0,
+                command: req.command.clone(),
+            },
+        );
 
         Ok(acp::CreateTerminalResponse::new(terminal_id))
     }
@@ -198,6 +278,15 @@ impl acp::Client for ClaudeClient {
                 .data(serde_json::Value::String(format!("Terminal not found: {tid}")))
         })?;
 
+        // Return new output since last poll (advance cursor, never clear buffer)
+        let output = {
+            let buf = terminal.output_buffer.lock().unwrap();
+            let new_data = &buf[terminal.output_cursor..];
+            let data = String::from_utf8_lossy(new_data).to_string();
+            terminal.output_cursor = buf.len();
+            data
+        };
+
         let exit_status = match terminal.child.try_wait().map_err(io_err)? {
             Some(status) => {
                 let mut es = acp::TerminalExitStatus::new();
@@ -209,7 +298,7 @@ impl acp::Client for ClaudeClient {
             None => None,
         };
 
-        let mut response = acp::TerminalOutputResponse::new(String::new(), false);
+        let mut response = acp::TerminalOutputResponse::new(output, false);
         if let Some(es) = exit_status {
             response = response.exit_status(es);
         }
@@ -233,19 +322,27 @@ impl acp::Client for ClaudeClient {
         req: acp::WaitForTerminalExitRequest,
     ) -> acp::Result<acp::WaitForTerminalExitResponse> {
         let tid = req.terminal_id.to_string();
-        let mut terminals = self.terminals.borrow_mut();
-        let terminal = terminals.get_mut(tid.as_str()).ok_or_else(|| {
-            acp::Error::internal_error()
-                .data(serde_json::Value::String("Terminal not found".into()))
-        })?;
 
-        let status = terminal.child.wait().await.map_err(io_err)?;
-        let mut exit_status = acp::TerminalExitStatus::new();
-        if let Some(code) = status.code() {
-            exit_status = exit_status.exit_code(code as u32);
+        // Poll with try_wait to avoid holding borrow_mut across .await
+        loop {
+            {
+                let mut terminals = self.terminals.borrow_mut();
+                let terminal = terminals.get_mut(tid.as_str()).ok_or_else(|| {
+                    acp::Error::internal_error()
+                        .data(serde_json::Value::String("Terminal not found".into()))
+                })?;
+
+                if let Some(status) = terminal.child.try_wait().map_err(io_err)? {
+                    let mut exit_status = acp::TerminalExitStatus::new();
+                    if let Some(code) = status.code() {
+                        exit_status = exit_status.exit_code(code as u32);
+                    }
+                    return Ok(acp::WaitForTerminalExitResponse::new(exit_status));
+                }
+            } // borrow_mut dropped here
+
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
-
-        Ok(acp::WaitForTerminalExitResponse::new(exit_status))
     }
 
     async fn release_terminal(

@@ -306,6 +306,7 @@ name = "claude_rust"
 version = "0.1.0"
 dependencies = [
  "agent-client-protocol",
+ "ansi-to-tui",
  "anyhow",
  "async-trait",
  "clap",

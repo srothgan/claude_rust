@@ -64,9 +64,14 @@ fn main() -> anyhow::Result<()> {
 
     rt.block_on(local_set.run_until(async move {
         // Phase 1: connect (pre-TUI, errors to stderr)
-        let (mut app, conn, _child) = app::connect(cli, npx_path).await?;
+        let (mut app, conn, _child, terminals) = app::connect(cli, npx_path).await?;
 
         // Phase 2: TUI event loop
-        app::run_tui(&mut app, conn).await
+        let result = app::run_tui(&mut app, conn).await;
+
+        // Kill any spawned terminal child processes before exiting
+        crate::acp::client::kill_all_terminals(&terminals);
+
+        result
     }))
 }

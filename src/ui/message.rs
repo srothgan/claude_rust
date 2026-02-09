@@ -17,6 +17,7 @@
 use crate::app::{BlockCache, ChatMessage, MessageBlock, MessageRole, ToolCallInfo};
 use crate::ui::theme;
 use agent_client_protocol as acp;
+use ansi_to_tui::IntoText as _;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
@@ -40,7 +41,7 @@ pub struct SpinnerState {
 /// Render a single chat message into a `Vec<Line>`, using per-block caches.
 /// Takes `&mut` so block caches can be updated.
 /// `spinner` is only used for the "Thinking..." animation on empty assistant messages.
-pub fn render_message(msg: &mut ChatMessage, spinner: &SpinnerState) -> Vec<Line<'static>> {
+pub fn render_message(msg: &mut ChatMessage, spinner: &SpinnerState, width: u16) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
 
     match msg.role {
@@ -101,7 +102,7 @@ pub fn render_message(msg: &mut ChatMessage, spinner: &SpinnerState) -> Vec<Line
                         if !prev_was_tool && lines.len() > 1 {
                             lines.push(Line::default());
                         }
-                        lines.extend(render_tool_call_cached(tc));
+                        lines.extend(render_tool_call_cached(tc, width));
                         prev_was_tool = true;
                     }
                 }
@@ -172,28 +173,31 @@ fn render_text_cached(
 }
 
 /// Render a tool call with caching. Only re-renders when cache is stale.
-fn render_tool_call_cached(tc: &mut ToolCallInfo) -> Vec<Line<'static>> {
+fn render_tool_call_cached(tc: &mut ToolCallInfo, width: u16) -> Vec<Line<'static>> {
     if let Some(ref cached_lines) = tc.cache.lines {
         if tc.cache.version == 0 {
             return cached_lines.clone();
         }
     }
 
-    let fresh = render_tool_call(tc);
+    let fresh = render_tool_call(tc, width);
     tc.cache.lines = Some(fresh.clone());
     tc.cache.version = 0;
     fresh
 }
 
-fn render_tool_call(tc: &ToolCallInfo) -> Vec<Line<'static>> {
-    let (icon, icon_color) = match tc.status {
-        acp::ToolCallStatus::Pending => (theme::ICON_PENDING, theme::DIM),
-        acp::ToolCallStatus::InProgress => (theme::ICON_RUNNING, theme::RUST_ORANGE),
-        acp::ToolCallStatus::Completed => (theme::ICON_COMPLETED, theme::RUST_ORANGE),
-        acp::ToolCallStatus::Failed => (theme::ICON_FAILED, theme::STATUS_ERROR),
-        _ => ("?", theme::DIM),
-    };
+/// Max visible output lines for Execute/Bash tool calls.
+/// Total box height = 1 (title) + 1 (command) + this + 1 (bottom border) = 15.
+/// TODO: make configurable (see ROADMAP.md)
+const TERMINAL_MAX_LINES: usize = 12;
 
+fn render_tool_call(tc: &ToolCallInfo, width: u16) -> Vec<Line<'static>> {
+    // Execute/Bash tool calls get a distinct rendering
+    if matches!(tc.kind, acp::ToolKind::Execute) {
+        return render_execute_tool_call(tc, width);
+    }
+
+    let (icon, icon_color) = status_icon(tc.status);
     let (kind_icon, _kind_name) = theme::tool_kind_label(tc.kind, tc.claude_tool_name.as_deref());
 
     let mut title_spans = vec![
@@ -253,8 +257,135 @@ fn render_tool_call(tc: &ToolCallInfo) -> Vec<Line<'static>> {
     lines
 }
 
+fn status_icon(status: acp::ToolCallStatus) -> (&'static str, Color) {
+    match status {
+        acp::ToolCallStatus::Pending => (theme::ICON_PENDING, theme::DIM),
+        acp::ToolCallStatus::InProgress => (theme::ICON_RUNNING, theme::RUST_ORANGE),
+        acp::ToolCallStatus::Completed => (theme::ICON_COMPLETED, theme::RUST_ORANGE),
+        acp::ToolCallStatus::Failed => (theme::ICON_FAILED, theme::STATUS_ERROR),
+        _ => ("?", theme::DIM),
+    }
+}
+
+/// Render an Execute/Bash tool call as a bordered terminal box:
+///
+///   ╭─ ✓ Bash  title ───────────────────────╮
+///   │ $ command
+///   │ output line 1
+///   │ ...
+///   ╰───────────────────────────────────────╯
+///
+/// Left border on all content lines, right border only on top/bottom rules.
+/// Top/bottom rules stretch to the full terminal width.
+/// Output is capped at TERMINAL_MAX_LINES (tail).
+fn render_execute_tool_call(tc: &ToolCallInfo, width: u16) -> Vec<Line<'static>> {
+    let (status_icon_str, icon_color) = status_icon(tc.status);
+    let border = Style::default().fg(theme::DIM);
+    let mut lines: Vec<Line<'static>> = Vec::new();
+
+    // Available width minus the 2-char left indent ("  ")
+    let inner_w = (width as usize).saturating_sub(2);
+
+    // ── Top border: ╭─ ⏵ Bash  title ──────────────────────────╮
+    // Fixed parts: "╭─" (2) + " ⏵ " (3) + "Bash " (5) + title + " " (1) + rule + "╮" (1)
+    let label_overhead = 2 + 3 + 5 + 1 + 1; // chars consumed by fixed parts
+    let title_len = tc.title.chars().count();
+    let fill = inner_w.saturating_sub(label_overhead + title_len);
+    let top_fill: String = "\u{2500}".repeat(fill);
+    lines.push(Line::from(vec![
+        Span::styled("  \u{256D}\u{2500}", border),
+        Span::styled(format!(" {status_icon_str} "), Style::default().fg(icon_color)),
+        Span::styled("Bash ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+        Span::styled(tc.title.clone(), Style::default().fg(Color::White)),
+        Span::styled(format!(" {top_fill}\u{256E}"), border),
+    ]));
+
+    // ── Command line: │ $ command
+    if let Some(ref cmd) = tc.terminal_command {
+        lines.push(Line::from(vec![
+            Span::styled("  \u{2502} ", border),
+            Span::styled("$ ", Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD)),
+            Span::styled(cmd.clone(), Style::default().fg(Color::Yellow)),
+        ]));
+    }
+
+    // ── Output lines (capped) ──
+    let mut body_lines: Vec<Line<'static>> = Vec::new();
+
+    if let Some(ref output) = tc.terminal_output {
+        let raw_lines: Vec<Line<'static>> = if let Ok(ansi_text) = output.as_bytes().into_text() {
+            ansi_text
+                .lines
+                .into_iter()
+                .map(|line| {
+                    let owned: Vec<Span<'static>> = line
+                        .spans
+                        .into_iter()
+                        .map(|s| Span::styled(s.content.into_owned(), s.style))
+                        .collect();
+                    Line::from(owned)
+                })
+                .collect()
+        } else {
+            output.lines().map(|l| Line::from(l.to_string())).collect()
+        };
+
+        let total = raw_lines.len();
+        if total > TERMINAL_MAX_LINES {
+            let skipped = total - TERMINAL_MAX_LINES;
+            body_lines.push(Line::from(Span::styled(
+                format!("... {skipped} lines hidden ..."),
+                Style::default().fg(theme::DIM),
+            )));
+            body_lines.extend(raw_lines.into_iter().skip(skipped));
+        } else {
+            body_lines = raw_lines;
+        }
+    } else if matches!(tc.status, acp::ToolCallStatus::InProgress) {
+        body_lines.push(Line::from(Span::styled(
+            "running...",
+            Style::default().fg(theme::DIM),
+        )));
+    }
+
+    for content_line in body_lines {
+        let mut spans = vec![Span::styled("  \u{2502} ", border)];
+        spans.extend(content_line.spans);
+        lines.push(Line::from(spans));
+    }
+
+    // ── Bottom border: ╰────────────────────────────────────────╯
+    // "╰" (1) + rule + "╯" (1) = inner_w
+    let bottom_fill: String = "\u{2500}".repeat(inner_w.saturating_sub(2));
+    lines.push(Line::from(Span::styled(
+        format!("  \u{2570}{bottom_fill}\u{256F}"),
+        border,
+    )));
+
+    lines
+}
+
 /// One-line summary for collapsed tool calls.
 fn content_summary(tc: &ToolCallInfo) -> String {
+    // For Execute tool calls, show last non-empty line of terminal output
+    if tc.terminal_id.is_some() {
+        if let Some(ref output) = tc.terminal_output {
+            let last = output.lines().rev().find(|l| !l.trim().is_empty());
+            if let Some(line) = last {
+                return if line.len() > 80 {
+                    format!("{}...", &line[..77])
+                } else {
+                    line.to_string()
+                };
+            }
+        }
+        return if matches!(tc.status, acp::ToolCallStatus::InProgress) {
+            "running...".to_string()
+        } else {
+            String::new()
+        };
+    }
+
     for content in &tc.content {
         match content {
             acp::ToolCallContent::Diff(diff) => {
@@ -275,9 +406,7 @@ fn content_summary(tc: &ToolCallInfo) -> String {
                     };
                 }
             }
-            acp::ToolCallContent::Terminal(term) => {
-                return format!("terminal {}", term.terminal_id);
-            }
+            acp::ToolCallContent::Terminal(_) => {}
             _ => {}
         }
     }
@@ -286,7 +415,34 @@ fn content_summary(tc: &ToolCallInfo) -> String {
 
 /// Render the full content of a tool call as lines.
 fn render_tool_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
+    let is_execute = matches!(tc.kind, acp::ToolKind::Execute);
     let mut lines: Vec<Line<'static>> = Vec::new();
+
+    // For Execute tool calls with terminal output, render the live output
+    if is_execute {
+        if let Some(ref output) = tc.terminal_output {
+            if let Ok(ansi_text) = output.as_bytes().into_text() {
+                for line in ansi_text.lines {
+                    let owned: Vec<Span<'static>> = line
+                        .spans
+                        .into_iter()
+                        .map(|s| Span::styled(s.content.into_owned(), s.style))
+                        .collect();
+                    lines.push(Line::from(owned));
+                }
+            } else {
+                for text_line in output.lines() {
+                    lines.push(Line::from(text_line.to_string()));
+                }
+            }
+        } else if matches!(tc.status, acp::ToolCallStatus::InProgress) {
+            lines.push(Line::from(Span::styled(
+                "running...",
+                Style::default().fg(theme::DIM),
+            )));
+        }
+        return lines;
+    }
 
     for content in &tc.content {
         match content {
@@ -297,10 +453,8 @@ fn render_tool_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
                 if let acp::ContentBlock::Text(text) = &c.content {
                     let stripped = strip_outer_code_fence(&text.text);
                     let md_source = if is_markdown_file(&tc.title) {
-                        // Render markdown files as-is
                         stripped
                     } else {
-                        // Wrap code files in a fenced block for syntax highlighting
                         let lang = lang_from_title(&tc.title);
                         format!("```{lang}\n{stripped}\n```")
                     };
@@ -315,12 +469,7 @@ fn render_tool_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
                     }
                 }
             }
-            acp::ToolCallContent::Terminal(term) => {
-                lines.push(Line::from(Span::styled(
-                    format!("terminal {}", term.terminal_id),
-                    Style::default().fg(theme::DIM),
-                )));
-            }
+            acp::ToolCallContent::Terminal(_) => {}
             _ => {}
         }
     }

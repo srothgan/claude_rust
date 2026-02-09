@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use crate::acp::client::{ClientEvent, ClaudeClient};
+use crate::acp::client::{ClientEvent, ClaudeClient, TerminalMap};
 use crate::acp::connection;
 use crate::Cli;
 use agent_client_protocol::{self as acp, Agent as _};
@@ -55,6 +55,8 @@ pub struct App {
     pub tools_collapsed: bool,
     /// IDs of Task tool calls currently InProgress — their children get hidden.
     pub active_task_ids: Vec<String>,
+    /// Shared terminal process map — used to snapshot output on completion.
+    pub terminals: crate::acp::client::TerminalMap,
 }
 
 pub enum AppStatus {
@@ -109,6 +111,12 @@ pub struct ToolCallInfo {
     pub claude_tool_name: Option<String>,
     /// Hidden tool calls are subagent children — not rendered directly.
     pub hidden: bool,
+    /// Terminal ID if this is an Execute tool call with a running/completed terminal.
+    pub terminal_id: Option<String>,
+    /// The shell command that was executed (e.g. "echo hello && ls -la").
+    pub terminal_command: Option<String>,
+    /// Snapshot of terminal output, updated each frame while InProgress.
+    pub terminal_output: Option<String>,
     /// Per-block render cache for this tool call.
     pub cache: BlockCache,
 }
@@ -267,18 +275,19 @@ fn char_to_byte_index(s: &str, char_idx: usize) -> usize {
 
 /// Connect to the ACP adapter, handshake, authenticate, and create a session.
 /// Runs before ratatui::init() so errors print to stderr normally.
-/// Returns `(App, Rc<Connection>, Child)`. The `Child` handle must be kept alive
-/// for the adapter process lifetime — dropping it kills the process.
+/// Returns `(App, Rc<Connection>, Child, TerminalMap)`. The `Child` handle must be
+/// kept alive for the adapter process lifetime — dropping it kills the process.
+/// The `TerminalMap` is used for cleanup on exit.
 pub async fn connect(
     cli: Cli,
     npx_path: PathBuf,
-) -> anyhow::Result<(App, Rc<acp::ClientSideConnection>, Child)> {
+) -> anyhow::Result<(App, Rc<acp::ClientSideConnection>, Child, TerminalMap)> {
     let cwd = cli
         .dir
         .unwrap_or_else(|| std::env::current_dir().expect("Failed to get current directory"));
 
     let (event_tx, event_rx) = mpsc::unbounded_channel();
-    let client = ClaudeClient::new(event_tx.clone(), cli.yolo, cwd.clone());
+    let (client, terminals) = ClaudeClient::new(event_tx.clone(), cli.yolo, cwd.clone());
 
     eprintln!("Spawning ACP adapter...");
     let adapter = connection::spawn_adapter(client, &npx_path).await?;
@@ -374,9 +383,10 @@ pub async fn connect(
         spinner_frame: 0,
         tools_collapsed: true,
         active_task_ids: Vec::new(),
+        terminals: std::rc::Rc::clone(&terminals),
     };
 
-    Ok((app, conn, child))
+    Ok((app, conn, child, terminals))
 }
 
 // ---------------------------------------------------------------------------
@@ -411,6 +421,7 @@ pub async fn run_tui(
                 if matches!(app.status, AppStatus::Thinking | AppStatus::Running(_)) {
                     app.spinner_frame = app.spinner_frame.wrapping_add(1);
                 }
+                update_terminal_outputs(app);
                 terminal.draw(|f| crate::ui::render(f, app))?;
             }
         }
@@ -433,6 +444,41 @@ pub async fn run_tui(
 // ---------------------------------------------------------------------------
 // Terminal event handling
 // ---------------------------------------------------------------------------
+
+/// Snapshot terminal output buffers into ToolCallInfo for rendering.
+/// Called each frame so in-progress Execute tool calls show live output.
+///
+/// The output_buffer is append-only (never cleared). The adapter's
+/// `terminal_output` uses a cursor to track what it already returned.
+/// We simply snapshot the full buffer for display each frame.
+fn update_terminal_outputs(app: &mut App) {
+    let terminals = app.terminals.borrow();
+    if terminals.is_empty() {
+        return;
+    }
+
+    for msg in &mut app.messages {
+        for block in &mut msg.blocks {
+            if let MessageBlock::ToolCall(tc) = block {
+                if let Some(ref tid) = tc.terminal_id {
+                    if let Some(terminal) = terminals.get(tid.as_str()) {
+                        let buf = terminal.output_buffer.lock().unwrap();
+                        if buf.is_empty() {
+                            continue;
+                        }
+                        let snapshot = String::from_utf8_lossy(&buf).to_string();
+                        drop(buf);
+
+                        if tc.terminal_output.as_deref() != Some(&snapshot) {
+                            tc.terminal_output = Some(snapshot);
+                            tc.cache.invalidate();
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
 
 fn handle_terminal_event(
     app: &mut App,
@@ -748,7 +794,7 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
             let title = tc.title.clone();
             let kind = tc.kind;
             let id_str = tc.tool_call_id.to_string();
-            tracing::debug!("ToolCall: id={id_str} title={title} kind={kind:?} status={:?}", tc.status);
+            tracing::debug!("ToolCall: id={id_str} title={title} kind={kind:?} status={:?} content_blocks={}", tc.status, tc.content.len());
 
             // Extract claude_tool_name from meta.claudeCode.toolName
             let claude_tool_name = tc.meta.as_ref().and_then(|m| {
@@ -777,6 +823,9 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
                 collapsed: app.tools_collapsed,
                 claude_tool_name,
                 hidden,
+                terminal_id: None,
+                terminal_command: None,
+                terminal_output: None,
                 cache: BlockCache::default(),
             };
 
@@ -813,7 +862,8 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
         acp::SessionUpdate::ToolCallUpdate(tcu) => {
             // Find and update the tool call by id (in-place)
             let id_str = tcu.tool_call_id.to_string();
-            tracing::debug!("ToolCallUpdate: id={id_str} new_title={:?} new_status={:?}", tcu.fields.title, tcu.fields.status);
+            let has_content = tcu.fields.content.as_ref().map(|c| c.len()).unwrap_or(0);
+            tracing::debug!("ToolCallUpdate: id={id_str} new_title={:?} new_status={:?} content_blocks={has_content}", tcu.fields.title, tcu.fields.status);
 
             // If this is a Task completing, remove from active list
             if matches!(tcu.fields.status, Some(acp::ToolCallStatus::Completed) | Some(acp::ToolCallStatus::Failed)) {
@@ -831,6 +881,17 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
                                 tc.title = shorten_tool_title(title, &app.cwd_raw);
                             }
                             if let Some(content) = tcu.fields.content {
+                                // Extract terminal_id and command from Terminal content blocks
+                                for cb in &content {
+                                    if let acp::ToolCallContent::Terminal(t) = cb {
+                                        let tid = t.terminal_id.to_string();
+                                        // Look up the command from the shared terminal map
+                                        if let Some(terminal) = app.terminals.borrow().get(&tid) {
+                                            tc.terminal_command = Some(terminal.command.clone());
+                                        }
+                                        tc.terminal_id = Some(tid);
+                                    }
+                                }
                                 tc.content = content;
                             }
                             // Update claude_tool_name from update meta if present

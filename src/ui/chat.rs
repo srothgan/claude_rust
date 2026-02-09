@@ -32,7 +32,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     for msg in &mut app.messages {
         // Per-block caching is handled inside render_message — each text block
         // and tool call maintains its own cache, only re-rendering on mutation.
-        all_lines.extend(message::render_message(msg, &spinner));
+        all_lines.extend(message::render_message(msg, &spinner, area.width));
     }
 
     // Build paragraph once — line_count gives the real wrapped height
