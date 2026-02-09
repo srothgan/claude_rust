@@ -14,20 +14,25 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use crate::app::App;
-use crate::ui::message;
+use crate::app::{App, AppStatus};
+use crate::ui::message::{self, SpinnerState};
 use ratatui::layout::Rect;
 use ratatui::text::Text;
 use ratatui::widgets::{Paragraph, Wrap};
 use ratatui::Frame;
 
 pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
+    // Snapshot spinner state before the loop so we can take &mut msg
+    let spinner = SpinnerState {
+        frame: app.spinner_frame,
+        is_active: matches!(app.status, AppStatus::Thinking | AppStatus::Running(_)),
+    };
+
     let mut all_lines = Vec::new();
-    for msg in &app.messages {
-        let rendered = message::render_message(msg, app);
-        for line in rendered.lines {
-            all_lines.push(line);
-        }
+    for msg in &mut app.messages {
+        // Per-block caching is handled inside render_message — each text block
+        // and tool call maintains its own cache, only re-rendering on mutation.
+        all_lines.extend(message::render_message(msg, &spinner));
     }
 
     // Build paragraph once — line_count gives the real wrapped height

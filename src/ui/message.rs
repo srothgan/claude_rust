@@ -14,11 +14,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use crate::app::{App, AppStatus, ChatMessage, MessageBlock, MessageRole, ToolCallInfo};
+use crate::app::{BlockCache, ChatMessage, MessageBlock, MessageRole, ToolCallInfo};
 use crate::ui::theme;
 use agent_client_protocol as acp;
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span, Text};
+use ratatui::text::{Line, Span};
 
 const SPINNER_FRAMES: &[char] = &[
     '\u{280B}', '\u{2819}', '\u{2839}', '\u{2838}',
@@ -26,8 +26,21 @@ const SPINNER_FRAMES: &[char] = &[
     '\u{2807}', '\u{280F}',
 ];
 
-/// Render a single chat message into a `Text` block (lines of styled spans).
-pub fn render_message(msg: &ChatMessage, app: &App) -> Text<'static> {
+/// Snapshot of the app state needed by the spinner — extracted before
+/// the message loop so we don't need `&App` (which conflicts with `&mut msg`).
+pub struct SpinnerState {
+    pub frame: usize,
+    pub is_active: bool,
+}
+
+// BlockCache model: version starts at 0, lines is None.
+// On invalidate(), version bumps to non-zero. On render, we store lines and
+// reset version to 0 (clean). If version != 0, cache is stale → re-render.
+
+/// Render a single chat message into a `Vec<Line>`, using per-block caches.
+/// Takes `&mut` so block caches can be updated.
+/// `spinner` is only used for the "Thinking..." animation on empty assistant messages.
+pub fn render_message(msg: &mut ChatMessage, spinner: &SpinnerState) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
 
     match msg.role {
@@ -41,20 +54,9 @@ pub fn render_message(msg: &ChatMessage, app: &App) -> Text<'static> {
             )));
 
             // User message: markdown-rendered with background overlay
-            for block in &msg.blocks {
-                if let MessageBlock::Text(text) = block {
-                    let rendered = tui_markdown::from_str(text);
-                    for line in rendered.lines {
-                        let owned_spans: Vec<Span<'static>> = line
-                            .spans
-                            .into_iter()
-                            .map(|s| {
-                                let style = s.style.bg(theme::USER_MSG_BG);
-                                Span::styled(s.content.into_owned(), style)
-                            })
-                            .collect();
-                        lines.push(Line::from(owned_spans).style(line.style));
-                    }
+            for block in &mut msg.blocks {
+                if let MessageBlock::Text(text, cache) = block {
+                    lines.extend(render_text_cached(text, cache, Some(theme::USER_MSG_BG)));
                 }
             }
         }
@@ -68,34 +70,26 @@ pub fn render_message(msg: &ChatMessage, app: &App) -> Text<'static> {
             )));
 
             // Empty blocks + thinking = show spinner
-            if msg.blocks.is_empty() && matches!(app.status, AppStatus::Thinking | AppStatus::Running(_)) {
-                let ch = SPINNER_FRAMES[app.spinner_frame % SPINNER_FRAMES.len()];
+            if msg.blocks.is_empty() && spinner.is_active {
+                let ch = SPINNER_FRAMES[spinner.frame % SPINNER_FRAMES.len()];
                 lines.push(Line::from(Span::styled(
                     format!("{ch} Thinking..."),
                     Style::default().fg(theme::DIM),
                 )));
                 lines.push(Line::default());
-                return Text::from(lines);
+                return lines;
             }
 
             // Render blocks in order with spacing at text<->tool transitions
             let mut prev_was_tool = false;
-            for block in &msg.blocks {
+            for block in &mut msg.blocks {
                 match block {
-                    MessageBlock::Text(text) => {
+                    MessageBlock::Text(text, cache) => {
                         // Add half-spacing when transitioning from tools back to text
                         if prev_was_tool {
                             lines.push(Line::default());
                         }
-                        let rendered = tui_markdown::from_str(text);
-                        for line in rendered.lines {
-                            let owned_spans: Vec<Span<'static>> = line
-                                .spans
-                                .into_iter()
-                                .map(|s| Span::styled(s.content.into_owned(), s.style))
-                                .collect();
-                            lines.push(Line::from(owned_spans).style(line.style));
-                        }
+                        lines.extend(render_text_cached(text, cache, None));
                         prev_was_tool = false;
                     }
                     MessageBlock::ToolCall(tc) => {
@@ -107,7 +101,7 @@ pub fn render_message(msg: &ChatMessage, app: &App) -> Text<'static> {
                         if !prev_was_tool && lines.len() > 1 {
                             lines.push(Line::default());
                         }
-                        lines.extend(render_tool_call(tc));
+                        lines.extend(render_tool_call_cached(tc));
                         prev_was_tool = true;
                     }
                 }
@@ -120,8 +114,8 @@ pub fn render_message(msg: &ChatMessage, app: &App) -> Text<'static> {
                     .fg(theme::ROLE_SYSTEM)
                     .add_modifier(Modifier::BOLD),
             )));
-            for block in &msg.blocks {
-                if let MessageBlock::Text(text) = block {
+            for block in &mut msg.blocks {
+                if let MessageBlock::Text(text, _) = block {
                     for text_line in text.lines() {
                         lines.push(Line::from(text_line.to_string()));
                     }
@@ -133,7 +127,62 @@ pub fn render_message(msg: &ChatMessage, app: &App) -> Text<'static> {
     // Blank separator between messages
     lines.push(Line::default());
 
-    Text::from(lines)
+    lines
+}
+
+/// Render a text block with caching. Only calls tui_markdown when cache is stale.
+/// `bg` is an optional background color overlay (used for user messages).
+fn render_text_cached(
+    text: &str,
+    cache: &mut BlockCache,
+    bg: Option<Color>,
+) -> Vec<Line<'static>> {
+    // Check if cache is fresh (version 0 means lines were stored and not invalidated since)
+    if let Some(ref cached_lines) = cache.lines {
+        if cache.version == 0 {
+            return cached_lines.clone();
+        }
+    }
+
+    // Cache miss — render from markdown
+    let rendered = tui_markdown::from_str(text);
+    let fresh: Vec<Line<'static>> = rendered
+        .lines
+        .into_iter()
+        .map(|line| {
+            let owned_spans: Vec<Span<'static>> = line
+                .spans
+                .into_iter()
+                .map(|s| {
+                    let style = if let Some(bg_color) = bg {
+                        s.style.bg(bg_color)
+                    } else {
+                        s.style
+                    };
+                    Span::styled(s.content.into_owned(), style)
+                })
+                .collect();
+            Line::from(owned_spans).style(line.style)
+        })
+        .collect();
+
+    cache.lines = Some(fresh.clone());
+    cache.version = 0; // Mark as clean
+    fresh
+}
+
+/// Render a tool call with caching. Only re-renders when cache is stale.
+fn render_tool_call_cached(tc: &mut ToolCallInfo) -> Vec<Line<'static>> {
+    if let Some(ref cached_lines) = tc.cache.lines {
+        if tc.cache.version == 0 {
+            return cached_lines.clone();
+        }
+    }
+
+    let fresh = render_tool_call(tc);
+    tc.cache.lines = Some(fresh.clone());
+    tc.cache.version = 0;
+    fresh
 }
 
 fn render_tool_call(tc: &ToolCallInfo) -> Vec<Line<'static>> {
@@ -145,7 +194,7 @@ fn render_tool_call(tc: &ToolCallInfo) -> Vec<Line<'static>> {
         _ => ("?", theme::DIM),
     };
 
-    let (kind_icon, kind_name) = theme::tool_kind_label(tc.kind, tc.claude_tool_name.as_deref());
+    let (kind_icon, _kind_name) = theme::tool_kind_label(tc.kind, tc.claude_tool_name.as_deref());
 
     let mut title_spans = vec![
         Span::styled(format!("  {icon} "), Style::default().fg(icon_color)),
@@ -155,15 +204,9 @@ fn render_tool_call(tc: &ToolCallInfo) -> Vec<Line<'static>> {
                 .fg(Color::White)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(
-            format!("{kind_name}  "),
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        ),
     ];
 
-    // Use tui_markdown to render the title — handles backticks, bold, etc.
+    // Render the title with markdown (handles backticks, bold, etc.)
     let rendered = tui_markdown::from_str(&tc.title);
     if let Some(first_line) = rendered.lines.into_iter().next() {
         for span in first_line.spans {
