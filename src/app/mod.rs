@@ -60,7 +60,7 @@ pub async fn connect(
     let (client, terminals) = ClaudeClient::new(event_tx.clone(), cli.yolo, cwd.clone());
 
     eprintln!("Spawning ACP adapter...");
-    let adapter = connection::spawn_adapter(client, &npx_path).await?;
+    let adapter = connection::spawn_adapter(client, &npx_path, &cwd).await?;
     let child = adapter.child;
     let conn = Rc::new(adapter.connection);
 
@@ -201,29 +201,21 @@ pub async fn connect(
 
     // --yolo: switch to bypass-permissions mode via the adapter
     if cli.yolo {
-        if let Some(ref m) = mode {
-            // Find a bypass/yolo mode — try common IDs
-            let yolo_mode = m
+        if let Some(ref mut ms) = mode {
+            let target_id = "bypassPermissions".to_string();
+            let mode_id = acp::SessionModeId::new(target_id.as_str());
+            conn.set_session_mode(acp::SetSessionModeRequest::new(session_id.clone(), mode_id))
+                .await?;
+            tracing::info!("YOLO: switched to mode '{}'", target_id);
+            // Update local mode state to reflect the switch
+            let target_name = ms
                 .available_modes
                 .iter()
-                .find(|mi| mi.id == "bypassPermissions" || mi.id == "dontAsk");
-            if let Some(target) = yolo_mode {
-                let target_id = target.id.clone();
-                let target_name = target.name.clone();
-                let mode_id = acp::SessionModeId::new(target_id.as_str());
-                conn.set_session_mode(acp::SetSessionModeRequest::new(session_id.clone(), mode_id))
-                    .await?;
-                tracing::info!("YOLO: switched to mode '{}'", target_id);
-                // Update local mode state to reflect the switch
-                if let Some(ref mut ms) = mode {
-                    ms.current_mode_id = target_id;
-                    ms.current_mode_name = target_name;
-                }
-            } else {
-                tracing::warn!(
-                    "YOLO: no bypass-permissions or do-not-ask mode found in available modes"
-                );
-            }
+                .find(|mi| mi.id == target_id)
+                .map(|mi| mi.name.clone())
+                .unwrap_or_else(|| target_id.clone());
+            ms.current_mode_id = target_id;
+            ms.current_mode_name = target_name;
         }
     }
 
