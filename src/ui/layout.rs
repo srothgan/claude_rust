@@ -20,37 +20,41 @@ pub struct AppLayout {
     pub header: Rect,
     pub header_sep: Rect,
     pub body: Rect,
+    /// Area for the todo panel (zero-height when hidden or no todos).
+    pub todo: Rect,
     pub input_sep: Rect,
     pub input: Rect,
     pub input_bottom_sep: Rect,
     pub footer: Option<Rect>,
 }
 
-pub fn compute(area: Rect, input_lines: u16, show_header: bool) -> AppLayout {
+pub fn compute(area: Rect, input_lines: u16, show_header: bool, todo_height: u16) -> AppLayout {
     let input_height = input_lines.max(1);
     let header_height: u16 = if show_header { 1 } else { 0 };
     let header_sep_height: u16 = if show_header { 1 } else { 0 };
     let zero = Rect::new(area.x, area.y, area.width, 0);
 
     if area.height < 8 {
-        // Ultra-compact: no header, no separator, no footer
+        // Ultra-compact: no header, no separator, no footer, no todo
         let [body, input] =
             Layout::vertical([Constraint::Min(1), Constraint::Length(input_height)]).areas(area);
         AppLayout {
             header: zero,
             header_sep: zero,
             body,
+            todo: zero,
             input_sep: Rect::new(area.x, input.y, area.width, 0),
             input,
             input_bottom_sep: zero,
             footer: None,
         }
     } else {
-        let [header, header_sep, body, input_sep, input, input_bottom_sep, footer] =
+        let [header, header_sep, body, todo, input_sep, input, input_bottom_sep, footer] =
             Layout::vertical([
                 Constraint::Length(header_height),
                 Constraint::Length(header_sep_height),
                 Constraint::Min(3),
+                Constraint::Length(todo_height),
                 Constraint::Length(1),
                 Constraint::Length(input_height),
                 Constraint::Length(1),
@@ -61,6 +65,7 @@ pub fn compute(area: Rect, input_lines: u16, show_header: bool) -> AppLayout {
             header,
             header_sep,
             body,
+            todo,
             input_sep,
             input,
             input_bottom_sep,

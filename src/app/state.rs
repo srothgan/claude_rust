@@ -34,6 +34,21 @@ pub struct ModeState {
     pub available_modes: Vec<ModeInfo>,
 }
 
+/// A single todo item from Claude's `TodoWrite` tool.
+#[derive(Debug, Clone)]
+pub struct TodoItem {
+    pub content: String,
+    pub status: TodoStatus,
+    pub active_form: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TodoStatus {
+    Pending,
+    InProgress,
+    Completed,
+}
+
 pub struct App {
     pub messages: Vec<ChatMessage>,
     pub scroll_offset: usize,
@@ -67,6 +82,13 @@ pub struct App {
     /// O(1) lookup: tool_call_id → (message_index, block_index).
     /// Use `lookup_tool_call()`, `index_tool_call()`.
     pub(super) tool_call_index: HashMap<String, (usize, usize)>,
+    /// Current todo list from Claude's `TodoWrite` tool calls.
+    pub todos: Vec<TodoItem>,
+    /// Whether the todo panel is expanded (true) or shows compact status line (false).
+    /// Toggled by Ctrl+T.
+    pub show_todo_panel: bool,
+    /// Scroll offset for the expanded todo panel (capped at 5 visible lines).
+    pub todo_scroll: usize,
 }
 
 impl App {

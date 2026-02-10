@@ -20,6 +20,7 @@ mod input;
 mod layout;
 mod message;
 pub mod theme;
+mod todo;
 
 use crate::app::App;
 use ratatui::Frame;
@@ -29,10 +30,12 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 pub fn render(frame: &mut Frame, app: &mut App) {
+    let todo_height = todo::compute_height(app);
     let areas = layout::compute(
         frame.area(),
         input::visual_line_count(app, frame.area().width),
         true,
+        todo_height,
     );
 
     // Header bar (always visible)
@@ -43,6 +46,11 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     // Body: chat (includes welcome text when no messages yet)
     chat::render(frame, areas.body, app);
+
+    // Todo panel (between chat and input)
+    if areas.todo.height > 0 {
+        todo::render(frame, areas.todo, app);
+    }
 
     // Input separator (above)
     render_separator(frame, areas.input_sep);
@@ -113,6 +121,18 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
         }
         hints.push(Span::styled("shift+tab", Style::default().fg(Color::White)));
         hints.push(Span::styled(": mode", Style::default().fg(theme::DIM)));
+    }
+    if !app.todos.is_empty() {
+        if !hints.is_empty() {
+            hints.push(dot.clone());
+        }
+        hints.push(Span::styled("ctrl+t", Style::default().fg(Color::White)));
+        let todo_hint = if app.show_todo_panel {
+            ": hide todos"
+        } else {
+            ": show todos"
+        };
+        hints.push(Span::styled(todo_hint, Style::default().fg(theme::DIM)));
     }
     if !hints.is_empty() {
         hints.push(dot.clone());

@@ -21,7 +21,7 @@ mod state;
 pub use input::InputState;
 pub use state::{
     App, AppStatus, BlockCache, ChatMessage, InlinePermission, MessageBlock, MessageRole, ModeInfo,
-    ModeState, ToolCallInfo,
+    ModeState, TodoItem, TodoStatus, ToolCallInfo,
 };
 
 use crate::Cli;
@@ -258,6 +258,9 @@ pub async fn connect(
         terminals: std::rc::Rc::clone(&terminals),
         force_redraw: false,
         tool_call_index: HashMap::new(),
+        todos: Vec::new(),
+        show_todo_panel: false,
+        todo_scroll: 0,
     };
 
     Ok((app, conn, child, terminals))
@@ -489,6 +492,10 @@ fn handle_normal_key(app: &mut App, conn: &Rc<acp::ClientSideConnection>, key: K
         (KeyCode::Down, _) => app.input.move_down(),
         (KeyCode::Home, _) => app.input.move_home(),
         (KeyCode::End, _) => app.input.move_end(),
+        // Ctrl+T: toggle todo panel open/closed
+        (KeyCode::Char('t'), m) if m.contains(KeyModifiers::CONTROL) => {
+            app.show_todo_panel = !app.show_todo_panel;
+        }
         // Ctrl+O: toggle expand/collapse on all tool calls
         (KeyCode::Char('o'), m) if m.contains(KeyModifiers::CONTROL) => {
             toggle_all_tool_calls(app);
@@ -850,6 +857,72 @@ fn session_update_name(update: &acp::SessionUpdate) -> &'static str {
     }
 }
 
+/// Parse a TodoWrite raw_input JSON value into a Vec<TodoItem>.
+/// Expected shape: `{"todos": [{"content": "...", "status": "...", "activeForm": "..."}]}`
+fn parse_todos(raw_input: &serde_json::Value) -> Vec<TodoItem> {
+    let Some(arr) = raw_input.get("todos").and_then(|v| v.as_array()) else {
+        return Vec::new();
+    };
+    arr.iter()
+        .filter_map(|item| {
+            let content = item.get("content")?.as_str()?.to_string();
+            let status_str = item.get("status")?.as_str()?;
+            let active_form = item
+                .get("activeForm")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let status = match status_str {
+                "in_progress" => TodoStatus::InProgress,
+                "completed" => TodoStatus::Completed,
+                _ => TodoStatus::Pending,
+            };
+            Some(TodoItem {
+                content,
+                status,
+                active_form,
+            })
+        })
+        .collect()
+}
+
+fn set_todos(app: &mut App, todos: Vec<TodoItem>) {
+    if todos.is_empty() {
+        app.todos.clear();
+        app.show_todo_panel = false;
+        app.todo_scroll = 0;
+        return;
+    }
+
+    let all_done = todos.iter().all(|t| t.status == TodoStatus::Completed);
+    if all_done {
+        app.todos.clear();
+        app.show_todo_panel = false;
+        app.todo_scroll = 0;
+    } else {
+        app.todos = todos;
+    }
+}
+
+/// Convert ACP plan entries into the local todo list.
+fn apply_plan_todos(app: &mut App, plan: &acp::Plan) {
+    let mut todos = Vec::with_capacity(plan.entries.len());
+    for entry in &plan.entries {
+        let status_str = format!("{:?}", entry.status);
+        let status = match status_str.as_str() {
+            "InProgress" => TodoStatus::InProgress,
+            "Completed" => TodoStatus::Completed,
+            _ => TodoStatus::Pending,
+        };
+        todos.push(TodoItem {
+            content: entry.content.clone(),
+            status,
+            active_form: String::new(),
+        });
+    }
+    set_todos(app, todos);
+}
+
 fn handle_tool_call(app: &mut App, tc: acp::ToolCall) {
     let title = tc.title.clone();
     let kind = tc.kind;
@@ -873,6 +946,18 @@ fn handle_tool_call(app: &mut App, tc: acp::ToolCall) {
     // Subagent children are never hidden — they need to be visible so
     // permission prompts render and the user can interact with them.
     let hidden = false;
+
+    // Extract todos from TodoWrite tool calls
+    if claude_tool_name.as_deref() == Some("TodoWrite") {
+        tracing::info!("TodoWrite ToolCall detected: id={id_str}, raw_input={:?}", tc.raw_input);
+        if let Some(ref raw_input) = tc.raw_input {
+            let todos = parse_todos(raw_input);
+            tracing::info!("Parsed {} todos from ToolCall raw_input", todos.len());
+            set_todos(app, todos);
+        } else {
+            tracing::warn!("TodoWrite ToolCall has no raw_input");
+        }
+    }
 
     // Track new Task tool calls as active subagents
     if is_task {
@@ -976,6 +1061,7 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
                 app.remove_active_task(&id_str);
             }
 
+            let mut pending_todos: Option<Vec<TodoItem>> = None;
             if let Some((mi, bi)) = app.lookup_tool_call(&id_str) {
                 if let Some(MessageBlock::ToolCall(tc)) =
                     app.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
@@ -1009,6 +1095,15 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
                             tc.claude_tool_name = Some(name.to_string());
                         }
                     }
+                    // Update todos from TodoWrite raw_input updates
+                    if tc.claude_tool_name.as_deref() == Some("TodoWrite") {
+                        tracing::info!("TodoWrite ToolCallUpdate: id={id_str}, raw_input={:?}", tcu.fields.raw_input);
+                        if let Some(ref raw_input) = tcu.fields.raw_input {
+                            let todos = parse_todos(raw_input);
+                            tracing::info!("Parsed {} todos from ToolCallUpdate raw_input", todos.len());
+                            pending_todos = Some(todos);
+                        }
+                    }
                     if matches!(
                         tc.status,
                         acp::ToolCallStatus::Completed | acp::ToolCallStatus::Failed
@@ -1020,6 +1115,9 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
             } else {
                 tracing::warn!("ToolCallUpdate: id={id_str} not found in index");
             }
+            if let Some(todos) = pending_todos {
+                set_todos(app, todos);
+            }
         }
         acp::SessionUpdate::UserMessageChunk(_) => {
             // Our own message echoed back — we already display it
@@ -1029,6 +1127,7 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
         }
         acp::SessionUpdate::Plan(plan) => {
             tracing::debug!("Plan update: {:?}", plan);
+            apply_plan_todos(app, &plan);
         }
         acp::SessionUpdate::AvailableCommandsUpdate(cmds) => {
             tracing::debug!(
