@@ -56,15 +56,27 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
             height: content_height as u16,
         };
         app.scroll_offset = 0;
+        app.scroll_target = 0;
+        app.scroll_pos = 0.0;
         app.auto_scroll = true;
         frame.render_widget(paragraph, render_area);
     } else {
         // Long content: scroll within the full viewport
         let max_scroll = content_height - viewport_height;
-        app.scroll_offset = app.scroll_offset.min(max_scroll);
         if app.auto_scroll {
-            app.scroll_offset = max_scroll;
+            app.scroll_target = max_scroll;
         }
+        app.scroll_target = app.scroll_target.min(max_scroll);
+
+        let target = app.scroll_target as f32;
+        let delta = target - app.scroll_pos;
+        if delta.abs() < 0.01 {
+            app.scroll_pos = target;
+        } else {
+            // Smooth over ~2-3 frames at 30fps.
+            app.scroll_pos += delta * 0.5;
+        }
+        app.scroll_offset = app.scroll_pos.round() as usize;
         if app.scroll_offset >= max_scroll {
             app.auto_scroll = true;
         }

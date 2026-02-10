@@ -51,7 +51,12 @@ pub enum TodoStatus {
 
 pub struct App {
     pub messages: Vec<ChatMessage>,
+    /// Rendered scroll offset (rounded from scroll_pos).
     pub scroll_offset: usize,
+    /// Target scroll offset requested by user input or auto-scroll.
+    pub scroll_target: usize,
+    /// Smooth scroll position (fractional) for animation.
+    pub scroll_pos: f32,
     pub auto_scroll: bool,
     pub input: InputState,
     pub status: AppStatus,

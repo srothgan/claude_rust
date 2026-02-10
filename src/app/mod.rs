@@ -240,6 +240,8 @@ pub async fn connect(
     let app = App {
         messages: Vec::new(),
         scroll_offset: 0,
+        scroll_target: 0,
+        scroll_pos: 0.0,
         auto_scroll: true,
         input: InputState::new(),
         status: AppStatus::Ready,
@@ -446,11 +448,11 @@ const MOUSE_SCROLL_LINES: usize = 3;
 fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
     match mouse.kind {
         MouseEventKind::ScrollUp => {
-            app.scroll_offset = app.scroll_offset.saturating_sub(MOUSE_SCROLL_LINES);
+            app.scroll_target = app.scroll_target.saturating_sub(MOUSE_SCROLL_LINES);
             app.auto_scroll = false;
         }
         MouseEventKind::ScrollDown => {
-            app.scroll_offset = app.scroll_offset.saturating_add(MOUSE_SCROLL_LINES);
+            app.scroll_target = app.scroll_target.saturating_add(MOUSE_SCROLL_LINES);
             // auto_scroll re-engagement handled by chat::render clamping
         }
         _ => {}
@@ -490,12 +492,12 @@ fn handle_normal_key(app: &mut App, conn: &Rc<acp::ClientSideConnection>, key: K
         (KeyCode::Right, _) => app.input.move_right(),
         (KeyCode::Up, m) if m.contains(KeyModifiers::CONTROL) => {
             // Ctrl+Up: scroll chat up
-            app.scroll_offset = app.scroll_offset.saturating_sub(1);
+            app.scroll_target = app.scroll_target.saturating_sub(1);
             app.auto_scroll = false;
         }
         (KeyCode::Down, m) if m.contains(KeyModifiers::CONTROL) => {
             // Ctrl+Down: scroll chat down (clamped in chat::render)
-            app.scroll_offset = app.scroll_offset.saturating_add(1);
+            app.scroll_target = app.scroll_target.saturating_add(1);
         }
         (KeyCode::Up, _) => app.input.move_up(),
         (KeyCode::Down, _) => app.input.move_down(),
