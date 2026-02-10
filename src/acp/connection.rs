@@ -35,9 +35,11 @@ pub struct AdapterProcess {
 pub async fn spawn_adapter(
     client: impl acp::Client + 'static,
     npx_path: &Path,
+    cwd: &Path,
 ) -> anyhow::Result<AdapterProcess> {
     let mut child = Command::new(npx_path)
         .arg("@zed-industries/claude-code-acp")
+        .current_dir(cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
