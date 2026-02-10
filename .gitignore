@@ -30,5 +30,11 @@ Thumbs.db
 # Local Claude Code config
 .claude/
 
+# Local Codex config
+.codex/
+
+# Local debug log
+debug.log
+
 # Personal Notes etc.
 /notes

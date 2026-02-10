@@ -23,7 +23,8 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Paragraph, Wrap};
+use ratatui::widgets::Paragraph;
+use unicode_width::UnicodeWidthChar;
 
 /// Horizontal padding to match header/footer inset.
 const INPUT_PAD: u16 = 2;
@@ -67,46 +68,28 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
-    // Build input lines (no prefix needed -- icon is in its own column)
-    let lines: Vec<Line> = app
-        .input
-        .lines
-        .iter()
-        .map(|text| Line::from(Span::raw(text.clone())))
-        .collect();
-
-    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
-    frame.render_widget(paragraph, input_area);
-
-    // Place terminal cursor accounting for visual wrapping.
-    let content_width = input_area.width as usize;
+    // Build wrapped input lines using character-based wrapping for stability.
+    let content_width = input_area.width;
     if content_width == 0 {
         return;
     }
 
-    let mut visual_row: u16 = 0;
-    for row in 0..app.input.lines.len() {
-        let line_chars = app.input.lines[row].chars().count();
-        let wrapped_lines = if content_width > 0 {
-            ((line_chars + content_width) / content_width).max(1) as u16
-        } else {
-            1
-        };
+    let (lines, cursor_pos) = wrap_lines_and_cursor(
+        &app.input.lines,
+        app.input.cursor_row,
+        app.input.cursor_col,
+        content_width,
+    );
 
-        if row == app.input.cursor_row {
-            let cursor_col = app.input.cursor_col;
-            let wrap_row = (cursor_col / content_width) as u16;
-            let wrap_col = (cursor_col % content_width) as u16;
+    let paragraph = Paragraph::new(lines);
+    frame.render_widget(paragraph, input_area);
 
-            let cursor_x = input_area.x + wrap_col;
-            let cursor_y = input_area.y + visual_row + wrap_row;
-
-            if cursor_x < input_area.right() && cursor_y < input_area.bottom() {
-                frame.set_cursor_position((cursor_x, cursor_y));
-            }
-            return;
+    if let Some((row, col)) = cursor_pos {
+        let cursor_x = input_area.x + col;
+        let cursor_y = input_area.y + row;
+        if cursor_x < input_area.right() && cursor_y < input_area.bottom() {
+            frame.set_cursor_position((cursor_x, cursor_y));
         }
-        visual_row += wrapped_lines;
     }
 }
 
@@ -124,11 +107,87 @@ pub fn visual_line_count(app: &App, area_width: u16) -> u16 {
         return app.input.line_count();
     }
 
-    let mut total: u16 = 0;
-    for line in &app.input.lines {
-        let chars = line.chars().count();
-        let wrapped = ((chars + content_width) / content_width).max(1) as u16;
-        total = total.saturating_add(wrapped);
+    let (lines, _) = wrap_lines_and_cursor(
+        &app.input.lines,
+        app.input.cursor_row,
+        app.input.cursor_col,
+        content_width as u16,
+    );
+    (lines.len() as u16).min(MAX_INPUT_HEIGHT)
+}
+
+fn wrap_lines_and_cursor(
+    lines: &[String],
+    cursor_row: usize,
+    cursor_col: usize,
+    content_width: u16,
+) -> (Vec<Line<'static>>, Option<(u16, u16)>) {
+    let width = content_width as usize;
+    let mut wrapped: Vec<Line<'static>> = Vec::new();
+    let mut cursor_pos: Option<(u16, u16)> = None;
+    let mut visual_row: u16 = 0;
+
+    if width == 0 {
+        return (wrapped, None);
     }
-    total.min(MAX_INPUT_HEIGHT)
+
+    for (row, line) in lines.iter().enumerate() {
+        let mut col: usize = 0;
+        let mut current = String::new();
+        let mut char_idx: usize = 0;
+
+        if row == cursor_row && cursor_col == 0 {
+            cursor_pos = Some((visual_row, 0));
+        }
+
+        for ch in line.chars() {
+            if row == cursor_row && char_idx == cursor_col {
+                cursor_pos = Some((visual_row, col as u16));
+            }
+
+            let w = UnicodeWidthChar::width(ch).unwrap_or(0);
+            if w > 0 && col + w > width && col > 0 {
+                wrapped.push(Line::from(Span::raw(std::mem::take(&mut current))));
+                visual_row = visual_row.saturating_add(1);
+                col = 0;
+            }
+
+            if w > width && col == 0 {
+                current.push(ch);
+                wrapped.push(Line::from(Span::raw(std::mem::take(&mut current))));
+                visual_row = visual_row.saturating_add(1);
+                col = 0;
+                char_idx += 1;
+                continue;
+            }
+
+            current.push(ch);
+            if w > 0 {
+                col += w;
+            }
+            char_idx += 1;
+        }
+
+        if row == cursor_row && char_idx == cursor_col {
+            if col >= width {
+                cursor_pos = Some((visual_row.saturating_add(1), 0));
+            } else {
+                cursor_pos = Some((visual_row, col as u16));
+            }
+        }
+
+        if line.is_empty() {
+            wrapped.push(Line::from(Span::raw(String::new())));
+            visual_row = visual_row.saturating_add(1);
+        } else if !current.is_empty() {
+            wrapped.push(Line::from(Span::raw(current)));
+            visual_row = visual_row.saturating_add(1);
+        }
+    }
+
+    if lines.is_empty() {
+        wrapped.push(Line::from(Span::raw(String::new())));
+    }
+
+    (wrapped, cursor_pos)
 }
