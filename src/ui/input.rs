@@ -24,6 +24,9 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
+use ratatui::style::Modifier;
+use ratatui::buffer::Buffer;
+use ratatui::widgets::Widget;
 use unicode_width::UnicodeWidthChar;
 
 /// Horizontal padding to match header/footer inset.
@@ -35,7 +38,7 @@ const PROMPT_WIDTH: u16 = 2;
 /// Maximum input area height (lines) to prevent the input from consuming the entire screen.
 const MAX_INPUT_HEIGHT: u16 = 12;
 
-pub fn render(frame: &mut Frame, area: Rect, app: &App) {
+pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     let padded = Rect {
         x: area.x + INPUT_PAD,
         y: area.y,
@@ -82,7 +85,21 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     );
 
     let paragraph = Paragraph::new(lines);
+    app.rendered_input_area = input_area;
+    app.rendered_input_lines =
+        render_lines_from_paragraph(&paragraph, input_area);
     frame.render_widget(paragraph, input_area);
+
+    if let Some(sel) = app.selection {
+        if sel.kind == crate::app::SelectionKind::Input {
+            frame.render_widget(
+                SelectionOverlay {
+                    selection: sel,
+                },
+                input_area,
+            );
+        }
+    }
 
     if let Some((row, col)) = cursor_pos {
         let cursor_x = input_area.x + col;
@@ -92,6 +109,50 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         }
     }
 }
+
+struct SelectionOverlay {
+    selection: crate::app::SelectionState,
+}
+
+impl Widget for SelectionOverlay {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        let (start, end) = crate::app::normalize_selection(self.selection.start, self.selection.end);
+        for row in start.row..=end.row {
+            let y = area.y.saturating_add(row as u16);
+            if y >= area.bottom() {
+                break;
+            }
+            let row_start = if row == start.row { start.col } else { 0 };
+            let row_end = if row == end.row { end.col } else { area.width as usize };
+            for col in row_start..row_end {
+                let x = area.x.saturating_add(col as u16);
+                if x >= area.right() {
+                    break;
+                }
+                if let Some(cell) = buf.cell_mut((x, y)) {
+                    cell.set_style(cell.style().add_modifier(Modifier::REVERSED));
+                }
+            }
+        }
+    }
+}
+
+fn render_lines_from_paragraph(paragraph: &Paragraph, area: Rect) -> Vec<String> {
+    let mut buf = Buffer::empty(area);
+    paragraph.clone().render(area, &mut buf);
+    let mut lines = Vec::with_capacity(area.height as usize);
+    for y in 0..area.height {
+        let mut line = String::new();
+        for x in 0..area.width {
+            if let Some(cell) = buf.cell((area.x + x, area.y + y)) {
+                line.push_str(cell.symbol());
+            }
+        }
+        lines.push(line.trim_end().to_string());
+    }
+    lines
+}
+
 
 /// Compute the number of visual lines the input occupies, accounting for wrapping.
 /// Used by the layout to allocate the correct input area height.

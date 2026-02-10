@@ -21,7 +21,7 @@ mod state;
 pub use input::InputState;
 pub use state::{
     App, AppStatus, BlockCache, ChatMessage, InlinePermission, MessageBlock, MessageRole, ModeInfo,
-    ModeState, TodoItem, TodoStatus, ToolCallInfo,
+    ModeState, SelectionKind, SelectionPoint, SelectionState, TodoItem, TodoStatus, ToolCallInfo,
 };
 
 use crate::Cli;
@@ -265,6 +265,12 @@ pub async fn connect(
         show_todo_panel: false,
         todo_scroll: 0,
         available_commands: Vec::new(),
+        cached_frame_area: ratatui::layout::Rect::new(0, 0, 0, 0),
+        selection: None,
+        rendered_chat_lines: Vec::new(),
+        rendered_chat_area: ratatui::layout::Rect::new(0, 0, 0, 0),
+        rendered_input_lines: Vec::new(),
+        rendered_input_area: ratatui::layout::Rect::new(0, 0, 0, 0),
     };
 
     Ok((app, conn, child, terminals))
@@ -445,7 +451,36 @@ fn handle_terminal_event(app: &mut App, conn: &Rc<acp::ClientSideConnection>, ev
 
 const MOUSE_SCROLL_LINES: usize = 3;
 
+struct MouseSelectionPoint {
+    kind: SelectionKind,
+    point: SelectionPoint,
+}
+
 fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
+    match mouse.kind {
+        MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
+            if let Some(pt) = mouse_point_to_selection(app, mouse) {
+                app.selection = Some(crate::app::SelectionState {
+                    kind: pt.kind,
+                    start: pt.point,
+                    end: pt.point,
+                    dragging: true,
+                });
+            }
+        }
+        MouseEventKind::Drag(crossterm::event::MouseButton::Left) => {
+            let pt = mouse_point_to_selection(app, mouse);
+            if let (Some(sel), Some(pt)) = (&mut app.selection, pt) {
+                sel.end = pt.point;
+            }
+        }
+        MouseEventKind::Up(crossterm::event::MouseButton::Left) => {
+            if let Some(sel) = &mut app.selection {
+                sel.dragging = false;
+            }
+        }
+        _ => {}
+    }
     match mouse.kind {
         MouseEventKind::ScrollUp => {
             app.scroll_target = app.scroll_target.saturating_sub(MOUSE_SCROLL_LINES);
@@ -459,10 +494,45 @@ fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
     }
 }
 
+fn mouse_point_to_selection(app: &App, mouse: MouseEvent) -> Option<MouseSelectionPoint> {
+    let input_area = app.rendered_input_area;
+    if mouse.column >= input_area.x
+        && mouse.column < input_area.right()
+        && mouse.row >= input_area.y
+        && mouse.row < input_area.bottom()
+    {
+        let row = (mouse.row - input_area.y) as usize;
+        let col = (mouse.column - input_area.x) as usize;
+        return Some(MouseSelectionPoint {
+            kind: SelectionKind::Input,
+            point: SelectionPoint { row, col },
+        });
+    }
+
+    let chat_area = app.rendered_chat_area;
+    if mouse.column >= chat_area.x
+        && mouse.column < chat_area.right()
+        && mouse.row >= chat_area.y
+        && mouse.row < chat_area.bottom()
+    {
+        let row = (mouse.row - chat_area.y) as usize;
+        let col = (mouse.column - chat_area.x) as usize;
+        return Some(MouseSelectionPoint {
+            kind: SelectionKind::Chat,
+            point: SelectionPoint { row, col },
+        });
+    }
+
+    None
+}
+
 fn handle_normal_key(app: &mut App, conn: &Rc<acp::ClientSideConnection>, key: KeyEvent) {
     match (key.code, key.modifiers) {
         // Ctrl+C: quit (graceful shutdown handles cancel + cleanup)
         (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL) => {
+            if try_copy_selection(app) {
+                return;
+            }
             app.should_quit = true;
         }
         // Esc: cancel current turn if thinking/running
@@ -703,6 +773,97 @@ fn respond_permission(app: &mut App, override_index: Option<usize>) {
 
     // Focus the next permission in the queue (now at index 0), if any.
     set_permission_focused(app, 0, true);
+}
+
+fn try_copy_selection(app: &mut App) -> bool {
+    let Some(sel) = app.selection else {
+        return false;
+    };
+    let mut text = match sel.kind {
+        SelectionKind::Chat => extract_chat_selection(app, sel),
+        SelectionKind::Input => extract_input_selection(app, sel),
+    };
+    if text.trim().is_empty() {
+        return false;
+    }
+    if !text.ends_with('\n') {
+        text.push('\n');
+    }
+    if let Ok(mut clipboard) = arboard::Clipboard::new() {
+        let _ = clipboard.set_text(text);
+        return true;
+    }
+    false
+}
+
+fn extract_chat_selection(app: &App, sel: SelectionState) -> String {
+    let (start, end) = normalize_selection(sel.start, sel.end);
+    let mut out = String::new();
+    let lines = &app.rendered_chat_lines;
+    for row in start.row..=end.row {
+        let line = lines.get(row).map(String::as_str).unwrap_or("");
+        let slice = if start.row == end.row {
+            slice_by_cols(line, start.col, end.col)
+        } else if row == start.row {
+            slice_by_cols(line, start.col, line.chars().count())
+        } else if row == end.row {
+            slice_by_cols(line, 0, end.col)
+        } else {
+            line.to_string()
+        };
+        out.push_str(&slice);
+        if row != end.row {
+            out.push('\n');
+        }
+    }
+    out
+}
+
+fn extract_input_selection(app: &App, sel: SelectionState) -> String {
+    let (start, end) = normalize_selection(sel.start, sel.end);
+    let mut out = String::new();
+    let lines = &app.rendered_input_lines;
+    for row in start.row..=end.row {
+        let line = lines.get(row).map(String::as_str).unwrap_or("");
+        let slice = if start.row == end.row {
+            slice_by_cols(line, start.col, end.col)
+        } else if row == start.row {
+            slice_by_cols(line, start.col, line.chars().count())
+        } else if row == end.row {
+            slice_by_cols(line, 0, end.col)
+        } else {
+            line.to_string()
+        };
+        out.push_str(&slice);
+        if row != end.row {
+            out.push('\n');
+        }
+    }
+    out
+}
+
+pub(crate) fn normalize_selection(
+    a: SelectionPoint,
+    b: SelectionPoint,
+) -> (SelectionPoint, SelectionPoint) {
+    if (a.row, a.col) <= (b.row, b.col) {
+        (a, b)
+    } else {
+        (b, a)
+    }
+}
+
+fn slice_by_cols(text: &str, start_col: usize, end_col: usize) -> String {
+    let mut out = String::new();
+    for (i, ch) in text.chars().enumerate() {
+        if i >= end_col {
+            break;
+        }
+        if i >= start_col {
+            out.push(ch);
+        }
+    }
+    out
 }
 
 /// Toggle the session-level collapsed preference and apply to all tool calls.

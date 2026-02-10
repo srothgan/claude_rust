@@ -96,6 +96,18 @@ pub struct App {
     pub todo_scroll: usize,
     /// Commands advertised by the agent via AvailableCommandsUpdate.
     pub available_commands: Vec<acp::AvailableCommand>,
+    /// Last known frame area (for mouse selection mapping).
+    pub cached_frame_area: ratatui::layout::Rect,
+    /// Current selection state for mouse-based selection.
+    pub selection: Option<SelectionState>,
+    /// Cached rendered chat lines for selection/copy.
+    pub rendered_chat_lines: Vec<String>,
+    /// Area where chat content was rendered (for selection mapping).
+    pub rendered_chat_area: ratatui::layout::Rect,
+    /// Cached rendered input lines for selection/copy.
+    pub rendered_input_lines: Vec<String>,
+    /// Area where input content was rendered (for selection mapping).
+    pub rendered_input_area: ratatui::layout::Rect,
 }
 
 impl App {
@@ -127,6 +139,26 @@ pub enum AppStatus {
     Thinking,
     Running,
     Error,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelectionKind {
+    Chat,
+    Input,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SelectionPoint {
+    pub row: usize,
+    pub col: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SelectionState {
+    pub kind: SelectionKind,
+    pub start: SelectionPoint,
+    pub end: SelectionPoint,
+    pub dragging: bool,
 }
 
 pub struct ChatMessage {

@@ -14,14 +14,15 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use crate::app::{App, AppStatus};
+use crate::app::{App, AppStatus, SelectionKind, SelectionState};
 use crate::ui::message::{self, SpinnerState};
 use crate::ui::theme;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Paragraph, Wrap};
+use ratatui::widgets::{Paragraph, Wrap, Widget};
+use ratatui::buffer::Buffer;
 
 pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     // Snapshot spinner state before the loop so we can take &mut msg
@@ -41,6 +42,11 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         all_lines.extend(message::render_message(msg, &spinner, area.width));
     }
 
+    app.rendered_chat_lines = all_lines
+        .iter()
+        .map(|line| line.to_string())
+        .collect();
+
     // Build paragraph once — line_count gives the real wrapped height
     let paragraph = Paragraph::new(Text::from(all_lines)).wrap(Wrap { trim: false });
     let content_height = paragraph.line_count(area.width);
@@ -59,6 +65,12 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         app.scroll_target = 0;
         app.scroll_pos = 0.0;
         app.auto_scroll = true;
+        app.rendered_chat_area = render_area;
+        app.rendered_chat_lines = render_lines_from_paragraph(
+            &paragraph,
+            render_area,
+            0,
+        );
         frame.render_widget(paragraph, render_area);
     } else {
         // Long content: scroll within the full viewport
@@ -80,8 +92,73 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         if app.scroll_offset >= max_scroll {
             app.auto_scroll = true;
         }
+        app.rendered_chat_area = area;
+        app.rendered_chat_lines = render_lines_from_paragraph(
+            &paragraph,
+            area,
+            app.scroll_offset,
+        );
         frame.render_widget(paragraph.scroll((app.scroll_offset as u16, 0)), area);
     }
+
+    if let Some(sel) = app.selection {
+        if sel.kind == SelectionKind::Chat {
+            frame.render_widget(
+                SelectionOverlay {
+                    selection: sel,
+                },
+                app.rendered_chat_area,
+            );
+        }
+    }
+}
+
+struct SelectionOverlay {
+    selection: SelectionState,
+}
+
+impl Widget for SelectionOverlay {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        let (start, end) = crate::app::normalize_selection(self.selection.start, self.selection.end);
+        for row in start.row..=end.row {
+            let y = area.y.saturating_add(row as u16);
+            if y >= area.bottom() {
+                break;
+            }
+            let row_start = if row == start.row { start.col } else { 0 };
+            let row_end = if row == end.row { end.col } else { area.width as usize };
+            for col in row_start..row_end {
+                let x = area.x.saturating_add(col as u16);
+                if x >= area.right() {
+                    break;
+                }
+                if let Some(cell) = buf.cell_mut((x, y)) {
+                    cell.set_style(cell.style().add_modifier(Modifier::REVERSED));
+                }
+            }
+        }
+    }
+}
+
+fn render_lines_from_paragraph(
+    paragraph: &Paragraph,
+    area: Rect,
+    scroll_offset: usize,
+) -> Vec<String> {
+    let mut buf = Buffer::empty(area);
+    let widget = paragraph.clone().scroll((scroll_offset as u16, 0));
+    widget.render(area, &mut buf);
+    let mut lines = Vec::with_capacity(area.height as usize);
+    for y in 0..area.height {
+        let mut line = String::new();
+        for x in 0..area.width {
+            if let Some(cell) = buf.cell((area.x + x, area.y + y)) {
+                line.push_str(cell.symbol());
+            }
+        }
+        lines.push(line.trim_end().to_string());
+    }
+    lines
 }
 
 const FERRIS_SAYS: &[&str] = &[
