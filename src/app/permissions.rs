@@ -54,8 +54,7 @@ fn set_permission_focused(app: &mut App, queue_index: usize, focused: bool) {
 pub(super) fn handle_permission_key(app: &mut App, key: KeyEvent) {
     let option_count = get_focused_permission_tc(app)
         .and_then(|tc| tc.pending_permission.as_ref())
-        .map(|p| p.options.len())
-        .unwrap_or(0);
+        .map_or(0, |p| p.options.len());
 
     match key.code {
         // Up / Down: cycle focus between pending permissions
@@ -69,7 +68,9 @@ pub(super) fn handle_permission_key(app: &mut App, key: KeyEvent) {
                 app.pending_permission_ids.push(first);
             } else {
                 // Move last to front (rotate backward)
-                let last = app.pending_permission_ids.pop().unwrap();
+                let Some(last) = app.pending_permission_ids.pop() else {
+                    return;
+                };
                 app.pending_permission_ids.insert(0, last);
             }
 
@@ -98,20 +99,15 @@ pub(super) fn handle_permission_key(app: &mut App, key: KeyEvent) {
         KeyCode::Enter => {
             respond_permission(app, None);
         }
-        KeyCode::Char('y') | KeyCode::Char('Y') => {
+        KeyCode::Char('y' | 'Y') => {
             respond_permission(app, Some(0));
         }
-        KeyCode::Char('a') | KeyCode::Char('A') => {
+        KeyCode::Char('a' | 'A') => {
             if option_count > 1 {
                 respond_permission(app, Some(1));
             }
         }
-        KeyCode::Char('n') | KeyCode::Char('N') => {
-            if option_count > 0 {
-                respond_permission(app, Some(option_count - 1));
-            }
-        }
-        KeyCode::Esc => {
+        KeyCode::Char('n' | 'N') | KeyCode::Esc => {
             if option_count > 0 {
                 respond_permission(app, Some(option_count - 1));
             }
@@ -139,13 +135,11 @@ fn respond_permission(app: &mut App, override_index: Option<usize>) {
     if let Some(pending) = tc.pending_permission.take() {
         let idx = override_index.unwrap_or(pending.selected_index);
         if let Some(opt) = pending.options.get(idx) {
-            let _ = pending
-                .response_tx
-                .send(acp::RequestPermissionResponse::new(
-                    acp::RequestPermissionOutcome::Selected(acp::SelectedPermissionOutcome::new(
-                        opt.option_id.clone(),
-                    )),
-                ));
+            let _ = pending.response_tx.send(acp::RequestPermissionResponse::new(
+                acp::RequestPermissionOutcome::Selected(acp::SelectedPermissionOutcome::new(
+                    opt.option_id.clone(),
+                )),
+            ));
         }
         tc.cache.invalidate();
     }

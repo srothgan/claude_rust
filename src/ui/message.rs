@@ -76,9 +76,7 @@ pub fn render_message(
             // "Claude" label in Rust orange bold
             lines.push(Line::from(Span::styled(
                 "Claude",
-                Style::default()
-                    .fg(theme::ROLE_ASSISTANT)
-                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(theme::ROLE_ASSISTANT).add_modifier(Modifier::BOLD),
             )));
 
             // Empty blocks + thinking = show spinner
@@ -128,10 +126,10 @@ pub fn render_message(
     lines
 }
 
-/// Preprocess markdown that tui_markdown doesn't handle well.
+/// Preprocess markdown that `tui_markdown` doesn't handle well.
 /// Headings (`# Title`) become `**Title**` (bold) with a blank line before.
 /// Handles variations: `#Title`, `#  Title`, `  ## Title  `, etc.
-/// Links are left as-is -- tui_markdown handles `[title](url)` natively.
+/// Links are left as-is -- `tui_markdown` handles `[title](url)` natively.
 fn preprocess_markdown(text: &str) -> String {
     let mut result = String::with_capacity(text.len());
     for line in text.lines() {
@@ -161,7 +159,7 @@ fn preprocess_markdown(text: &str) -> String {
     result
 }
 
-/// Render a text block with caching. Only calls tui_markdown when cache is stale.
+/// Render a text block with caching. Only calls `tui_markdown` when cache is stale.
 /// `bg` is an optional background color overlay (used for user messages).
 fn render_text_cached(
     text: &str,
@@ -182,9 +180,9 @@ fn render_text_cached(
     }
     let fresh: Vec<Line<'static>> = tables::render_markdown_with_tables(&preprocessed, width, bg);
 
+    let cloned = fresh.clone();
     cache.store(fresh);
-    // unwrap is safe: we just stored the lines above
-    cache.get().unwrap().clone()
+    cloned
 }
 
 /// Convert single line breaks into hard breaks so user-entered newlines persist.
@@ -207,16 +205,14 @@ fn force_markdown_line_breaks(text: &str) -> String {
 }
 
 /// Render a tool call with caching. Only re-renders when cache is stale.
-/// InProgress tool calls skip caching because the icon color pulses each frame.
+/// `InProgress` tool calls skip caching because the icon color pulses each frame.
 fn render_tool_call_cached(
     tc: &mut ToolCallInfo,
     width: u16,
     spinner_frame: usize,
 ) -> Vec<Line<'static>> {
-    let is_in_progress = matches!(
-        tc.status,
-        acp::ToolCallStatus::InProgress | acp::ToolCallStatus::Pending
-    );
+    let is_in_progress =
+        matches!(tc.status, acp::ToolCallStatus::InProgress | acp::ToolCallStatus::Pending);
 
     // Skip cache for in-progress tool calls (icon pulses)
     if !is_in_progress && let Some(cached_lines) = tc.cache.get() {
@@ -258,10 +254,8 @@ fn render_permission_lines(perm: &InlinePermission) -> Vec<Line<'static>> {
 
     for (i, opt) in perm.options.iter().enumerate() {
         let is_selected = i == perm.selected_index;
-        let is_allow = matches!(
-            opt.kind,
-            PermissionOptionKind::AllowOnce | PermissionOptionKind::AllowAlways
-        );
+        let is_allow =
+            matches!(opt.kind, PermissionOptionKind::AllowOnce | PermissionOptionKind::AllowAlways);
 
         let (icon, icon_color) = if is_allow {
             ("\u{2713}", Color::Green) // ✓
@@ -278,21 +272,14 @@ fn render_permission_lines(perm: &InlinePermission) -> Vec<Line<'static>> {
         if is_selected {
             spans.push(Span::styled(
                 "\u{25b8} ",
-                Style::default()
-                    .fg(theme::RUST_ORANGE)
-                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
             ));
         }
 
-        spans.push(Span::styled(
-            format!("{icon} "),
-            Style::default().fg(icon_color),
-        ));
+        spans.push(Span::styled(format!("{icon} "), Style::default().fg(icon_color)));
 
         let name_style = if is_selected {
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD)
+            Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(Color::Gray)
         };
@@ -331,9 +318,7 @@ fn render_tool_call(tc: &ToolCallInfo, width: u16, spinner_frame: usize) -> Vec<
         Span::styled(format!("  {icon} "), Style::default().fg(icon_color)),
         Span::styled(
             format!("{kind_icon} "),
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
         ),
     ];
 
@@ -351,10 +336,7 @@ fn render_tool_call(tc: &ToolCallInfo, width: u16, spinner_frame: usize) -> Vec<
     let has_permission = tc.pending_permission.is_some();
 
     // Diffs (Edit tool) are always shown — user needs to see changes
-    let has_diff = tc
-        .content
-        .iter()
-        .any(|c| matches!(c, acp::ToolCallContent::Diff(_)));
+    let has_diff = tc.content.iter().any(|c| matches!(c, acp::ToolCallContent::Diff(_)));
 
     if tc.content.is_empty() && !has_permission {
         return lines;
@@ -387,7 +369,7 @@ fn render_tool_call(tc: &ToolCallInfo, width: u16, spinner_frame: usize) -> Vec<
             } else {
                 "  \u{2502}  " // │
             };
-            let mut spans = vec![Span::styled(prefix.to_string(), pipe_style)];
+            let mut spans = vec![Span::styled(prefix.to_owned(), pipe_style)];
             spans.extend(content_line.spans);
             lines.push(Line::from(spans));
         }
@@ -396,7 +378,7 @@ fn render_tool_call(tc: &ToolCallInfo, width: u16, spinner_frame: usize) -> Vec<
     lines
 }
 
-/// Spinner frames as `&'static str` for use in status_icon return type.
+/// Spinner frames as `&'static str` for use in `status_icon` return type.
 const SPINNER_STRS: &[&str] = &[
     "\u{280B}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283C}", "\u{2834}", "\u{2826}", "\u{2827}",
     "\u{2807}", "\u{280F}",
@@ -424,7 +406,7 @@ fn status_icon(status: acp::ToolCallStatus, spinner_frame: usize) -> (&'static s
 ///
 /// Left border on all content lines, right border only on top/bottom rules.
 /// Top/bottom rules stretch to the full terminal width.
-/// Output is capped at TERMINAL_MAX_LINES (tail).
+/// Output is capped at `TERMINAL_MAX_LINES` (tail).
 fn render_execute_tool_call(
     tc: &ToolCallInfo,
     width: u16,
@@ -445,16 +427,8 @@ fn render_execute_tool_call(
     let top_fill: String = "\u{2500}".repeat(fill);
     lines.push(Line::from(vec![
         Span::styled("  \u{256D}\u{2500}", border),
-        Span::styled(
-            format!(" {status_icon_str} "),
-            Style::default().fg(icon_color),
-        ),
-        Span::styled(
-            "Bash ",
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        ),
+        Span::styled(format!(" {status_icon_str} "), Style::default().fg(icon_color)),
+        Span::styled("Bash ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
         Span::styled(tc.title.clone(), Style::default().fg(Color::White)),
         Span::styled(format!(" {top_fill}\u{256E}"), border),
     ]));
@@ -465,9 +439,7 @@ fn render_execute_tool_call(
             Span::styled("  \u{2502} ", border),
             Span::styled(
                 "$ ",
-                Style::default()
-                    .fg(theme::RUST_ORANGE)
-                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
             ),
             Span::styled(cmd.clone(), Style::default().fg(Color::Yellow)),
         ]));
@@ -491,7 +463,7 @@ fn render_execute_tool_call(
                 })
                 .collect()
         } else {
-            output.lines().map(|l| Line::from(l.to_string())).collect()
+            output.lines().map(|l| Line::from(l.to_owned())).collect()
         };
 
         let total = raw_lines.len();
@@ -506,10 +478,7 @@ fn render_execute_tool_call(
             body_lines = raw_lines;
         }
     } else if matches!(tc.status, acp::ToolCallStatus::InProgress) {
-        body_lines.push(Line::from(Span::styled(
-            "running...",
-            Style::default().fg(theme::DIM),
-        )));
+        body_lines.push(Line::from(Span::styled("running...", Style::default().fg(theme::DIM))));
     }
 
     for content_line in body_lines {
@@ -530,10 +499,7 @@ fn render_execute_tool_call(
     // ── Bottom border: ╰────────────────────────────────────────╯
     // "╰" (1) + rule + "╯" (1) = inner_w
     let bottom_fill: String = "\u{2500}".repeat(inner_w.saturating_sub(2));
-    lines.push(Line::from(Span::styled(
-        format!("  \u{2570}{bottom_fill}\u{256F}"),
-        border,
-    )));
+    lines.push(Line::from(Span::styled(format!("  \u{2570}{bottom_fill}\u{256F}"), border)));
 
     lines
 }
@@ -549,12 +515,12 @@ fn content_summary(tc: &ToolCallInfo) -> String {
                     let truncated: String = line.chars().take(77).collect();
                     format!("{truncated}...")
                 } else {
-                    line.to_string()
+                    line.to_owned()
                 };
             }
         }
         return if matches!(tc.status, acp::ToolCallStatus::InProgress) {
-            "running...".to_string()
+            "running...".to_owned()
         } else {
             String::new()
         };
@@ -563,11 +529,10 @@ fn content_summary(tc: &ToolCallInfo) -> String {
     for content in &tc.content {
         match content {
             acp::ToolCallContent::Diff(diff) => {
-                let name = diff
-                    .path
-                    .file_name()
-                    .map(|f| f.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| diff.path.to_string_lossy().into_owned());
+                let name = diff.path.file_name().map_or_else(
+                    || diff.path.to_string_lossy().into_owned(),
+                    |f| f.to_string_lossy().into_owned(),
+                );
                 return name;
             }
             acp::ToolCallContent::Content(c) => {
@@ -578,11 +543,10 @@ fn content_summary(tc: &ToolCallInfo) -> String {
                         let truncated: String = first.chars().take(57).collect();
                         format!("{truncated}...")
                     } else {
-                        first.to_string()
+                        first.to_owned()
                     };
                 }
             }
-            acp::ToolCallContent::Terminal(_) => {}
             _ => {}
         }
     }
@@ -608,14 +572,11 @@ fn render_tool_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
                 }
             } else {
                 for text_line in output.lines() {
-                    lines.push(Line::from(text_line.to_string()));
+                    lines.push(Line::from(text_line.to_owned()));
                 }
             }
         } else if matches!(tc.status, acp::ToolCallStatus::InProgress) {
-            lines.push(Line::from(Span::styled(
-                "running...",
-                Style::default().fg(theme::DIM),
-            )));
+            lines.push(Line::from(Span::styled("running...", Style::default().fg(theme::DIM))));
         }
         return lines;
     }
@@ -645,7 +606,6 @@ fn render_tool_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
                     }
                 }
             }
-            acp::ToolCallContent::Terminal(_) => {}
             _ => {}
         }
     }
@@ -654,6 +614,7 @@ fn render_tool_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
 }
 
 /// Check if a tool call title references a markdown file.
+#[allow(clippy::case_sensitive_file_extension_comparisons)]
 fn is_markdown_file(title: &str) -> bool {
     let lower = title.to_lowercase();
     lower.ends_with(".md") || lower.ends_with(".mdx") || lower.ends_with(".markdown")
@@ -670,17 +631,13 @@ fn lang_from_title(title: &str) -> String {
         .find_map(|token| {
             let ext = token.rsplit('.').next()?;
             // Ignore if the "extension" is the whole token (no dot found)
-            if ext.len() < token.len() {
-                Some(ext.to_lowercase())
-            } else {
-                None
-            }
+            if ext.len() < token.len() { Some(ext.to_lowercase()) } else { None }
         })
         .unwrap_or_default()
 }
 
 /// Strip an outer markdown code fence if the text is entirely wrapped in one.
-/// The ACP adapter often wraps file contents in ``` fences.
+/// The ACP adapter often wraps file contents in ```` ``` ```` fences.
 fn strip_outer_code_fence(text: &str) -> String {
     let trimmed = text.trim();
     if trimmed.starts_with("```") {
@@ -689,35 +646,32 @@ fn strip_outer_code_fence(text: &str) -> String {
             let after_opening = &trimmed[first_newline + 1..];
             // Check if it ends with a closing fence
             if let Some(body) = after_opening.strip_suffix("```") {
-                return body.trim_end().to_string();
+                return body.trim_end().to_owned();
             }
             // Also handle closing fence followed by newline
             let after_trimmed = after_opening.trim_end();
             if let Some(stripped) = after_trimmed.strip_suffix("```") {
-                return stripped.trim_end().to_string();
+                return stripped.trim_end().to_owned();
             }
         }
     }
-    text.to_string()
+    text.to_owned()
 }
 
 /// Render a diff with proper unified-style output using the `similar` crate.
-/// The ACP Diff struct provides old_text/new_text — we compute the actual
+/// The ACP `Diff` struct provides `old_text`/`new_text` — we compute the actual
 /// line-level changes and show only changed lines with context.
 fn render_diff(diff: &acp::Diff) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
 
     // File path header
-    let name = diff
-        .path
-        .file_name()
-        .map(|f| f.to_string_lossy().into_owned())
-        .unwrap_or_else(|| diff.path.to_string_lossy().into_owned());
+    let name = diff.path.file_name().map_or_else(
+        || diff.path.to_string_lossy().into_owned(),
+        |f| f.to_string_lossy().into_owned(),
+    );
     lines.push(Line::from(Span::styled(
         name,
-        Style::default()
-            .fg(Color::White)
-            .add_modifier(Modifier::BOLD),
+        Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
     )));
 
     let old = diff.old_text.as_deref().unwrap_or("");

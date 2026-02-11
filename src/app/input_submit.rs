@@ -30,16 +30,15 @@ pub(super) fn submit_input(app: &mut App, conn: &Rc<acp::ClientSideConnection>) 
         blocks: vec![MessageBlock::Text(text.clone(), BlockCache::default())],
     });
     // Create empty assistant message immediately -- message.rs shows thinking indicator
-    app.messages.push(ChatMessage {
-        role: MessageRole::Assistant,
-        blocks: Vec::new(),
-    });
+    app.messages.push(ChatMessage { role: MessageRole::Assistant, blocks: Vec::new() });
     app.input.clear();
     app.status = AppStatus::Thinking;
     app.auto_scroll = true;
 
     let conn = Rc::clone(conn);
-    let sid = app.session_id.clone().unwrap();
+    let Some(sid) = app.session_id.clone() else {
+        return;
+    };
     let tx = app.event_tx.clone();
 
     tokio::task::spawn_local(async move {

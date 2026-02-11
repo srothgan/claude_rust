@@ -37,8 +37,8 @@ pub fn compute(
     help_height: u16,
 ) -> AppLayout {
     let input_height = input_lines.max(1);
-    let header_height: u16 = if show_header { 1 } else { 0 };
-    let header_sep_height: u16 = if show_header { 1 } else { 0 };
+    let header_height: u16 = u16::from(show_header);
+    let header_sep_height: u16 = u16::from(show_header);
     let zero = Rect::new(area.x, area.y, area.width, 0);
 
     if area.height < 8 {
@@ -62,28 +62,19 @@ pub fn compute(
             footer: None,
         }
     } else {
-        let [
-            header,
-            header_sep,
-            body,
-            todo,
-            input_sep,
-            input,
-            input_bottom_sep,
-            help,
-            footer,
-        ] = Layout::vertical([
-            Constraint::Length(header_height),
-            Constraint::Length(header_sep_height),
-            Constraint::Min(3),
-            Constraint::Length(todo_height),
-            Constraint::Length(1),
-            Constraint::Length(input_height),
-            Constraint::Length(1),
-            Constraint::Length(help_height),
-            Constraint::Length(1),
-        ])
-        .areas(area);
+        let [header, header_sep, body, todo, input_sep, input, input_bottom_sep, help, footer] =
+            Layout::vertical([
+                Constraint::Length(header_height),
+                Constraint::Length(header_sep_height),
+                Constraint::Min(3),
+                Constraint::Length(todo_height),
+                Constraint::Length(1),
+                Constraint::Length(input_height),
+                Constraint::Length(1),
+                Constraint::Length(help_height),
+                Constraint::Length(1),
+            ])
+            .areas(area);
         AppLayout {
             header,
             header_sep,

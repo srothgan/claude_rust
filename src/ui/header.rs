@@ -39,17 +39,12 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         Span::styled("\u{1F980} ", Style::default().fg(theme::RUST_ORANGE)),
         Span::styled(
             "claude-rust",
-            Style::default()
-                .fg(theme::RUST_ORANGE)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
         ),
         sep,
         // Model name
         Span::styled("Model: ", Style::default().fg(theme::DIM)),
-        Span::styled(
-            &app.model_name,
-            Style::default().fg(ratatui::style::Color::White),
-        ),
+        Span::styled(&app.model_name, Style::default().fg(ratatui::style::Color::White)),
     ];
 
     let line = Line::from(spans);

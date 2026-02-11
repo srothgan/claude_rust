@@ -38,6 +38,7 @@ const PROMPT_WIDTH: u16 = 2;
 /// Maximum input area height (lines) to prevent the input from consuming the entire screen.
 const MAX_INPUT_HEIGHT: u16 = 12;
 
+#[allow(clippy::cast_possible_truncation)]
 pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     let padded = Rect {
         x: area.x + INPUT_PAD,
@@ -59,10 +60,8 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
 
     if app.input.is_empty() {
         // Placeholder
-        let placeholder = Line::from(Span::styled(
-            "Type a message...",
-            Style::default().fg(theme::DIM),
-        ));
+        let placeholder =
+            Line::from(Span::styled("Type a message...", Style::default().fg(theme::DIM)));
         frame.render_widget(Paragraph::new(placeholder), input_area);
 
         // Cursor at start of input area
@@ -108,6 +107,7 @@ struct SelectionOverlay {
 }
 
 impl Widget for SelectionOverlay {
+    #[allow(clippy::cast_possible_truncation)]
     fn render(self, area: Rect, buf: &mut Buffer) {
         let (start, end) =
             crate::app::normalize_selection(self.selection.start, self.selection.end);
@@ -117,11 +117,7 @@ impl Widget for SelectionOverlay {
                 break;
             }
             let row_start = if row == start.row { start.col } else { 0 };
-            let row_end = if row == end.row {
-                end.col
-            } else {
-                area.width as usize
-            };
+            let row_end = if row == end.row { end.col } else { area.width as usize };
             for col in row_start..row_end {
                 let x = area.x.saturating_add(col as u16);
                 if x >= area.right() {
@@ -146,21 +142,21 @@ fn render_lines_from_paragraph(paragraph: &Paragraph, area: Rect) -> Vec<String>
                 line.push_str(cell.symbol());
             }
         }
-        lines.push(line.trim_end().to_string());
+        lines.push(line.trim_end().to_owned());
     }
     lines
 }
 
 /// Compute the number of visual lines the input occupies, accounting for wrapping.
 /// Used by the layout to allocate the correct input area height.
+#[allow(clippy::cast_possible_truncation)]
 pub fn visual_line_count(app: &App, area_width: u16) -> u16 {
     if app.input.is_empty() {
         return 1;
     }
     // Input content width = total area minus horizontal padding minus prompt column
-    let content_width = area_width
-        .saturating_sub(INPUT_PAD * 2)
-        .saturating_sub(PROMPT_WIDTH) as usize;
+    let content_width =
+        area_width.saturating_sub(INPUT_PAD * 2).saturating_sub(PROMPT_WIDTH) as usize;
     if content_width == 0 {
         return app.input.line_count();
     }
@@ -174,6 +170,7 @@ pub fn visual_line_count(app: &App, area_width: u16) -> u16 {
     (lines.len() as u16).min(MAX_INPUT_HEIGHT)
 }
 
+#[allow(clippy::cast_possible_truncation)]
 fn wrap_lines_and_cursor(
     lines: &[String],
     cursor_row: usize,

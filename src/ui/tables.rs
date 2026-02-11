@@ -148,14 +148,13 @@ fn parse_table_row(line: &str) -> Vec<String> {
     if parts.last().is_some_and(|s| s.trim().is_empty()) {
         parts.pop();
     }
-    parts.into_iter().map(|s| s.trim().to_string()).collect()
+    parts.into_iter().map(|s| s.trim().to_owned()).collect()
 }
 
+#[allow(clippy::cast_possible_truncation, clippy::similar_names)]
 fn render_table_lines(table: &TableBlock, width: u16, bg: Option<Color>) -> Vec<Line<'static>> {
-    let cols = std::cmp::max(
-        table.header.len(),
-        table.rows.iter().map(|r| r.len()).max().unwrap_or(0),
-    );
+    let cols =
+        std::cmp::max(table.header.len(), table.rows.iter().map(Vec::len).max().unwrap_or(0));
     if cols == 0 || width == 0 {
         return Vec::new();
     }
@@ -179,11 +178,8 @@ fn render_table_lines(table: &TableBlock, width: u16, bg: Option<Color>) -> Vec<
     let spacing = 3usize;
     let mut total = widths.iter().sum::<usize>() + spacing.saturating_mul(cols.saturating_sub(1));
     while total > available {
-        if let Some((idx, _)) = widths
-            .iter()
-            .enumerate()
-            .filter(|(_, w)| **w > 1)
-            .max_by_key(|(_, w)| *w)
+        if let Some((idx, _)) =
+            widths.iter().enumerate().filter(|(_, w)| **w > 1).max_by_key(|(_, w)| *w)
         {
             widths[idx] -= 1;
             total = widths.iter().sum::<usize>() + spacing.saturating_mul(cols.saturating_sub(1));
@@ -199,14 +195,12 @@ fn render_table_lines(table: &TableBlock, width: u16, bg: Option<Color>) -> Vec<
         header_style = header_style.bg(bg_color);
     }
     for (i, width) in widths.iter().enumerate().take(cols) {
-        let text = table.header.get(i).map(|s| s.as_str()).unwrap_or("");
+        let text = table.header.get(i).map_or("", String::as_str);
         let lines = wrap_inline_markdown(text, *width, header_style);
         header_height = header_height.max(lines.len() as u16);
         header_cells.push(Cell::from(Text::from(lines)));
     }
-    let header = Row::new(header_cells)
-        .height(header_height)
-        .style(Style::default());
+    let header = Row::new(header_cells).height(header_height).style(Style::default());
 
     let mut rows: Vec<Row<'static>> = Vec::with_capacity(table.rows.len());
     let mut rows_height = 0u16;
@@ -218,7 +212,7 @@ fn render_table_lines(table: &TableBlock, width: u16, bg: Option<Color>) -> Vec<
         }
         let mut row_height = 1u16;
         for (i, width) in widths.iter().enumerate().take(cols) {
-            let text = row.get(i).map(|s| s.as_str()).unwrap_or("");
+            let text = row.get(i).map_or("", String::as_str);
             let lines = wrap_inline_markdown(text, *width, row_style);
             row_height = row_height.max(lines.len() as u16);
             cells.push(Cell::from(Text::from(lines)));
@@ -227,14 +221,10 @@ fn render_table_lines(table: &TableBlock, width: u16, bg: Option<Color>) -> Vec<
         rows_height = rows_height.saturating_add(row_height);
     }
 
-    let constraints: Vec<Constraint> = widths
-        .iter()
-        .map(|w| Constraint::Length(*w as u16))
-        .collect();
+    let constraints: Vec<Constraint> =
+        widths.iter().map(|w| Constraint::Length(*w as u16)).collect();
 
-    let table_widget = Table::new(rows, constraints)
-        .header(header)
-        .column_spacing(spacing as u16);
+    let table_widget = Table::new(rows, constraints).header(header).column_spacing(spacing as u16);
 
     let height = header_height.saturating_add(rows_height);
     let area = Rect::new(0, 0, width, height);
@@ -261,7 +251,10 @@ fn buffer_to_lines(buffer: &Buffer, area: Rect, bg: Option<Color>) -> Vec<Line<'
                 current_text.push_str(symbol);
             } else {
                 if !current_text.is_empty() {
-                    spans.push(Span::styled(current_text.clone(), current_style.unwrap()));
+                    spans.push(Span::styled(
+                        current_text.clone(),
+                        current_style.unwrap_or_default(),
+                    ));
                     current_text.clear();
                 }
                 current_style = Some(style);
@@ -269,10 +262,7 @@ fn buffer_to_lines(buffer: &Buffer, area: Rect, bg: Option<Color>) -> Vec<Line<'
             }
         }
         if !current_text.is_empty() {
-            spans.push(Span::styled(
-                current_text,
-                current_style.unwrap_or_default(),
-            ));
+            spans.push(Span::styled(current_text, current_style.unwrap_or_default()));
         }
         lines.push(Line::from(spans));
     }
@@ -304,10 +294,7 @@ fn parse_inline_chunks(text: &str, base_style: Style) -> Vec<StyledChunk> {
 
     let flush_current = |chunks: &mut Vec<StyledChunk>, current: &mut String, style: Style| {
         if !current.is_empty() {
-            chunks.push(StyledChunk {
-                text: std::mem::take(current),
-                style,
-            });
+            chunks.push(StyledChunk { text: std::mem::take(current), style });
         }
     };
 
@@ -339,10 +326,7 @@ fn parse_inline_chunks(text: &str, base_style: Style) -> Vec<StyledChunk> {
             Event::Code(t) => {
                 flush_current(&mut chunks, &mut current, current_style);
                 let code_style = current_style.add_modifier(Modifier::REVERSED);
-                chunks.push(StyledChunk {
-                    text: t.into_string(),
-                    style: code_style,
-                });
+                chunks.push(StyledChunk { text: t.into_string(), style: code_style });
             }
             Event::SoftBreak => current.push(' '),
             Event::HardBreak => current.push('\n'),
@@ -352,10 +336,7 @@ fn parse_inline_chunks(text: &str, base_style: Style) -> Vec<StyledChunk> {
     flush_current(&mut chunks, &mut current, current_style);
 
     if chunks.is_empty() {
-        chunks.push(StyledChunk {
-            text: String::new(),
-            style: base_style,
-        });
+        chunks.push(StyledChunk { text: String::new(), style: base_style });
     }
 
     chunks
@@ -423,13 +404,7 @@ fn wrap_chunks_to_lines(chunks: &[StyledChunk], width: usize) -> Vec<Line<'stati
         }
     }
 
-    flush_line(
-        &mut lines,
-        &mut line_spans,
-        &mut span_text,
-        &mut span_style,
-        &mut line_width,
-    );
+    flush_line(&mut lines, &mut line_spans, &mut span_text, &mut span_style, &mut line_width);
 
     if lines.is_empty() {
         lines.push(Line::default());

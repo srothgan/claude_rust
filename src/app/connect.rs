@@ -26,17 +26,19 @@ use tokio::process::Child;
 use tokio::sync::mpsc;
 
 /// Connect to the ACP adapter, handshake, authenticate, and create a session.
-/// Runs before ratatui::init() so errors print to stderr normally.
+/// Runs before `ratatui::init()` so errors print to stderr normally.
 /// Returns `(App, Rc<Connection>, Child, TerminalMap)`. The `Child` handle must be
 /// kept alive for the adapter process lifetime -- dropping it kills the process.
 /// The `TerminalMap` is used for cleanup on exit.
+#[allow(clippy::too_many_lines, clippy::items_after_statements, clippy::similar_names)]
 pub async fn connect(
     cli: Cli,
     npx_path: PathBuf,
 ) -> anyhow::Result<(App, Rc<acp::ClientSideConnection>, Child, TerminalMap)> {
-    let cwd = cli
-        .dir
-        .unwrap_or_else(|| std::env::current_dir().expect("Failed to get current directory"));
+    let cwd = match cli.dir {
+        Some(dir) => dir,
+        None => std::env::current_dir()?,
+    };
 
     let (event_tx, event_rx) = mpsc::unbounded_channel();
     let (client, terminals) = ClaudeClient::new(event_tx.clone(), cli.yolo, cwd.clone());
@@ -57,10 +59,7 @@ pub async fn connect(
                             .write_text_file(true))
                         .terminal(true),
                 )
-                .client_info(acp::Implementation::new(
-                    "claude-rust",
-                    env!("CARGO_PKG_VERSION"),
-                )),
+                .client_info(acp::Implementation::new("claude-rust", env!("CARGO_PKG_VERSION"))),
         )
         .await?;
 
@@ -88,15 +87,14 @@ pub async fn connect(
             method.name,
             method.description.as_deref().unwrap_or("no description")
         );
-        conn.authenticate(acp::AuthenticateRequest::new(method.id.clone()))
-            .await?;
+        conn.authenticate(acp::AuthenticateRequest::new(method.id.clone())).await?;
         Ok(f().await?)
     }
 
     // Create or resume session
     let (session_id, resp_models, resp_modes) = if let Some(ref sid) = cli.resume {
         // --resume <session_id>: load existing session
-        eprintln!("Resuming session {}...", sid);
+        eprintln!("Resuming session {sid}...");
         let session_id = acp::SessionId::new(sid.as_str());
         let load_req = acp::LoadSessionRequest::new(session_id.clone(), &cwd);
         let resp = match conn.load_session(load_req).await {
@@ -137,7 +135,7 @@ pub async fn connect(
                 .find(|info| info.model_id == m.current_model_id)
                 .map(|info| info.name.clone())
         })
-        .unwrap_or_else(|| "Unknown model".to_string());
+        .unwrap_or_else(|| "Unknown model".to_owned());
 
     // --model override: switch after session creation
     if let Some(ref model_str) = cli.model {
@@ -146,7 +144,7 @@ pub async fn connect(
             acp::ModelId::new(model_str.as_str()),
         ))
         .await?;
-        model_name = model_str.clone();
+        model_name.clone_from(model_str);
     }
 
     // Extract mode state from session response
@@ -155,16 +153,12 @@ pub async fn connect(
         let available: Vec<ModeInfo> = ms
             .available_modes
             .iter()
-            .map(|m| ModeInfo {
-                id: m.id.to_string(),
-                name: m.name.clone(),
-            })
+            .map(|m| ModeInfo { id: m.id.to_string(), name: m.name.clone() })
             .collect();
         let current_name = available
             .iter()
             .find(|m| m.id == current_id)
-            .map(|m| m.name.clone())
-            .unwrap_or_else(|| current_id.clone());
+            .map_or_else(|| current_id.clone(), |m| m.name.clone());
         ModeState {
             current_mode_id: current_id,
             current_mode_name: current_name,
@@ -185,18 +179,16 @@ pub async fn connect(
     if cli.yolo
         && let Some(ref mut ms) = mode
     {
-        let target_id = "bypassPermissions".to_string();
+        let target_id = "bypassPermissions".to_owned();
         let mode_id = acp::SessionModeId::new(target_id.as_str());
-        conn.set_session_mode(acp::SetSessionModeRequest::new(session_id.clone(), mode_id))
-            .await?;
+        conn.set_session_mode(acp::SetSessionModeRequest::new(session_id.clone(), mode_id)).await?;
         tracing::info!("YOLO: switched to mode '{}'", target_id);
         // Update local mode state to reflect the switch
         let target_name = ms
             .available_modes
             .iter()
             .find(|mi| mi.id == target_id)
-            .map(|mi| mi.name.clone())
-            .unwrap_or_else(|| target_id.clone());
+            .map_or_else(|| target_id.clone(), |mi| mi.name.clone());
         ms.current_mode_id = target_id;
         ms.current_mode_name = target_name;
     }

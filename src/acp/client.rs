@@ -25,6 +25,7 @@ use tokio::sync::mpsc;
 
 /// Convert an `std::io::Error` into an `acp::Error` with the appropriate JSON-RPC
 /// error code and the original message attached as data.
+#[allow(clippy::needless_pass_by_value)]
 fn io_err(e: std::io::Error) -> acp::Error {
     acp::Error::internal_error().data(serde_json::Value::String(e.to_string()))
 }
@@ -60,7 +61,7 @@ pub(crate) struct TerminalProcess {
     /// Accumulated stdout+stderr — append-only, never cleared.
     /// Shared with background reader tasks via Arc.
     pub(crate) output_buffer: Arc<Mutex<Vec<u8>>>,
-    /// Byte offset: how much of output_buffer has already been returned
+    /// Byte offset: how much of `output_buffer` has already been returned
     /// by `terminal_output` polls. Only the adapter advances this.
     output_cursor: usize,
     /// The shell command that was executed (e.g. "echo hello && ls -la").
@@ -77,10 +78,13 @@ fn spawn_output_reader(
         loop {
             match reader.read(&mut chunk).await {
                 Ok(0) => break,
-                Ok(n) => buffer
-                    .lock()
-                    .expect("output buffer lock poisoned")
-                    .extend_from_slice(&chunk[..n]),
+                Ok(n) => {
+                    if let Ok(mut buf) = buffer.lock() {
+                        buf.extend_from_slice(&chunk[..n]);
+                    } else {
+                        break;
+                    }
+                }
                 Err(e) => {
                     tracing::warn!("terminal output reader error: {e}");
                     break;
@@ -97,15 +101,7 @@ impl ClaudeClient {
         cwd: PathBuf,
     ) -> (Self, TerminalMap) {
         let terminals = Rc::new(RefCell::new(HashMap::new()));
-        (
-            Self {
-                event_tx,
-                auto_approve,
-                terminals: Rc::clone(&terminals),
-                cwd,
-            },
-            terminals,
-        )
+        (Self { event_tx, auto_approve, terminals: Rc::clone(&terminals), cwd }, terminals)
     }
 }
 
@@ -150,20 +146,16 @@ impl acp::Client for ClaudeClient {
 
         // Send to UI and wait for user response
         let (response_tx, response_rx) = tokio::sync::oneshot::channel();
-        self.event_tx
-            .send(ClientEvent::PermissionRequest {
-                request: req,
-                response_tx,
-            })
-            .map_err(|_| {
+        self.event_tx.send(ClientEvent::PermissionRequest { request: req, response_tx }).map_err(
+            |_| {
                 acp::Error::internal_error()
                     .data(serde_json::Value::String("Event channel closed".into()))
-            })?;
+            },
+        )?;
 
         response_rx.await.map_err(|_| {
-            acp::Error::internal_error().data(serde_json::Value::String(
-                "Permission dialog cancelled".into(),
-            ))
+            acp::Error::internal_error()
+                .data(serde_json::Value::String("Permission dialog cancelled".into()))
         })
     }
 
@@ -171,12 +163,10 @@ impl acp::Client for ClaudeClient {
         &self,
         notification: acp::SessionNotification,
     ) -> acp::Result<()> {
-        self.event_tx
-            .send(ClientEvent::SessionUpdate(notification.update))
-            .map_err(|_| {
-                acp::Error::internal_error()
-                    .data(serde_json::Value::String("Event channel closed".into()))
-            })?;
+        self.event_tx.send(ClientEvent::SessionUpdate(notification.update)).map_err(|_| {
+            acp::Error::internal_error()
+                .data(serde_json::Value::String("Event channel closed".into()))
+        })?;
         Ok(())
     }
 
@@ -188,14 +178,8 @@ impl acp::Client for ClaudeClient {
 
         let filtered = if req.line.is_some() || req.limit.is_some() {
             let lines: Vec<&str> = content.lines().collect();
-            let start = req
-                .line
-                .map(|l| (l as usize).saturating_sub(1))
-                .unwrap_or(0);
-            let end = req
-                .limit
-                .map(|l| (start + l as usize).min(lines.len()))
-                .unwrap_or(lines.len());
+            let start = req.line.map_or(0, |l| (l as usize).saturating_sub(1));
+            let end = req.limit.map_or(lines.len(), |l| (start + l as usize).min(lines.len()));
             lines[start..end].join("\n")
         } else {
             content
@@ -208,9 +192,7 @@ impl acp::Client for ClaudeClient {
         &self,
         req: acp::WriteTextFileRequest,
     ) -> acp::Result<acp::WriteTextFileResponse> {
-        tokio::fs::write(&req.path, &req.content)
-            .await
-            .map_err(io_err)?;
+        tokio::fs::write(&req.path, &req.content).await.map_err(io_err)?;
         Ok(acp::WriteTextFileResponse::new())
     }
 
@@ -222,7 +204,7 @@ impl acp::Client for ClaudeClient {
 
         // The ACP adapter sends the full shell command as req.command
         // (e.g. "echo hello && ls -la"). We must wrap it in a shell.
-        let mut cmd = if cfg!(windows) {
+        let mut command = if cfg!(windows) {
             let mut c = tokio::process::Command::new("cmd.exe");
             c.arg("/C").arg(&req.command);
             c
@@ -232,9 +214,9 @@ impl acp::Client for ClaudeClient {
             c
         };
         // Append any extra args the adapter may send (typically empty)
-        cmd.args(&req.args);
+        command.args(&req.args);
 
-        let mut child = cmd
+        let mut child = command
             .current_dir(&cwd)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
@@ -279,28 +261,27 @@ impl acp::Client for ClaudeClient {
         let tid = req.terminal_id.to_string();
         let mut terminals = self.terminals.borrow_mut();
         let terminal = terminals.get_mut(tid.as_str()).ok_or_else(|| {
-            acp::Error::internal_error().data(serde_json::Value::String(format!(
-                "Terminal not found: {tid}"
-            )))
+            acp::Error::internal_error()
+                .data(serde_json::Value::String(format!("Terminal not found: {tid}")))
         })?;
 
         // Return new output since last poll (advance cursor, never clear buffer)
         let output = {
-            let buf = terminal
-                .output_buffer
-                .lock()
-                .expect("output buffer lock poisoned");
-            let new_data = &buf[terminal.output_cursor..];
-            let data = String::from_utf8_lossy(new_data).to_string();
-            terminal.output_cursor = buf.len();
-            data
+            if let Ok(buf) = terminal.output_buffer.lock() {
+                let new_data = &buf[terminal.output_cursor..];
+                let data = String::from_utf8_lossy(new_data).to_string();
+                terminal.output_cursor = buf.len();
+                data
+            } else {
+                String::new()
+            }
         };
 
         let exit_status = match terminal.child.try_wait().map_err(io_err)? {
             Some(status) => {
                 let mut es = acp::TerminalExitStatus::new();
                 if let Some(code) = status.code() {
-                    es = es.exit_code(code as u32);
+                    es = es.exit_code(code.unsigned_abs());
                 }
                 Some(es)
             }
@@ -345,7 +326,7 @@ impl acp::Client for ClaudeClient {
                 if let Some(status) = terminal.child.try_wait().map_err(io_err)? {
                     let mut exit_status = acp::TerminalExitStatus::new();
                     if let Some(code) = status.code() {
-                        exit_status = exit_status.exit_code(code as u32);
+                        exit_status = exit_status.exit_code(code.unsigned_abs());
                     }
                     return Ok(acp::WaitForTerminalExitResponse::new(exit_status));
                 }

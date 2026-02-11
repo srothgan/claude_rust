@@ -36,10 +36,10 @@ pub(super) fn handle_terminal_event(
 ) {
     match event {
         Event::Key(key) if key.kind == KeyEventKind::Press => {
-            if !app.pending_permission_ids.is_empty() {
-                handle_permission_key(app, key);
-            } else {
+            if app.pending_permission_ids.is_empty() {
                 handle_normal_key(app, conn, key);
+            } else {
+                handle_permission_key(app, key);
             }
         }
         Event::Mouse(mouse) => {
@@ -221,10 +221,7 @@ fn handle_normal_key(app: &mut App, conn: &Rc<acp::ClientSideConnection>, key: K
                 let modes = mode
                     .available_modes
                     .iter()
-                    .map(|m| ModeInfo {
-                        id: m.id.clone(),
-                        name: m.name.clone(),
-                    })
+                    .map(|m| ModeInfo { id: m.id.clone(), name: m.name.clone() })
                     .collect();
                 app.mode = Some(ModeState {
                     current_mode_id: next_id,
@@ -259,10 +256,7 @@ fn toggle_all_tool_calls(app: &mut App) {
 pub(super) fn handle_acp_event(app: &mut App, event: ClientEvent) {
     match event {
         ClientEvent::SessionUpdate(update) => handle_session_update(app, update),
-        ClientEvent::PermissionRequest {
-            request,
-            response_tx,
-        } => {
+        ClientEvent::PermissionRequest { request, response_tx } => {
             let tool_id = request.tool_call.tool_call_id.to_string();
             if let Some((mi, bi)) = app.lookup_tool_call(&tool_id) {
                 if let Some(MessageBlock::ToolCall(tc)) =
@@ -319,7 +313,7 @@ fn handle_tool_call(app: &mut App, tc: acp::ToolCall) {
         m.get("claudeCode")
             .and_then(|v| v.get("toolName"))
             .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
+            .map(str::to_owned)
     });
 
     let is_task = claude_tool_name.as_deref() == Some("Task");
@@ -330,10 +324,7 @@ fn handle_tool_call(app: &mut App, tc: acp::ToolCall) {
 
     // Extract todos from TodoWrite tool calls
     if claude_tool_name.as_deref() == Some("TodoWrite") {
-        tracing::info!(
-            "TodoWrite ToolCall detected: id={id_str}, raw_input={:?}",
-            tc.raw_input
-        );
+        tracing::info!("TodoWrite ToolCall detected: id={id_str}, raw_input={:?}", tc.raw_input);
         if let Some(ref raw_input) = tc.raw_input {
             let todos = parse_todos(raw_input);
             tracing::info!("Parsed {} todos from ToolCall raw_input", todos.len());
@@ -368,10 +359,8 @@ fn handle_tool_call(app: &mut App, tc: acp::ToolCall) {
     // Attach to current assistant message -- update existing or add new
     let msg_idx = app.messages.len().saturating_sub(1);
     let existing_pos = app.lookup_tool_call(&tool_info.id);
-    let is_assistant = app
-        .messages
-        .last()
-        .is_some_and(|m| matches!(m.role, MessageRole::Assistant));
+    let is_assistant =
+        app.messages.last().is_some_and(|m| matches!(m.role, MessageRole::Assistant));
 
     if is_assistant {
         if let Some((mi, bi)) = existing_pos {
@@ -379,18 +368,17 @@ fn handle_tool_call(app: &mut App, tc: acp::ToolCall) {
                 app.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
             {
                 let existing = existing.as_mut();
-                existing.title = tool_info.title.clone();
+                existing.title.clone_from(&tool_info.title);
                 existing.status = tool_info.status;
-                existing.content = tool_info.content.clone();
+                existing.content.clone_from(&tool_info.content);
                 existing.kind = tool_info.kind;
-                existing.claude_tool_name = tool_info.claude_tool_name.clone();
+                existing.claude_tool_name.clone_from(&tool_info.claude_tool_name);
                 existing.cache.invalidate();
             }
         } else if let Some(last) = app.messages.last_mut() {
             let block_idx = last.blocks.len();
             let tc_id = tool_info.id.clone();
-            last.blocks
-                .push(MessageBlock::ToolCall(Box::new(tool_info)));
+            last.blocks.push(MessageBlock::ToolCall(Box::new(tool_info)));
             app.index_tool_call(tc_id, msg_idx, block_idx);
         }
     }
@@ -401,6 +389,7 @@ fn handle_tool_call(app: &mut App, tc: acp::ToolCall) {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
     tracing::debug!("SessionUpdate variant: {}", session_update_name(&update));
     match update {
@@ -432,7 +421,7 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
         acp::SessionUpdate::ToolCallUpdate(tcu) => {
             // Find and update the tool call by id (in-place)
             let id_str = tcu.tool_call_id.to_string();
-            let has_content = tcu.fields.content.as_ref().map(|c| c.len()).unwrap_or(0);
+            let has_content = tcu.fields.content.as_ref().map_or(0, Vec::len);
             tracing::debug!(
                 "ToolCallUpdate: id={id_str} new_title={:?} new_status={:?} content_blocks={has_content}",
                 tcu.fields.title,
@@ -442,7 +431,7 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
             // If this is a Task completing, remove from active list
             if matches!(
                 tcu.fields.status,
-                Some(acp::ToolCallStatus::Completed) | Some(acp::ToolCallStatus::Failed)
+                Some(acp::ToolCallStatus::Completed | acp::ToolCallStatus::Failed)
             ) {
                 app.remove_active_task(&id_str);
             }
@@ -479,7 +468,7 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
                             .and_then(|v| v.get("toolName"))
                             .and_then(|v| v.as_str())
                     {
-                        tc.claude_tool_name = Some(name.to_string());
+                        tc.claude_tool_name = Some(name.to_owned());
                     }
                     // Update todos from TodoWrite raw_input updates
                     if tc.claude_tool_name.as_deref() == Some("TodoWrite") {
@@ -522,20 +511,17 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
             apply_plan_todos(app, &plan);
         }
         acp::SessionUpdate::AvailableCommandsUpdate(cmds) => {
-            tracing::debug!(
-                "Available commands: {} commands",
-                cmds.available_commands.len()
-            );
+            tracing::debug!("Available commands: {} commands", cmds.available_commands.len());
             app.available_commands = cmds.available_commands;
         }
         acp::SessionUpdate::CurrentModeUpdate(update) => {
             if let Some(ref mut mode) = app.mode {
                 let mode_id = update.current_mode_id.to_string();
                 if let Some(info) = mode.available_modes.iter().find(|m| m.id == mode_id) {
-                    mode.current_mode_name = info.name.clone();
+                    mode.current_mode_name.clone_from(&info.name);
                     mode.current_mode_id = mode_id;
                 } else {
-                    mode.current_mode_name = mode_id.clone();
+                    mode.current_mode_name.clone_from(&mode_id);
                     mode.current_mode_id = mode_id;
                 }
             }
@@ -563,17 +549,14 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
 /// may use either regardless of the host OS.
 fn shorten_tool_title(title: &str, cwd_raw: &str) -> String {
     if cwd_raw.is_empty() {
-        return title.to_string();
+        return title.to_owned();
     }
 
     // Quick check: if title doesn't contain any part of cwd, skip normalization
     // Use the first path component of cwd as a heuristic
-    let cwd_start = cwd_raw
-        .split(['/', '\\'])
-        .find(|s| !s.is_empty())
-        .unwrap_or(cwd_raw);
+    let cwd_start = cwd_raw.split(['/', '\\']).find(|s| !s.is_empty()).unwrap_or(cwd_raw);
     if !title.contains(cwd_start) {
-        return title.to_string();
+        return title.to_owned();
     }
 
     // Normalize both to forward slashes for matching
@@ -581,11 +564,7 @@ fn shorten_tool_title(title: &str, cwd_raw: &str) -> String {
     let title_norm = title.replace('\\', "/");
 
     // Ensure cwd ends with slash so we strip the separator too
-    let with_sep = if cwd_norm.ends_with('/') {
-        cwd_norm
-    } else {
-        format!("{cwd_norm}/")
-    };
+    let with_sep = if cwd_norm.ends_with('/') { cwd_norm } else { format!("{cwd_norm}/") };
 
     if title_norm.contains(&with_sep) {
         return title_norm.replace(&with_sep, "");
@@ -593,7 +572,7 @@ fn shorten_tool_title(title: &str, cwd_raw: &str) -> String {
     title_norm
 }
 
-/// Return a human-readable name for a SessionUpdate variant (for debug logging).
+/// Return a human-readable name for a `SessionUpdate` variant (for debug logging).
 fn session_update_name(update: &acp::SessionUpdate) -> &'static str {
     match update {
         acp::SessionUpdate::AgentMessageChunk(_) => "AgentMessageChunk",
