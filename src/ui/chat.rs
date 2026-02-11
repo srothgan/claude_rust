@@ -176,7 +176,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
 
         let paragraph = Paragraph::new(Text::from(all_lines)).wrap(Wrap { trim: false });
         let real_height = paragraph.line_count(width);
-        let offset = (viewport_height - real_height) as u16;
+        let offset = viewport_height.saturating_sub(real_height) as u16;
         let render_area =
             Rect { x: area.x, y: area.y + offset, width: area.width, height: real_height as u16 };
         app.scroll_offset = 0;
