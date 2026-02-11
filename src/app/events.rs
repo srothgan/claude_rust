@@ -20,6 +20,7 @@ use super::{
 };
 use crate::acp::client::ClientEvent;
 use crate::app::input_submit::submit_input;
+use crate::app::mention;
 use crate::app::permissions::handle_permission_key;
 use crate::app::selection::try_copy_selection;
 use crate::app::todos::{apply_plan_todos, parse_todos, set_todos};
@@ -36,7 +37,9 @@ pub(super) fn handle_terminal_event(
 ) {
     match event {
         Event::Key(key) if key.kind == KeyEventKind::Press => {
-            if app.pending_permission_ids.is_empty() {
+            if app.mention.is_some() {
+                handle_mention_key(app, conn, key);
+            } else if app.pending_permission_ids.is_empty() {
                 handle_normal_key(app, conn, key);
             } else {
                 handle_permission_key(app, key);
@@ -234,8 +237,40 @@ fn handle_normal_key(app: &mut App, conn: &Rc<acp::ClientSideConnection>, key: K
         (KeyCode::Backspace, _) => app.input.delete_char_before(),
         (KeyCode::Delete, _) => app.input.delete_char_after(),
         // Printable characters
-        (KeyCode::Char(c), _) => app.input.insert_char(c),
+        (KeyCode::Char(c), _) => {
+            app.input.insert_char(c);
+            if c == '@' {
+                mention::activate(app);
+            }
+        }
         _ => {}
+    }
+}
+
+/// Handle keystrokes while the `@` mention autocomplete dropdown is active.
+fn handle_mention_key(app: &mut App, conn: &Rc<acp::ClientSideConnection>, key: KeyEvent) {
+    match (key.code, key.modifiers) {
+        (KeyCode::Up, _) => mention::move_up(app),
+        (KeyCode::Down, _) => mention::move_down(app),
+        (KeyCode::Enter | KeyCode::Tab, _) => mention::confirm_selection(app),
+        (KeyCode::Esc, _) => mention::deactivate(app),
+        (KeyCode::Backspace, _) => {
+            app.input.delete_char_before();
+            mention::update_query(app);
+        }
+        (KeyCode::Char(c), _) => {
+            app.input.insert_char(c);
+            if c.is_whitespace() {
+                mention::deactivate(app);
+            } else {
+                mention::update_query(app);
+            }
+        }
+        // Any other key: deactivate mention and forward to normal handling
+        _ => {
+            mention::deactivate(app);
+            handle_normal_key(app, conn, key);
+        }
     }
 }
 

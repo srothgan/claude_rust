@@ -244,6 +244,8 @@ pub async fn connect(
         rendered_chat_area: ratatui::layout::Rect::new(0, 0, 0, 0),
         rendered_input_lines: Vec::new(),
         rendered_input_area: ratatui::layout::Rect::new(0, 0, 0, 0),
+        mention: None,
+        file_cache: None,
     };
 
     Ok((app, conn, child, terminals))

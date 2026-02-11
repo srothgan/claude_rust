@@ -20,6 +20,7 @@ use std::collections::{HashMap, HashSet};
 use tokio::sync::mpsc;
 
 use super::input::InputState;
+use super::mention;
 
 #[derive(Debug)]
 pub struct ModeInfo {
@@ -109,6 +110,10 @@ pub struct App {
     pub rendered_input_lines: Vec<String>,
     /// Area where input content was rendered (for selection mapping).
     pub rendered_input_area: ratatui::layout::Rect,
+    /// Active `@` file mention autocomplete state.
+    pub mention: Option<mention::MentionState>,
+    /// Cached file list from cwd (scanned on first `@` trigger).
+    pub file_cache: Option<Vec<mention::FileCandidate>>,
 }
 
 impl App {

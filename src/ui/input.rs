@@ -18,12 +18,12 @@
 // Track: https://github.com/rhysd/tui-textarea/pull/118
 
 use crate::app::App;
+use crate::app::mention;
 use crate::ui::theme;
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::Modifier;
-use ratatui::style::Style;
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Widget;
@@ -81,6 +81,9 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         app.input.cursor_col,
         content_width,
     );
+
+    // Post-process: highlight @mentions in cyan
+    let lines = highlight_mentions(lines);
 
     let paragraph = Paragraph::new(lines);
     app.rendered_input_area = input_area;
@@ -245,4 +248,43 @@ fn wrap_lines_and_cursor(
     }
 
     (wrapped, cursor_pos)
+}
+
+/// Post-process wrapped lines to highlight `@path` mentions in cyan.
+/// Each `Line` is scanned for `@` patterns and split into styled spans.
+fn highlight_mentions(lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
+    let mention_style = Style::default().fg(Color::Cyan);
+
+    lines
+        .into_iter()
+        .map(|line| {
+            // Collect the raw text of the line from all spans
+            let raw: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+            if !raw.contains('@') {
+                return line;
+            }
+
+            let spans = mention::find_mention_spans(&raw);
+            if spans.is_empty() {
+                return line;
+            }
+
+            let mut styled_spans: Vec<Span<'static>> = Vec::new();
+            let mut last_end = 0;
+
+            for (start, end, _) in &spans {
+                if *start > last_end {
+                    styled_spans.push(Span::raw(raw[last_end..*start].to_owned()));
+                }
+                styled_spans.push(Span::styled(raw[*start..*end].to_owned(), mention_style));
+                last_end = *end;
+            }
+
+            if last_end < raw.len() {
+                styled_spans.push(Span::raw(raw[last_end..].to_owned()));
+            }
+
+            Line::from(styled_spans)
+        })
+        .collect()
 }

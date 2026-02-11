@@ -14,6 +14,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+mod autocomplete;
 mod chat;
 mod header;
 mod help;
@@ -62,6 +63,11 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     // Input
     input::render(frame, areas.input, app);
+
+    // Autocomplete dropdown (floating overlay above input)
+    if autocomplete::is_active(app) {
+        autocomplete::render(frame, areas.input, app);
+    }
 
     // Input separator (below input)
     render_separator(frame, areas.input_bottom_sep);

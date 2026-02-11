@@ -18,6 +18,7 @@ mod connect;
 mod events;
 mod input;
 mod input_submit;
+pub(crate) mod mention;
 mod permissions;
 mod selection;
 mod state;

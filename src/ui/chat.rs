@@ -33,7 +33,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     let spinner = SpinnerState {
         frame: app.spinner_frame,
         is_active: matches!(app.status, AppStatus::Thinking | AppStatus::Running),
-        is_last_message: false, // overridden per-message below
+        is_last_message: false,      // overridden per-message below
         is_thinking_mid_turn: false, // overridden per-message below
     };
 
@@ -50,7 +50,8 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
             && is_thinking
             && matches!(msg.role, MessageRole::Assistant)
             && !msg.blocks.is_empty();
-        let msg_spinner = SpinnerState { is_last_message: is_last, is_thinking_mid_turn: mid_turn, ..spinner };
+        let msg_spinner =
+            SpinnerState { is_last_message: is_last, is_thinking_mid_turn: mid_turn, ..spinner };
         // Per-block caching is handled inside render_message -- each text block
         // and tool call maintains its own cache, only re-rendering on mutation.
         all_lines.extend(message::render_message(msg, &msg_spinner, area.width));
