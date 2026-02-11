@@ -56,6 +56,7 @@ pub async fn run_tui(app: &mut App, conn: Rc<acp::ClientSideConnection>) -> anyh
         std::io::stdout(),
         crossterm::event::EnableBracketedPaste,
         crossterm::event::EnableMouseCapture,
+        crossterm::event::EnableFocusChange,
         // Enable enhanced keyboard protocol for reliable modifier detection (e.g. Shift+Enter)
         PushKeyboardEnhancementFlags(
             KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
@@ -147,6 +148,7 @@ pub async fn run_tui(app: &mut App, conn: Rc<acp::ClientSideConnection>) -> anyh
         std::io::stdout(),
         crossterm::event::DisableBracketedPaste,
         crossterm::event::DisableMouseCapture,
+        crossterm::event::DisableFocusChange,
         PopKeyboardEnhancementFlags
     );
     ratatui::restore();

@@ -344,9 +344,9 @@ mod tests {
     fn slice_combining_diacritical_splits_glyph() {
         let s = "e\u{0301}x"; // e + combining acute + x
         // chars: e(0), \u{0301}(1), x(2)
-        assert_eq!(slice_by_cols(s, 0, 1), "e");          // bare e, no accent
-        assert_eq!(slice_by_cols(s, 1, 2), "\u{0301}");   // orphan combining mark
-        assert_eq!(slice_by_cols(s, 0, 2), "e\u{0301}");  // full glyph
+        assert_eq!(slice_by_cols(s, 0, 1), "e"); // bare e, no accent
+        assert_eq!(slice_by_cols(s, 1, 2), "\u{0301}"); // orphan combining mark
+        assert_eq!(slice_by_cols(s, 0, 2), "e\u{0301}"); // full glyph
         assert_eq!(slice_by_cols(s, 0, 3), "e\u{0301}x"); // everything
     }
 
@@ -379,8 +379,8 @@ mod tests {
         let flag = "\u{1F1FA}\u{1F1F8}"; // US flag = 2 chars
         assert_eq!(flag.chars().count(), 2);
         assert_eq!(slice_by_cols(flag, 0, 1), "\u{1F1FA}"); // half a flag
-        assert_eq!(slice_by_cols(flag, 0, 2), flag);         // whole flag
-        assert_eq!(slice_by_cols(flag, 1, 2), "\u{1F1F8}");  // other half
+        assert_eq!(slice_by_cols(flag, 0, 2), flag); // whole flag
+        assert_eq!(slice_by_cols(flag, 1, 2), "\u{1F1F8}"); // other half
     }
 
     /// Arabic RTL text — chars are chars regardless of display direction.

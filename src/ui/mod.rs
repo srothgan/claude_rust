@@ -46,8 +46,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     // Header bar (always visible)
     if areas.header.height > 0 {
+        render_separator(frame, areas.header_top_sep);
         header::render(frame, areas.header, app);
-        render_separator(frame, areas.header_sep);
+        render_separator(frame, areas.header_bot_sep);
     }
 
     // Body: chat (includes welcome text when no messages yet)

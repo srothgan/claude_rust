@@ -33,17 +33,30 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     };
 
     if app.cached_header_line.is_none() {
-        let sep = Span::styled("  \u{2502}  ", Style::default().fg(theme::DIM));
-        app.cached_header_line = Some(Line::from(vec![
+        let sep = || Span::styled("  \u{2502}  ", Style::default().fg(theme::DIM));
+        let white = Style::default().fg(ratatui::style::Color::White);
+
+        let mut spans = vec![
             Span::styled("\u{1F980} ", Style::default().fg(theme::RUST_ORANGE)),
             Span::styled(
                 "claude-rust",
                 Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
             ),
-            sep,
+            sep(),
             Span::styled("Model: ", Style::default().fg(theme::DIM)),
-            Span::styled(app.model_name.clone(), Style::default().fg(ratatui::style::Color::White)),
-        ]));
+            Span::styled(app.model_name.clone(), white),
+            sep(),
+            Span::styled("Loc: ", Style::default().fg(theme::DIM)),
+            Span::styled(app.cwd.clone(), white),
+        ];
+
+        if let Some(branch) = &app.git_branch {
+            spans.push(sep());
+            spans.push(Span::styled("Branch: ", Style::default().fg(theme::DIM)));
+            spans.push(Span::styled(branch.clone(), white));
+        }
+
+        app.cached_header_line = Some(Line::from(spans));
     }
 
     if let Some(line) = &app.cached_header_line {

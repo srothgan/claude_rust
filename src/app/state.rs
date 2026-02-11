@@ -120,7 +120,9 @@ pub struct App {
     pub input_wrap_cache: Option<InputWrapCache>,
     /// Cached todo compact line (invalidated on `set_todos()`).
     pub cached_todo_compact: Option<ratatui::text::Line<'static>>,
-    /// Cached header line (populated once, never changes after init).
+    /// Current git branch (refreshed on focus gain + turn complete).
+    pub git_branch: Option<String>,
+    /// Cached header line (invalidated when git branch changes).
     pub cached_header_line: Option<ratatui::text::Line<'static>>,
     /// Cached footer line (invalidated on mode change).
     pub cached_footer_line: Option<ratatui::text::Line<'static>>,
@@ -146,6 +148,27 @@ impl App {
     /// Register a tool call's position in the message/block arrays.
     pub fn index_tool_call(&mut self, id: String, msg_idx: usize, block_idx: usize) {
         self.tool_call_index.insert(id, (msg_idx, block_idx));
+    }
+
+    /// Detect the current git branch and invalidate the header cache if it changed.
+    pub fn refresh_git_branch(&mut self) {
+        let new_branch = std::process::Command::new("git")
+            .args(["branch", "--show-current"])
+            .current_dir(&self.cwd_raw)
+            .output()
+            .ok()
+            .and_then(|o| {
+                if o.status.success() {
+                    let s = String::from_utf8_lossy(&o.stdout).trim().to_owned();
+                    if s.is_empty() { None } else { Some(s) }
+                } else {
+                    None
+                }
+            });
+        if new_branch != self.git_branch {
+            self.git_branch = new_branch;
+            self.cached_header_line = None;
+        }
     }
 }
 
@@ -276,8 +299,8 @@ mod tests {
 
     use super::*;
     use pretty_assertions::assert_eq;
-    use ratatui::text::{Line, Span};
     use ratatui::style::{Color, Style};
+    use ratatui::text::{Line, Span};
 
     // BlockCache
 
@@ -314,8 +337,7 @@ mod tests {
         cache.store(vec![Line::from("new")]);
         let lines = cache.get().unwrap();
         assert_eq!(lines.len(), 1);
-        let span_content: String =
-            lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        let span_content: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(span_content, "new");
     }
 
@@ -366,9 +388,8 @@ mod tests {
     #[test]
     fn cache_store_many_lines() {
         let mut cache = BlockCache::default();
-        let lines: Vec<Line<'static>> = (0..1000)
-            .map(|i| Line::from(Span::raw(format!("line {i}"))))
-            .collect();
+        let lines: Vec<Line<'static>> =
+            (0..1000).map(|i| Line::from(Span::raw(format!("line {i}")))).collect();
         cache.store(lines);
         assert_eq!(cache.get().unwrap().len(), 1000);
     }
@@ -476,6 +497,7 @@ mod tests {
             cached_welcome_lines: None,
             input_wrap_cache: None,
             cached_todo_compact: None,
+            git_branch: None,
             cached_header_line: None,
             cached_footer_line: None,
         }

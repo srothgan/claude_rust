@@ -210,7 +210,7 @@ pub async fn connect(
         }
     };
 
-    let app = App {
+    let mut app = App {
         messages: Vec::new(),
         scroll_offset: 0,
         scroll_target: 0,
@@ -249,9 +249,12 @@ pub async fn connect(
         cached_welcome_lines: None,
         input_wrap_cache: None,
         cached_todo_compact: None,
+        git_branch: None,
         cached_header_line: None,
         cached_footer_line: None,
     };
+
+    app.refresh_git_branch();
 
     Ok((app, conn, child, terminals))
 }

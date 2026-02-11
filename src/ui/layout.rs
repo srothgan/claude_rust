@@ -17,8 +17,9 @@
 use ratatui::layout::{Constraint, Layout, Rect};
 
 pub struct AppLayout {
+    pub header_top_sep: Rect,
     pub header: Rect,
-    pub header_sep: Rect,
+    pub header_bot_sep: Rect,
     pub body: Rect,
     /// Area for the todo panel (zero-height when hidden or no todos).
     pub todo: Rect,
@@ -38,7 +39,7 @@ pub fn compute(
 ) -> AppLayout {
     let input_height = input_lines.max(1);
     let header_height: u16 = u16::from(show_header);
-    let header_sep_height: u16 = u16::from(show_header);
+    let header_bot_sep_height: u16 = u16::from(show_header);
     let zero = Rect::new(area.x, area.y, area.width, 0);
 
     if area.height < 8 {
@@ -51,8 +52,9 @@ pub fn compute(
         ])
         .areas(area);
         AppLayout {
+            header_top_sep: zero,
             header: zero,
-            header_sep: zero,
+            header_bot_sep: zero,
             body,
             todo: zero,
             input_sep: Rect::new(area.x, input.y, area.width, 0),
@@ -62,22 +64,34 @@ pub fn compute(
             footer: None,
         }
     } else {
-        let [header, header_sep, body, todo, input_sep, input, input_bottom_sep, help, footer] =
-            Layout::vertical([
-                Constraint::Length(header_height),
-                Constraint::Length(header_sep_height),
-                Constraint::Min(3),
-                Constraint::Length(todo_height),
-                Constraint::Length(1),
-                Constraint::Length(input_height),
-                Constraint::Length(1),
-                Constraint::Length(help_height),
-                Constraint::Length(1),
-            ])
-            .areas(area);
-        AppLayout {
+        let [
+            header_top_sep,
             header,
-            header_sep,
+            header_bot_sep,
+            body,
+            todo,
+            input_sep,
+            input,
+            input_bottom_sep,
+            help,
+            footer,
+        ] = Layout::vertical([
+            Constraint::Length(header_bot_sep_height),
+            Constraint::Length(header_height),
+            Constraint::Length(header_bot_sep_height),
+            Constraint::Min(3),
+            Constraint::Length(todo_height),
+            Constraint::Length(1),
+            Constraint::Length(input_height),
+            Constraint::Length(1),
+            Constraint::Length(help_height),
+            Constraint::Length(1),
+        ])
+        .areas(area);
+        AppLayout {
+            header_top_sep,
+            header,
+            header_bot_sep,
             body,
             todo,
             input_sep,
@@ -104,8 +118,9 @@ mod tests {
 
     /// Sum all layout area heights (handles optional footer).
     fn total_height(layout: &AppLayout) -> u16 {
-        layout.header.height
-            + layout.header_sep.height
+        layout.header_top_sep.height
+            + layout.header.height
+            + layout.header_bot_sep.height
             + layout.body.height
             + layout.todo.height
             + layout.input_sep.height
@@ -118,8 +133,9 @@ mod tests {
     /// Collect all non-zero-height areas in top-to-bottom order.
     fn visible_areas(layout: &AppLayout) -> Vec<Rect> {
         let mut areas = vec![
+            layout.header_top_sep,
             layout.header,
-            layout.header_sep,
+            layout.header_bot_sep,
             layout.body,
             layout.todo,
             layout.input_sep,
@@ -153,7 +169,7 @@ mod tests {
         let layout = compute(area(80, 24), 1, true, 0, 0);
         assert!(layout.footer.is_some());
         assert_eq!(layout.header.height, 1);
-        assert_eq!(layout.header_sep.height, 1);
+        assert_eq!(layout.header_bot_sep.height, 1);
         assert!(layout.body.height >= 3);
         assert_eq!(layout.input_sep.height, 1);
         assert_eq!(layout.input.height, 1);
@@ -171,7 +187,7 @@ mod tests {
     fn normal_no_header() {
         let layout = compute(area(80, 24), 1, false, 0, 0);
         assert_eq!(layout.header.height, 0);
-        assert_eq!(layout.header_sep.height, 0);
+        assert_eq!(layout.header_bot_sep.height, 0);
         assert!(layout.footer.is_some());
     }
 
@@ -275,8 +291,9 @@ mod tests {
         assert_eq!(layout.body.x, 10);
         assert_eq!(layout.input.x, 10);
         assert_eq!(layout.body.width, 80);
-        // First area starts at y=5
-        assert_eq!(layout.header.y, 5);
+        // First area starts at y=5 (top separator), header at y=6
+        assert_eq!(layout.header_top_sep.y, 5);
+        assert_eq!(layout.header.y, 6);
         assert_eq!(total_height(&layout), 24);
     }
 
@@ -399,9 +416,12 @@ mod tests {
 
     /// Body starts immediately after header separator.
     #[test]
-    fn body_follows_header_sep() {
+    fn body_follows_header_bot_sep() {
         let layout = compute(area(80, 24), 1, true, 0, 0);
-        assert_eq!(layout.body.y, layout.header.y + layout.header.height + layout.header_sep.height);
+        assert_eq!(
+            layout.body.y,
+            layout.header.y + layout.header.height + layout.header_bot_sep.height
+        );
     }
 
     // stress / parametric
@@ -412,10 +432,7 @@ mod tests {
         for h in [1, 2, 3, 5, 7, 8, 10, 15, 24, 50, 100] {
             for w in [1, 10, 80, 200] {
                 let layout = compute(Rect::new(0, 0, w, h), 1, true, 0, 0);
-                assert_eq!(
-                    total_height(&layout), h,
-                    "Height mismatch for {w}x{h}"
-                );
+                assert_eq!(total_height(&layout), h, "Height mismatch for {w}x{h}");
                 for a in visible_areas(&layout) {
                     assert_eq!(a.width, w, "Width mismatch in area {a:?} for {w}x{h}");
                 }
@@ -431,7 +448,8 @@ mod tests {
                 for help in [0, 1, 3] {
                     let layout = compute(area(80, 30), input, true, todo, help);
                     assert_eq!(
-                        total_height(&layout), 30,
+                        total_height(&layout),
+                        30,
                         "Height mismatch for input={input} todo={todo} help={help}"
                     );
                     assert_no_overlap_and_ordered(&layout);

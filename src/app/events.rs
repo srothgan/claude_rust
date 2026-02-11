@@ -51,6 +51,9 @@ pub(super) fn handle_terminal_event(
         Event::Paste(text) => {
             app.input.insert_str(&text);
         }
+        Event::FocusGained => {
+            app.refresh_git_branch();
+        }
         // Resize is handled automatically by ratatui
         _ => {}
     }
@@ -328,6 +331,7 @@ pub(super) fn handle_acp_event(app: &mut App, event: ClientEvent) {
         }
         ClientEvent::TurnComplete => {
             app.status = AppStatus::Ready;
+            app.refresh_git_branch();
         }
         ClientEvent::TurnError(msg) => {
             tracing::error!("Turn error: {msg}");
@@ -708,7 +712,8 @@ mod tests {
 
     #[test]
     fn shorten_unix_path() {
-        let result = shorten_tool_title("Read /home/user/project/src/main.rs", "/home/user/project");
+        let result =
+            shorten_tool_title("Read /home/user/project/src/main.rs", "/home/user/project");
         assert_eq!(result, "Read src/main.rs");
     }
 
@@ -749,10 +754,8 @@ mod tests {
 
     #[test]
     fn shorten_mixed_separators() {
-        let result = shorten_tool_title(
-            "Read C:/Users/me/project/src/lib.rs",
-            "C:\\Users\\me\\project",
-        );
+        let result =
+            shorten_tool_title("Read C:/Users/me/project/src/lib.rs", "C:\\Users\\me\\project");
         assert_eq!(result, "Read src/lib.rs");
     }
 
@@ -907,6 +910,7 @@ mod tests {
             cached_welcome_lines: None,
             input_wrap_cache: None,
             cached_todo_compact: None,
+            git_branch: None,
             cached_header_line: None,
             cached_footer_line: None,
         }
@@ -921,45 +925,48 @@ mod tests {
     #[test]
     fn has_in_progress_no_tool_calls() {
         let mut app = make_test_app();
-        app.messages.push(assistant_msg(vec![
-            MessageBlock::Text("hello".into(), BlockCache::default()),
-        ]));
+        app.messages
+            .push(assistant_msg(vec![MessageBlock::Text("hello".into(), BlockCache::default())]));
         assert!(!has_in_progress_tool_calls(&app));
     }
 
     #[test]
     fn has_in_progress_with_pending_tool() {
         let mut app = make_test_app();
-        app.messages.push(assistant_msg(vec![
-            MessageBlock::ToolCall(Box::new(tool_call("tc1", acp::ToolCallStatus::Pending))),
-        ]));
+        app.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
+            "tc1",
+            acp::ToolCallStatus::Pending,
+        )))]));
         assert!(has_in_progress_tool_calls(&app));
     }
 
     #[test]
     fn has_in_progress_with_in_progress_tool() {
         let mut app = make_test_app();
-        app.messages.push(assistant_msg(vec![
-            MessageBlock::ToolCall(Box::new(tool_call("tc1", acp::ToolCallStatus::InProgress))),
-        ]));
+        app.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
+            "tc1",
+            acp::ToolCallStatus::InProgress,
+        )))]));
         assert!(has_in_progress_tool_calls(&app));
     }
 
     #[test]
     fn has_in_progress_all_completed() {
         let mut app = make_test_app();
-        app.messages.push(assistant_msg(vec![
-            MessageBlock::ToolCall(Box::new(tool_call("tc1", acp::ToolCallStatus::Completed))),
-        ]));
+        app.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
+            "tc1",
+            acp::ToolCallStatus::Completed,
+        )))]));
         assert!(!has_in_progress_tool_calls(&app));
     }
 
     #[test]
     fn has_in_progress_all_failed() {
         let mut app = make_test_app();
-        app.messages.push(assistant_msg(vec![
-            MessageBlock::ToolCall(Box::new(tool_call("tc1", acp::ToolCallStatus::Failed))),
-        ]));
+        app.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
+            "tc1",
+            acp::ToolCallStatus::Failed,
+        )))]));
         assert!(!has_in_progress_tool_calls(&app));
     }
 
@@ -977,9 +984,10 @@ mod tests {
     fn has_in_progress_only_checks_last_message() {
         let mut app = make_test_app();
         // First assistant message has in-progress tool
-        app.messages.push(assistant_msg(vec![
-            MessageBlock::ToolCall(Box::new(tool_call("tc1", acp::ToolCallStatus::InProgress))),
-        ]));
+        app.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
+            "tc1",
+            acp::ToolCallStatus::InProgress,
+        )))]));
         // Last message is user — should be false
         app.messages.push(user_msg("thanks"));
         assert!(!has_in_progress_tool_calls(&app));
@@ -989,13 +997,15 @@ mod tests {
     #[test]
     fn has_in_progress_ignores_earlier_assistant() {
         let mut app = make_test_app();
-        app.messages.push(assistant_msg(vec![
-            MessageBlock::ToolCall(Box::new(tool_call("tc1", acp::ToolCallStatus::InProgress))),
-        ]));
+        app.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
+            "tc1",
+            acp::ToolCallStatus::InProgress,
+        )))]));
         app.messages.push(user_msg("ok"));
-        app.messages.push(assistant_msg(vec![
-            MessageBlock::ToolCall(Box::new(tool_call("tc2", acp::ToolCallStatus::Completed))),
-        ]));
+        app.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
+            "tc2",
+            acp::ToolCallStatus::Completed,
+        )))]));
         assert!(!has_in_progress_tool_calls(&app));
     }
 
