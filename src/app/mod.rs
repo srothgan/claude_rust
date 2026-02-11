@@ -76,7 +76,7 @@ pub async fn run_tui(app: &mut App, conn: Rc<acp::ClientSideConnection>) -> anyh
             Some(event) = app.event_rx.recv() => {
                 events::handle_acp_event(app, event);
             }
-            _ = tokio::time::sleep(time_to_next) => {}
+            () = tokio::time::sleep(time_to_next) => {}
         }
 
         // Phase 2: drain all remaining queued events (non-blocking)
@@ -90,7 +90,6 @@ pub async fn run_tui(app: &mut App, conn: Rc<acp::ClientSideConnection>) -> anyh
             match app.event_rx.try_recv() {
                 Ok(event) => {
                     events::handle_acp_event(app, event);
-                    continue;
                 }
                 Err(_) => break,
             }
@@ -125,13 +124,11 @@ pub async fn run_tui(app: &mut App, conn: Rc<acp::ClientSideConnection>) -> anyh
             if let Some(pending) = tc.pending_permission.take()
                 && let Some(last_opt) = pending.options.last()
             {
-                let _ = pending
-                    .response_tx
-                    .send(acp::RequestPermissionResponse::new(
-                        acp::RequestPermissionOutcome::Selected(
-                            acp::SelectedPermissionOutcome::new(last_opt.option_id.clone()),
-                        ),
-                    ));
+                let _ = pending.response_tx.send(acp::RequestPermissionResponse::new(
+                    acp::RequestPermissionOutcome::Selected(acp::SelectedPermissionOutcome::new(
+                        last_opt.option_id.clone(),
+                    )),
+                ));
             }
         }
     }

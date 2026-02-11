@@ -43,6 +43,8 @@ pub fn tool_kind_label(
     kind: agent_client_protocol::ToolKind,
     claude_tool_name: Option<&str>,
 ) -> (&'static str, &'static str) {
+    use agent_client_protocol::ToolKind;
+
     // Override for specific Claude Code tool names
     if let Some(name) = claude_tool_name {
         match name {
@@ -53,7 +55,6 @@ pub fn tool_kind_label(
         }
     }
 
-    use agent_client_protocol::ToolKind;
     match kind {
         ToolKind::Read => ("⬚", "Read"),
         ToolKind::Edit => ("▣", "Edit"),

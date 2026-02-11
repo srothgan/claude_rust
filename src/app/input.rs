@@ -23,11 +23,7 @@ pub struct InputState {
 
 impl InputState {
     pub fn new() -> Self {
-        Self {
-            lines: vec![String::new()],
-            cursor_row: 0,
-            cursor_col: 0,
-        }
+        Self { lines: vec![String::new()], cursor_row: 0, cursor_col: 0 }
     }
 
     #[must_use]
@@ -144,7 +140,7 @@ impl InputState {
 
     #[must_use]
     pub fn line_count(&self) -> u16 {
-        self.lines.len() as u16
+        u16::try_from(self.lines.len()).unwrap_or(u16::MAX)
     }
 }
 
@@ -156,8 +152,5 @@ impl Default for InputState {
 
 /// Convert a character index to a byte index within a string.
 fn char_to_byte_index(s: &str, char_idx: usize) -> usize {
-    s.char_indices()
-        .nth(char_idx)
-        .map(|(i, _)| i)
-        .unwrap_or(s.len())
+    s.char_indices().nth(char_idx).map_or(s.len(), |(i, _)| i)
 }

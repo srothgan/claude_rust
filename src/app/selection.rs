@@ -20,11 +20,7 @@ pub(crate) fn normalize_selection(
     a: super::SelectionPoint,
     b: super::SelectionPoint,
 ) -> (super::SelectionPoint, super::SelectionPoint) {
-    if (a.row, a.col) <= (b.row, b.col) {
-        (a, b)
-    } else {
-        (b, a)
-    }
+    if (a.row, a.col) <= (b.row, b.col) { (a, b) } else { (b, a) }
 }
 
 pub(super) fn try_copy_selection(app: &mut App) -> bool {
@@ -53,7 +49,7 @@ fn extract_chat_selection(app: &App, sel: SelectionState) -> String {
     let mut out = String::new();
     let lines = &app.rendered_chat_lines;
     for row in start.row..=end.row {
-        let line = lines.get(row).map(String::as_str).unwrap_or("");
+        let line = lines.get(row).map_or("", String::as_str);
         let slice = if start.row == end.row {
             slice_by_cols(line, start.col, end.col)
         } else if row == start.row {
@@ -61,7 +57,7 @@ fn extract_chat_selection(app: &App, sel: SelectionState) -> String {
         } else if row == end.row {
             slice_by_cols(line, 0, end.col)
         } else {
-            line.to_string()
+            line.to_owned()
         };
         out.push_str(&slice);
         if row != end.row {
@@ -76,7 +72,7 @@ fn extract_input_selection(app: &App, sel: SelectionState) -> String {
     let mut out = String::new();
     let lines = &app.rendered_input_lines;
     for row in start.row..=end.row {
-        let line = lines.get(row).map(String::as_str).unwrap_or("");
+        let line = lines.get(row).map_or("", String::as_str);
         let slice = if start.row == end.row {
             slice_by_cols(line, start.col, end.col)
         } else if row == start.row {
@@ -84,7 +80,7 @@ fn extract_input_selection(app: &App, sel: SelectionState) -> String {
         } else if row == end.row {
             slice_by_cols(line, 0, end.col)
         } else {
-            line.to_string()
+            line.to_owned()
         };
         out.push_str(&slice);
         if row != end.row {

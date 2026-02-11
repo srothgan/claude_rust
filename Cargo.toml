@@ -33,3 +33,34 @@ tui-markdown = { version = "0.3.7" }
 unicode-width = "0.2.2"
 uuid = { version = "1.20.0", features = ["v4"] }
 which = "8.0.0"
+
+[lints.clippy]
+# Deny panic-prone operations in production code (tests exempted via clippy.toml)
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+
+# CLI tools legitimately print to stdout/stderr
+print_stdout = "allow"
+print_stderr = "allow"
+
+# Pedantic with noisy exceptions disabled
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+
+# Lint categories
+correctness = { level = "deny", priority = -1 }
+suspicious = { level = "warn", priority = -1 }
+perf = { level = "warn", priority = -1 }
+complexity = { level = "warn", priority = -1 }
+style = { level = "warn", priority = -1 }
+
+# CLI-specific
+exit = "deny"
+shadow_same = "warn"
+shadow_unrelated = "allow"
+string_to_string = "warn"
+str_to_string = "warn"

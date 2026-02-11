@@ -32,6 +32,7 @@ pub struct AdapterProcess {
 ///
 /// Must be called from within a `tokio::task::LocalSet` context because
 /// ACP futures are `!Send`.
+#[allow(clippy::unused_async)]
 pub async fn spawn_adapter(
     client: impl acp::Client + 'static,
     npx_path: &Path,
@@ -46,14 +47,10 @@ pub async fn spawn_adapter(
         .kill_on_drop(true)
         .spawn()?;
 
-    let child_stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| anyhow::anyhow!("Failed to capture adapter stdin"))?;
-    let child_stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| anyhow::anyhow!("Failed to capture adapter stdout"))?;
+    let child_stdin =
+        child.stdin.take().ok_or_else(|| anyhow::anyhow!("Failed to capture adapter stdin"))?;
+    let child_stdout =
+        child.stdout.take().ok_or_else(|| anyhow::anyhow!("Failed to capture adapter stdout"))?;
 
     let stdin_compat = child_stdin.compat_write();
     let stdout_compat = child_stdout.compat();

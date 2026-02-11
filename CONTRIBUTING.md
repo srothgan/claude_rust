@@ -31,7 +31,7 @@ By participating, you agree to uphold this code.
 5. Ensure all checks pass:
    ```bash
    cargo fmt --all -- --check
-   cargo clippy --all-targets --all-features
+   cargo clippy --all-targets --all-features -- -D warnings
    cargo test --all-features
    ```
 6. Commit using [Conventional Commits](https://www.conventionalcommits.org/):
@@ -46,7 +46,7 @@ By participating, you agree to uphold this code.
 
 ```bash
 # Prerequisites
-# - Rust 1.86.0+ (install via https://rustup.rs)
+# - Rust 1.88.0+ (install via https://rustup.rs)
 # - Node.js 18+ (for the ACP adapter)
 # - npx (included with Node.js)
 
@@ -68,13 +68,13 @@ cargo test
 cargo fmt --all -- --check
 
 # Run lints
-cargo clippy --all-targets --all-features
+cargo clippy --all-targets --all-features -- -D warnings
 ```
 
 ## Coding Standards
 
-- **Formatting**: Use `rustfmt` (default configuration, no custom `.rustfmt.toml`)
-- **Linting**: `cargo clippy` must pass with zero warnings
+- **Formatting**: Use `rustfmt` (configured via `rustfmt.toml`)
+- **Linting**: `cargo clippy` must pass with zero warnings (configured via `clippy.toml` and `Cargo.toml` `[lints.clippy]`)
 - **Naming**: Follow [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/naming.html)
 - **Error handling**: Use `thiserror` for library errors, `anyhow` in main/app
 - **Comments**: Only where the logic isn't self-evident

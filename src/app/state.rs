@@ -34,7 +34,7 @@ pub struct ModeState {
     pub available_modes: Vec<ModeInfo>,
 }
 
-/// A single todo item from Claude's `TodoWrite` tool.
+/// A single todo item from Claude's `TodoWrite` tool call.
 #[derive(Debug, Clone)]
 pub struct TodoItem {
     pub content: String,
@@ -49,9 +49,10 @@ pub enum TodoStatus {
     Completed,
 }
 
+#[allow(clippy::struct_excessive_bools)]
 pub struct App {
     pub messages: Vec<ChatMessage>,
-    /// Rendered scroll offset (rounded from scroll_pos).
+    /// Rendered scroll offset (rounded from `scroll_pos`).
     pub scroll_offset: usize,
     /// Target scroll offset requested by user input or auto-scroll.
     pub scroll_target: usize,
@@ -77,14 +78,14 @@ pub struct App {
     /// Session-level default for tool call collapsed state.
     /// Toggled by Ctrl+O — new tool calls inherit this value.
     pub tools_collapsed: bool,
-    /// IDs of Task tool calls currently InProgress — their children get hidden.
-    /// Use `has_active_tasks()`, `insert_active_task()`, `remove_active_task()`.
+    /// IDs of Task tool calls currently `InProgress` -- their children get hidden.
+    /// Use `insert_active_task()`, `remove_active_task()`.
     pub(super) active_task_ids: HashSet<String>,
     /// Shared terminal process map — used to snapshot output on completion.
     pub terminals: crate::acp::client::TerminalMap,
     /// Force a full terminal clear on next render frame.
     pub force_redraw: bool,
-    /// O(1) lookup: tool_call_id → (message_index, block_index).
+    /// O(1) lookup: `tool_call_id` -> `(message_index, block_index)`.
     /// Use `lookup_tool_call()`, `index_tool_call()`.
     pub(super) tool_call_index: HashMap<String, (usize, usize)>,
     /// Current todo list from Claude's `TodoWrite` tool calls.
@@ -94,7 +95,7 @@ pub struct App {
     pub show_todo_panel: bool,
     /// Scroll offset for the expanded todo panel (capped at 5 visible lines).
     pub todo_scroll: usize,
-    /// Commands advertised by the agent via AvailableCommandsUpdate.
+    /// Commands advertised by the agent via `AvailableCommandsUpdate`.
     pub available_commands: Vec<acp::AvailableCommand>,
     /// Last known frame area (for mouse selection mapping).
     pub cached_frame_area: ratatui::layout::Rect,
@@ -121,7 +122,7 @@ impl App {
         self.active_task_ids.remove(id);
     }
 
-    /// Look up the (message_index, block_index) for a tool call ID.
+    /// Look up the (`message_index`, `block_index`) for a tool call ID.
     #[must_use]
     pub fn lookup_tool_call(&self, id: &str) -> Option<(usize, usize)> {
         self.tool_call_index.get(id).copied()
@@ -186,11 +187,7 @@ impl BlockCache {
     /// Get a reference to the cached lines, if fresh.
     #[must_use]
     pub fn get(&self) -> Option<&Vec<ratatui::text::Line<'static>>> {
-        if self.version == 0 {
-            self.lines.as_ref()
-        } else {
-            None
-        }
+        if self.version == 0 { self.lines.as_ref() } else { None }
     }
 
     /// Store freshly rendered lines, marking the cache as clean.
@@ -219,8 +216,8 @@ pub struct ToolCallInfo {
     pub status: acp::ToolCallStatus,
     pub content: Vec<acp::ToolCallContent>,
     pub collapsed: bool,
-    /// The actual Claude Code tool name from meta.claudeCode.toolName
-    /// (e.g. "Task", "Glob", "mcp__acp__Read", "WebSearch")
+    /// The actual Claude Code tool name from `meta.claudeCode.toolName`
+    /// (e.g. "Task", "Glob", "`mcp__acp__Read`", "`WebSearch`")
     pub claude_tool_name: Option<String>,
     /// Hidden tool calls are subagent children — not rendered directly.
     pub hidden: bool,
@@ -228,7 +225,7 @@ pub struct ToolCallInfo {
     pub terminal_id: Option<String>,
     /// The shell command that was executed (e.g. "echo hello && ls -la").
     pub terminal_command: Option<String>,
-    /// Snapshot of terminal output, updated each frame while InProgress.
+    /// Snapshot of terminal output, updated each frame while `InProgress`.
     pub terminal_output: Option<String>,
     /// Length of terminal buffer at last snapshot — used to skip O(n) re-snapshots
     /// when the buffer hasn't grown.
@@ -239,7 +236,7 @@ pub struct ToolCallInfo {
     pub pending_permission: Option<InlinePermission>,
 }
 
-/// Permission state stored inline on a ToolCallInfo, so the permission
+/// Permission state stored inline on a `ToolCallInfo`, so the permission
 /// controls render inside the tool call block (unified edit/permission UX).
 pub struct InlinePermission {
     pub options: Vec<acp::PermissionOption>,

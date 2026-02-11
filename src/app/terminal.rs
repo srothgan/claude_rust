@@ -16,10 +16,10 @@
 
 use super::{App, MessageBlock};
 
-/// Snapshot terminal output buffers into ToolCallInfo for rendering.
+/// Snapshot terminal output buffers into `ToolCallInfo` for rendering.
 /// Called each frame so in-progress Execute tool calls show live output.
 ///
-/// The output_buffer is append-only (never cleared). The adapter's
+/// The `output_buffer` is append-only (never cleared). The adapter's
 /// `terminal_output` uses a cursor to track what it already returned.
 /// We simply snapshot the full buffer for display each frame.
 pub(super) fn update_terminal_outputs(app: &mut App) {
@@ -35,10 +35,9 @@ pub(super) fn update_terminal_outputs(app: &mut App) {
                 if let Some(ref tid) = tc.terminal_id
                     && let Some(terminal) = terminals.get(tid.as_str())
                 {
-                    let buf = terminal
-                        .output_buffer
-                        .lock()
-                        .expect("output buffer lock poisoned");
+                    let Ok(buf) = terminal.output_buffer.lock() else {
+                        continue;
+                    };
                     let current_len = buf.len();
                     if current_len == 0 || current_len == tc.terminal_output_len {
                         continue;

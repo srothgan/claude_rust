@@ -24,6 +24,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Paragraph, Widget, Wrap};
 
+#[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss, clippy::cast_sign_loss)]
 pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     // Snapshot spinner state before the loop so we can take &mut msg
     let spinner = SpinnerState {
@@ -42,7 +43,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         all_lines.extend(message::render_message(msg, &spinner, area.width));
     }
 
-    app.rendered_chat_lines = all_lines.iter().map(|line| line.to_string()).collect();
+    app.rendered_chat_lines = all_lines.iter().map(ToString::to_string).collect();
 
     // Build paragraph once — line_count gives the real wrapped height
     let paragraph = Paragraph::new(Text::from(all_lines)).wrap(Wrap { trim: false });
@@ -102,6 +103,7 @@ struct SelectionOverlay {
 }
 
 impl Widget for SelectionOverlay {
+    #[allow(clippy::cast_possible_truncation)]
     fn render(self, area: Rect, buf: &mut Buffer) {
         let (start, end) =
             crate::app::normalize_selection(self.selection.start, self.selection.end);
@@ -111,11 +113,7 @@ impl Widget for SelectionOverlay {
                 break;
             }
             let row_start = if row == start.row { start.col } else { 0 };
-            let row_end = if row == end.row {
-                end.col
-            } else {
-                area.width as usize
-            };
+            let row_end = if row == end.row { end.col } else { area.width as usize };
             for col in row_start..row_end {
                 let x = area.x.saturating_add(col as u16);
                 if x >= area.right() {
@@ -129,6 +127,7 @@ impl Widget for SelectionOverlay {
     }
 }
 
+#[allow(clippy::cast_possible_truncation)]
 fn render_lines_from_paragraph(
     paragraph: &Paragraph,
     area: Rect,
@@ -145,7 +144,7 @@ fn render_lines_from_paragraph(
                 line.push_str(cell.symbol());
             }
         }
-        lines.push(line.trim_end().to_string());
+        lines.push(line.trim_end().to_owned());
     }
     lines
 }
@@ -182,9 +181,7 @@ fn welcome_lines(app: &App) -> Vec<Line<'static>> {
         Span::styled(format!("{pad}Model: "), Style::default().fg(theme::DIM)),
         Span::styled(
             app.model_name.clone(),
-            Style::default()
-                .fg(theme::RUST_ORANGE)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
         ),
     ]));
     lines.push(Line::from(Span::styled(

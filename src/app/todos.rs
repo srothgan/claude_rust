@@ -17,7 +17,7 @@
 use super::{App, TodoItem, TodoStatus};
 use agent_client_protocol as acp;
 
-/// Parse a TodoWrite raw_input JSON value into a Vec<TodoItem>.
+/// Parse a `TodoWrite` `raw_input` JSON value into a `Vec<TodoItem>`.
 /// Expected shape: `{"todos": [{"content": "...", "status": "...", "activeForm": "..."}]}`
 pub(super) fn parse_todos(raw_input: &serde_json::Value) -> Vec<TodoItem> {
     let Some(arr) = raw_input.get("todos").and_then(|v| v.as_array()) else {
@@ -25,23 +25,16 @@ pub(super) fn parse_todos(raw_input: &serde_json::Value) -> Vec<TodoItem> {
     };
     arr.iter()
         .filter_map(|item| {
-            let content = item.get("content")?.as_str()?.to_string();
+            let content = item.get("content")?.as_str()?.to_owned();
             let status_str = item.get("status")?.as_str()?;
-            let active_form = item
-                .get("activeForm")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
+            let active_form =
+                item.get("activeForm").and_then(|v| v.as_str()).unwrap_or("").to_owned();
             let status = match status_str {
                 "in_progress" => TodoStatus::InProgress,
                 "completed" => TodoStatus::Completed,
                 _ => TodoStatus::Pending,
             };
-            Some(TodoItem {
-                content,
-                status,
-                active_form,
-            })
+            Some(TodoItem { content, status, active_form })
         })
         .collect()
 }
@@ -74,11 +67,7 @@ pub(super) fn apply_plan_todos(app: &mut App, plan: &acp::Plan) {
             "Completed" => TodoStatus::Completed,
             _ => TodoStatus::Pending,
         };
-        todos.push(TodoItem {
-            content: entry.content.clone(),
-            status,
-            active_form: String::new(),
-        });
+        todos.push(TodoItem { content: entry.content.clone(), status, active_form: String::new() });
     }
     set_todos(app, todos);
 }

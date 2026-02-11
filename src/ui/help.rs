@@ -30,6 +30,7 @@ pub fn is_active(app: &App) -> bool {
     app.input.text().trim() == "?"
 }
 
+#[allow(clippy::cast_possible_truncation)]
 pub fn compute_height(app: &App, _area_width: u16) -> u16 {
     if !is_active(app) {
         return 0;
@@ -44,6 +45,7 @@ pub fn compute_height(app: &App, _area_width: u16) -> u16 {
     inner_height.saturating_add(2)
 }
 
+#[allow(clippy::cast_possible_truncation)]
 pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     if area.height == 0 || area.width == 0 || !is_active(app) {
         return;
@@ -73,18 +75,13 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         let left_cell = format_item_cell(&left, left_width);
         let right_cell = format_item_cell(&right, right_width);
 
-        table_rows.push(Row::new(vec![
-            Cell::from(left_cell),
-            Cell::from(right_cell),
-        ]));
+        table_rows.push(Row::new(vec![Cell::from(left_cell), Cell::from(right_cell)]));
     }
 
     let block = Block::default()
         .title(Span::styled(
             " Help ",
-            Style::default()
-                .fg(theme::RUST_ORANGE)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded);
@@ -105,45 +102,39 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
 fn build_help_items(app: &App) -> Vec<(String, String)> {
     let mut items: Vec<(String, String)> = vec![
         // Global
-        ("Ctrl+C".to_string(), "Quit".to_string()),
-        ("Ctrl+L".to_string(), "Redraw screen".to_string()),
-        ("Shift+Tab".to_string(), "Cycle mode".to_string()),
-        ("Ctrl+O".to_string(), "Toggle tool collapse".to_string()),
-        (
-            "Ctrl+T".to_string(),
-            "Toggle todos (when available)".to_string(),
-        ),
+        ("Ctrl+C".to_owned(), "Quit".to_owned()),
+        ("Ctrl+L".to_owned(), "Redraw screen".to_owned()),
+        ("Shift+Tab".to_owned(), "Cycle mode".to_owned()),
+        ("Ctrl+O".to_owned(), "Toggle tool collapse".to_owned()),
+        ("Ctrl+T".to_owned(), "Toggle todos (when available)".to_owned()),
         // Input + navigation
-        ("Enter".to_string(), "Send message".to_string()),
-        ("Shift+Enter".to_string(), "Insert newline".to_string()),
-        ("Left/Right".to_string(), "Move cursor".to_string()),
-        ("Up/Down".to_string(), "Move line".to_string()),
-        ("Home/End".to_string(), "Line start/end".to_string()),
-        ("Backspace".to_string(), "Delete before".to_string()),
-        ("Delete".to_string(), "Delete after".to_string()),
-        ("Paste".to_string(), "Insert text".to_string()),
+        ("Enter".to_owned(), "Send message".to_owned()),
+        ("Shift+Enter".to_owned(), "Insert newline".to_owned()),
+        ("Left/Right".to_owned(), "Move cursor".to_owned()),
+        ("Up/Down".to_owned(), "Move line".to_owned()),
+        ("Home/End".to_owned(), "Line start/end".to_owned()),
+        ("Backspace".to_owned(), "Delete before".to_owned()),
+        ("Delete".to_owned(), "Delete after".to_owned()),
+        ("Paste".to_owned(), "Insert text".to_owned()),
         // Chat scrolling
-        ("Ctrl+Up/Down".to_string(), "Scroll chat".to_string()),
-        ("Mouse wheel".to_string(), "Scroll chat".to_string()),
+        ("Ctrl+Up/Down".to_owned(), "Scroll chat".to_owned()),
+        ("Mouse wheel".to_owned(), "Scroll chat".to_owned()),
     ];
 
     // Turn control
-    if matches!(
-        app.status,
-        crate::app::AppStatus::Thinking | crate::app::AppStatus::Running
-    ) {
-        items.push(("Esc".to_string(), "Cancel current turn".to_string()));
+    if matches!(app.status, crate::app::AppStatus::Thinking | crate::app::AppStatus::Running) {
+        items.push(("Esc".to_owned(), "Cancel current turn".to_owned()));
     } else {
-        items.push(("Esc".to_string(), "No-op (idle)".to_string()));
+        items.push(("Esc".to_owned(), "No-op (idle)".to_owned()));
     }
 
     // Permissions (when prompts are active)
     if !app.pending_permission_ids.is_empty() {
-        items.push(("Up/Down".to_string(), "Switch prompt focus".to_string()));
-        items.push(("Left/Right".to_string(), "Select option".to_string()));
-        items.push(("Enter".to_string(), "Confirm option".to_string()));
-        items.push(("Y/A/N".to_string(), "Quick select".to_string()));
-        items.push(("Esc".to_string(), "Reject".to_string()));
+        items.push(("Up/Down".to_owned(), "Switch prompt focus".to_owned()));
+        items.push(("Left/Right".to_owned(), "Select option".to_owned()));
+        items.push(("Enter".to_owned(), "Confirm option".to_owned()));
+        items.push(("Y/A/N".to_owned(), "Quick select".to_owned()));
+        items.push(("Esc".to_owned(), "Reject".to_owned()));
     }
 
     items
@@ -164,10 +155,7 @@ fn format_item_cell(item: &(String, String), width: usize) -> Line<'static> {
         truncate_to_width(label, label_style_width),
         Style::default().add_modifier(Modifier::BOLD),
     ));
-    spans.push(Span::styled(
-        sep.to_string(),
-        Style::default().fg(theme::DIM),
-    ));
+    spans.push(Span::styled(sep.to_owned(), Style::default().fg(theme::DIM)));
     if !desc.is_empty() && desc_width > 0 {
         spans.push(Span::raw(truncate_to_width(desc, desc_width)));
     }
@@ -179,7 +167,7 @@ fn truncate_to_width(text: &str, width: usize) -> String {
         return String::new();
     }
     if UnicodeWidthStr::width(text) <= width {
-        return text.to_string();
+        return text.to_owned();
     }
     let mut out = String::new();
     let mut used = 0usize;
