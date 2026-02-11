@@ -20,12 +20,12 @@
 use crate::app::App;
 use crate::ui::theme;
 use ratatui::Frame;
+use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
-use ratatui::style::Modifier;
-use ratatui::buffer::Buffer;
 use ratatui::widgets::Widget;
 use unicode_width::UnicodeWidthChar;
 
@@ -48,8 +48,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
 
     // Split into prompt icon column (fixed) and input column (remaining)
     let [prompt_area, input_area] =
-        Layout::horizontal([Constraint::Length(PROMPT_WIDTH), Constraint::Min(1)])
-            .areas(padded);
+        Layout::horizontal([Constraint::Length(PROMPT_WIDTH), Constraint::Min(1)]).areas(padded);
 
     // Render prompt icon
     let prompt = Line::from(Span::styled(
@@ -86,19 +85,13 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
 
     let paragraph = Paragraph::new(lines);
     app.rendered_input_area = input_area;
-    app.rendered_input_lines =
-        render_lines_from_paragraph(&paragraph, input_area);
+    app.rendered_input_lines = render_lines_from_paragraph(&paragraph, input_area);
     frame.render_widget(paragraph, input_area);
 
-    if let Some(sel) = app.selection {
-        if sel.kind == crate::app::SelectionKind::Input {
-            frame.render_widget(
-                SelectionOverlay {
-                    selection: sel,
-                },
-                input_area,
-            );
-        }
+    if let Some(sel) = app.selection
+        && sel.kind == crate::app::SelectionKind::Input
+    {
+        frame.render_widget(SelectionOverlay { selection: sel }, input_area);
     }
 
     if let Some((row, col)) = cursor_pos {
@@ -116,14 +109,19 @@ struct SelectionOverlay {
 
 impl Widget for SelectionOverlay {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let (start, end) = crate::app::normalize_selection(self.selection.start, self.selection.end);
+        let (start, end) =
+            crate::app::normalize_selection(self.selection.start, self.selection.end);
         for row in start.row..=end.row {
             let y = area.y.saturating_add(row as u16);
             if y >= area.bottom() {
                 break;
             }
             let row_start = if row == start.row { start.col } else { 0 };
-            let row_end = if row == end.row { end.col } else { area.width as usize };
+            let row_end = if row == end.row {
+                end.col
+            } else {
+                area.width as usize
+            };
             for col in row_start..row_end {
                 let x = area.x.saturating_add(col as u16);
                 if x >= area.right() {
@@ -152,7 +150,6 @@ fn render_lines_from_paragraph(paragraph: &Paragraph, area: Rect) -> Vec<String>
     }
     lines
 }
-
 
 /// Compute the number of visual lines the input occupies, accounting for wrapping.
 /// Used by the layout to allocate the correct input area height.

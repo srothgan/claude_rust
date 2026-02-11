@@ -29,8 +29,8 @@ use crate::acp::client::{ClaudeClient, ClientEvent, TerminalMap};
 use crate::acp::connection;
 use agent_client_protocol::{self as acp, Agent as _};
 use crossterm::event::{
-    Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
-    PushKeyboardEnhancementFlags, PopKeyboardEnhancementFlags, KeyboardEnhancementFlags,
+    Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags,
+    MouseEvent, MouseEventKind, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use futures::{FutureExt as _, StreamExt};
 use std::collections::{HashMap, HashSet};
@@ -201,23 +201,23 @@ pub async fn connect(
     }
 
     // --yolo: switch to bypass-permissions mode via the adapter
-    if cli.yolo {
-        if let Some(ref mut ms) = mode {
-            let target_id = "bypassPermissions".to_string();
-            let mode_id = acp::SessionModeId::new(target_id.as_str());
-            conn.set_session_mode(acp::SetSessionModeRequest::new(session_id.clone(), mode_id))
-                .await?;
-            tracing::info!("YOLO: switched to mode '{}'", target_id);
-            // Update local mode state to reflect the switch
-            let target_name = ms
-                .available_modes
-                .iter()
-                .find(|mi| mi.id == target_id)
-                .map(|mi| mi.name.clone())
-                .unwrap_or_else(|| target_id.clone());
-            ms.current_mode_id = target_id;
-            ms.current_mode_name = target_name;
-        }
+    if cli.yolo
+        && let Some(ref mut ms) = mode
+    {
+        let target_id = "bypassPermissions".to_string();
+        let mode_id = acp::SessionModeId::new(target_id.as_str());
+        conn.set_session_mode(acp::SetSessionModeRequest::new(session_id.clone(), mode_id))
+            .await?;
+        tracing::info!("YOLO: switched to mode '{}'", target_id);
+        // Update local mode state to reflect the switch
+        let target_name = ms
+            .available_modes
+            .iter()
+            .find(|mi| mi.id == target_id)
+            .map(|mi| mi.name.clone())
+            .unwrap_or_else(|| target_id.clone());
+        ms.current_mode_id = target_id;
+        ms.current_mode_name = target_name;
     }
 
     tracing::info!("Session created: {:?}", session_id);
@@ -351,28 +351,30 @@ pub async fn run_tui(app: &mut App, conn: Rc<acp::ClientSideConnection>) -> anyh
 
     // Dismiss all pending inline permissions (reject via last option)
     for tool_id in std::mem::take(&mut app.pending_permission_ids) {
-        if let Some((mi, bi)) = app.tool_call_index.get(&tool_id).copied() {
-            if let Some(MessageBlock::ToolCall(tc)) =
+        if let Some((mi, bi)) = app.tool_call_index.get(&tool_id).copied()
+            && let Some(MessageBlock::ToolCall(tc)) =
                 app.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
+        {
+            let tc = tc.as_mut();
+            if let Some(pending) = tc.pending_permission.take()
+                && let Some(last_opt) = pending.options.last()
             {
-                if let Some(pending) = tc.pending_permission.take() {
-                    if let Some(last_opt) = pending.options.last() {
-                        let _ = pending.response_tx.send(acp::RequestPermissionResponse::new(
-                            acp::RequestPermissionOutcome::Selected(
-                                acp::SelectedPermissionOutcome::new(last_opt.option_id.clone()),
-                            ),
-                        ));
-                    }
-                }
+                let _ = pending
+                    .response_tx
+                    .send(acp::RequestPermissionResponse::new(
+                        acp::RequestPermissionOutcome::Selected(
+                            acp::SelectedPermissionOutcome::new(last_opt.option_id.clone()),
+                        ),
+                    ));
             }
         }
     }
 
     // Cancel any active turn and give the adapter a moment to clean up
-    if matches!(app.status, AppStatus::Thinking | AppStatus::Running) {
-        if let Some(sid) = app.session_id.clone() {
-            let _ = conn.cancel(acp::CancelNotification::new(sid)).await;
-        }
+    if matches!(app.status, AppStatus::Thinking | AppStatus::Running)
+        && let Some(sid) = app.session_id.clone()
+    {
+        let _ = conn.cancel(acp::CancelNotification::new(sid)).await;
     }
 
     // Restore terminal
@@ -406,23 +408,24 @@ fn update_terminal_outputs(app: &mut App) {
     for msg in &mut app.messages {
         for block in &mut msg.blocks {
             if let MessageBlock::ToolCall(tc) = block {
-                if let Some(ref tid) = tc.terminal_id {
-                    if let Some(terminal) = terminals.get(tid.as_str()) {
-                        let buf = terminal
-                            .output_buffer
-                            .lock()
-                            .expect("output buffer lock poisoned");
-                        let current_len = buf.len();
-                        if current_len == 0 || current_len == tc.terminal_output_len {
-                            continue;
-                        }
-                        let snapshot = String::from_utf8_lossy(&buf).to_string();
-                        drop(buf);
-
-                        tc.terminal_output = Some(snapshot);
-                        tc.terminal_output_len = current_len;
-                        tc.cache.invalidate();
+                let tc = tc.as_mut();
+                if let Some(ref tid) = tc.terminal_id
+                    && let Some(terminal) = terminals.get(tid.as_str())
+                {
+                    let buf = terminal
+                        .output_buffer
+                        .lock()
+                        .expect("output buffer lock poisoned");
+                    let current_len = buf.len();
+                    if current_len == 0 || current_len == tc.terminal_output_len {
+                        continue;
                     }
+                    let snapshot = String::from_utf8_lossy(&buf).to_string();
+                    drop(buf);
+
+                    tc.terminal_output = Some(snapshot);
+                    tc.terminal_output_len = current_len;
+                    tc.cache.invalidate();
                 }
             }
         }
@@ -537,16 +540,16 @@ fn handle_normal_key(app: &mut App, conn: &Rc<acp::ClientSideConnection>, key: K
         }
         // Esc: cancel current turn if thinking/running
         (KeyCode::Esc, _) => {
-            if matches!(app.status, AppStatus::Thinking | AppStatus::Running) {
-                if let Some(sid) = app.session_id.clone() {
-                    let conn = Rc::clone(conn);
-                    tokio::task::spawn_local(async move {
-                        if let Err(e) = conn.cancel(acp::CancelNotification::new(sid)).await {
-                            tracing::error!("Failed to send cancel: {e}");
-                        }
-                    });
-                    app.status = AppStatus::Ready;
-                }
+            if matches!(app.status, AppStatus::Thinking | AppStatus::Running)
+                && let Some(sid) = app.session_id.clone()
+            {
+                let conn = Rc::clone(conn);
+                tokio::task::spawn_local(async move {
+                    if let Err(e) = conn.cancel(acp::CancelNotification::new(sid)).await {
+                        tracing::error!("Failed to send cancel: {e}");
+                    }
+                });
+                app.status = AppStatus::Ready;
             }
         }
         // Enter (no shift): submit input
@@ -587,47 +590,47 @@ fn handle_normal_key(app: &mut App, conn: &Rc<acp::ClientSideConnection>, key: K
         }
         // Shift+Tab: cycle session mode
         (KeyCode::BackTab, _) => {
-            if let Some(ref mode) = app.mode {
-                if mode.available_modes.len() > 1 {
-                    let current_idx = mode
-                        .available_modes
-                        .iter()
-                        .position(|m| m.id == mode.current_mode_id)
-                        .unwrap_or(0);
-                    let next_idx = (current_idx + 1) % mode.available_modes.len();
-                    let next = &mode.available_modes[next_idx];
+            if let Some(ref mode) = app.mode
+                && mode.available_modes.len() > 1
+            {
+                let current_idx = mode
+                    .available_modes
+                    .iter()
+                    .position(|m| m.id == mode.current_mode_id)
+                    .unwrap_or(0);
+                let next_idx = (current_idx + 1) % mode.available_modes.len();
+                let next = &mode.available_modes[next_idx];
 
-                    // Fire-and-forget mode switch
-                    if let Some(sid) = app.session_id.clone() {
-                        let mode_id = acp::SessionModeId::new(next.id.as_str());
-                        let conn = Rc::clone(conn);
-                        tokio::task::spawn_local(async move {
-                            if let Err(e) = conn
-                                .set_session_mode(acp::SetSessionModeRequest::new(sid, mode_id))
-                                .await
-                            {
-                                tracing::error!("Failed to set mode: {e}");
-                            }
-                        });
-                    }
-
-                    // Optimistic UI update (CurrentModeUpdate will confirm)
-                    let next_id = next.id.clone();
-                    let next_name = next.name.clone();
-                    let modes = mode
-                        .available_modes
-                        .iter()
-                        .map(|m| ModeInfo {
-                            id: m.id.clone(),
-                            name: m.name.clone(),
-                        })
-                        .collect();
-                    app.mode = Some(ModeState {
-                        current_mode_id: next_id,
-                        current_mode_name: next_name,
-                        available_modes: modes,
+                // Fire-and-forget mode switch
+                if let Some(sid) = app.session_id.clone() {
+                    let mode_id = acp::SessionModeId::new(next.id.as_str());
+                    let conn = Rc::clone(conn);
+                    tokio::task::spawn_local(async move {
+                        if let Err(e) = conn
+                            .set_session_mode(acp::SetSessionModeRequest::new(sid, mode_id))
+                            .await
+                        {
+                            tracing::error!("Failed to set mode: {e}");
+                        }
                     });
                 }
+
+                // Optimistic UI update (CurrentModeUpdate will confirm)
+                let next_id = next.id.clone();
+                let next_name = next.name.clone();
+                let modes = mode
+                    .available_modes
+                    .iter()
+                    .map(|m| ModeInfo {
+                        id: m.id.clone(),
+                        name: m.name.clone(),
+                    })
+                    .collect();
+                app.mode = Some(ModeState {
+                    current_mode_id: next_id,
+                    current_mode_name: next_name,
+                    available_modes: modes,
+                });
             }
         }
         // Editing
@@ -646,7 +649,7 @@ fn get_focused_permission_tc(app: &mut App) -> Option<&mut ToolCallInfo> {
     let tool_id = app.pending_permission_ids.first()?;
     let (mi, bi) = app.tool_call_index.get(tool_id).copied()?;
     match app.messages.get_mut(mi)?.blocks.get_mut(bi)? {
-        MessageBlock::ToolCall(tc) if tc.pending_permission.is_some() => Some(tc),
+        MessageBlock::ToolCall(tc) if tc.pending_permission.is_some() => Some(tc.as_mut()),
         _ => None,
     }
 }
@@ -663,6 +666,7 @@ fn set_permission_focused(app: &mut App, queue_index: usize, focused: bool) {
     if let Some(MessageBlock::ToolCall(tc)) =
         app.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
     {
+        let tc = tc.as_mut();
         if let Some(ref mut perm) = tc.pending_permission {
             perm.focused = focused;
         }
@@ -698,21 +702,20 @@ fn handle_permission_key(app: &mut App, key: KeyEvent) {
             app.auto_scroll = true;
         }
         KeyCode::Left => {
-            if let Some(tc) = get_focused_permission_tc(app) {
-                if let Some(ref mut p) = tc.pending_permission {
-                    p.selected_index = p.selected_index.saturating_sub(1);
-                    tc.cache.invalidate();
-                }
+            if let Some(tc) = get_focused_permission_tc(app)
+                && let Some(ref mut p) = tc.pending_permission
+            {
+                p.selected_index = p.selected_index.saturating_sub(1);
+                tc.cache.invalidate();
             }
         }
         KeyCode::Right => {
-            if let Some(tc) = get_focused_permission_tc(app) {
-                if let Some(ref mut p) = tc.pending_permission {
-                    if p.selected_index + 1 < option_count {
-                        p.selected_index += 1;
-                        tc.cache.invalidate();
-                    }
-                }
+            if let Some(tc) = get_focused_permission_tc(app)
+                && let Some(ref mut p) = tc.pending_permission
+                && p.selected_index + 1 < option_count
+            {
+                p.selected_index += 1;
+                tc.cache.invalidate();
             }
         }
         KeyCode::Enter => {
@@ -750,13 +753,12 @@ fn respond_permission(app: &mut App, override_index: Option<usize>) {
     let Some((mi, bi)) = app.tool_call_index.get(&tool_id).copied() else {
         return;
     };
-    let Some(MessageBlock::ToolCall(tc)) = app
-        .messages
-        .get_mut(mi)
-        .and_then(|m| m.blocks.get_mut(bi))
+    let Some(MessageBlock::ToolCall(tc)) =
+        app.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
     else {
         return;
     };
+    let tc = tc.as_mut();
     if let Some(pending) = tc.pending_permission.take() {
         let idx = override_index.unwrap_or(pending.selected_index);
         if let Some(opt) = pending.options.get(idx) {
@@ -872,6 +874,7 @@ fn toggle_all_tool_calls(app: &mut App) {
     for msg in &mut app.messages {
         for block in &mut msg.blocks {
             if let MessageBlock::ToolCall(tc) = block {
+                let tc = tc.as_mut();
                 tc.collapsed = app.tools_collapsed;
                 tc.cache.invalidate();
             }
@@ -941,6 +944,7 @@ fn handle_acp_event(app: &mut App, event: ClientEvent) {
                 if let Some(MessageBlock::ToolCall(tc)) =
                     app.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
                 {
+                    let tc = tc.as_mut();
                     let is_first = app.pending_permission_ids.is_empty();
                     tc.pending_permission = Some(InlinePermission {
                         options: request.options,
@@ -1121,7 +1125,10 @@ fn handle_tool_call(app: &mut App, tc: acp::ToolCall) {
 
     // Extract todos from TodoWrite tool calls
     if claude_tool_name.as_deref() == Some("TodoWrite") {
-        tracing::info!("TodoWrite ToolCall detected: id={id_str}, raw_input={:?}", tc.raw_input);
+        tracing::info!(
+            "TodoWrite ToolCall detected: id={id_str}, raw_input={:?}",
+            tc.raw_input
+        );
         if let Some(ref raw_input) = tc.raw_input {
             let todos = parse_todos(raw_input);
             tracing::info!("Parsed {} todos from ToolCall raw_input", todos.len());
@@ -1166,6 +1173,7 @@ fn handle_tool_call(app: &mut App, tc: acp::ToolCall) {
             if let Some(MessageBlock::ToolCall(existing)) =
                 app.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
             {
+                let existing = existing.as_mut();
                 existing.title = tool_info.title.clone();
                 existing.status = tool_info.status;
                 existing.content = tool_info.content.clone();
@@ -1176,7 +1184,8 @@ fn handle_tool_call(app: &mut App, tc: acp::ToolCall) {
         } else if let Some(last) = app.messages.last_mut() {
             let block_idx = last.blocks.len();
             let tc_id = tool_info.id.clone();
-            last.blocks.push(MessageBlock::ToolCall(tool_info));
+            last.blocks
+                .push(MessageBlock::ToolCall(Box::new(tool_info)));
             app.index_tool_call(tc_id, msg_idx, block_idx);
         }
     }
@@ -1193,18 +1202,18 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
         acp::SessionUpdate::AgentMessageChunk(chunk) => {
             if let acp::ContentBlock::Text(text) = chunk.content {
                 // Append to last text block in current assistant message, or create new
-                if let Some(last) = app.messages.last_mut() {
-                    if matches!(last.role, MessageRole::Assistant) {
-                        // Append to last Text block if it exists, else push new one
-                        if let Some(MessageBlock::Text(t, cache)) = last.blocks.last_mut() {
-                            t.push_str(&text.text);
-                            cache.invalidate();
-                        } else {
-                            last.blocks
-                                .push(MessageBlock::Text(text.text.clone(), BlockCache::default()));
-                        }
-                        return;
+                if let Some(last) = app.messages.last_mut()
+                    && matches!(last.role, MessageRole::Assistant)
+                {
+                    // Append to last Text block if it exists, else push new one
+                    if let Some(MessageBlock::Text(t, cache)) = last.blocks.last_mut() {
+                        t.push_str(&text.text);
+                        cache.invalidate();
+                    } else {
+                        last.blocks
+                            .push(MessageBlock::Text(text.text.clone(), BlockCache::default()));
                     }
+                    return;
                 }
                 app.messages.push(ChatMessage {
                     role: MessageRole::Assistant,
@@ -1238,6 +1247,7 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
                 if let Some(MessageBlock::ToolCall(tc)) =
                     app.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
                 {
+                    let tc = tc.as_mut();
                     if let Some(status) = tcu.fields.status {
                         tc.status = status;
                     }
@@ -1258,21 +1268,26 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
                         tc.content = content;
                     }
                     // Update claude_tool_name from update meta if present
-                    if let Some(ref meta) = tcu.meta {
-                        if let Some(name) = meta
+                    if let Some(ref meta) = tcu.meta
+                        && let Some(name) = meta
                             .get("claudeCode")
                             .and_then(|v| v.get("toolName"))
                             .and_then(|v| v.as_str())
-                        {
-                            tc.claude_tool_name = Some(name.to_string());
-                        }
+                    {
+                        tc.claude_tool_name = Some(name.to_string());
                     }
                     // Update todos from TodoWrite raw_input updates
                     if tc.claude_tool_name.as_deref() == Some("TodoWrite") {
-                        tracing::info!("TodoWrite ToolCallUpdate: id={id_str}, raw_input={:?}", tcu.fields.raw_input);
+                        tracing::info!(
+                            "TodoWrite ToolCallUpdate: id={id_str}, raw_input={:?}",
+                            tcu.fields.raw_input
+                        );
                         if let Some(ref raw_input) = tcu.fields.raw_input {
                             let todos = parse_todos(raw_input);
-                            tracing::info!("Parsed {} todos from ToolCallUpdate raw_input", todos.len());
+                            tracing::info!(
+                                "Parsed {} todos from ToolCallUpdate raw_input",
+                                todos.len()
+                            );
                             pending_todos = Some(todos);
                         }
                     }

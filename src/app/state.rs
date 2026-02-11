@@ -203,7 +203,7 @@ impl BlockCache {
 /// Ordered content block — text and tool calls interleaved as they arrive.
 pub enum MessageBlock {
     Text(String, BlockCache),
-    ToolCall(ToolCallInfo),
+    ToolCall(Box<ToolCallInfo>),
 }
 
 #[derive(Debug)]

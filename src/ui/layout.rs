@@ -62,19 +62,28 @@ pub fn compute(
             footer: None,
         }
     } else {
-        let [header, header_sep, body, todo, input_sep, input, input_bottom_sep, help, footer] =
-            Layout::vertical([
-                Constraint::Length(header_height),
-                Constraint::Length(header_sep_height),
-                Constraint::Min(3),
-                Constraint::Length(todo_height),
-                Constraint::Length(1),
-                Constraint::Length(input_height),
-                Constraint::Length(1),
-                Constraint::Length(help_height),
-                Constraint::Length(1),
-            ])
-            .areas(area);
+        let [
+            header,
+            header_sep,
+            body,
+            todo,
+            input_sep,
+            input,
+            input_bottom_sep,
+            help,
+            footer,
+        ] = Layout::vertical([
+            Constraint::Length(header_height),
+            Constraint::Length(header_sep_height),
+            Constraint::Min(3),
+            Constraint::Length(todo_height),
+            Constraint::Length(1),
+            Constraint::Length(input_height),
+            Constraint::Length(1),
+            Constraint::Length(help_height),
+            Constraint::Length(1),
+        ])
+        .areas(area);
         AppLayout {
             header,
             header_sep,

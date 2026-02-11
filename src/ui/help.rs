@@ -16,11 +16,11 @@
 
 use crate::app::App;
 use crate::ui::theme;
+use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Cell, Row, Table};
-use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
 const COLUMN_GAP: usize = 4;
@@ -38,7 +38,7 @@ pub fn compute_height(app: &App, _area_width: u16) -> u16 {
     if items.is_empty() {
         return 0;
     }
-    let rows = ((items.len() + 1) / 2).min(MAX_ROWS);
+    let rows = items.len().div_ceil(2).min(MAX_ROWS);
     let inner_height = rows as u16;
     // Border top + bottom.
     inner_height.saturating_add(2)
@@ -54,7 +54,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
-    let rows = ((items.len() + 1) / 2).min(MAX_ROWS);
+    let rows = items.len().div_ceil(2).min(MAX_ROWS);
     let max_items = rows * 2;
     let items = &items[..items.len().min(max_items)];
     let inner_width = area.width.saturating_sub(2) as usize;
@@ -73,7 +73,10 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         let left_cell = format_item_cell(&left, left_width);
         let right_cell = format_item_cell(&right, right_width);
 
-        table_rows.push(Row::new(vec![Cell::from(left_cell), Cell::from(right_cell)]));
+        table_rows.push(Row::new(vec![
+            Cell::from(left_cell),
+            Cell::from(right_cell),
+        ]));
     }
 
     let block = Block::default()
@@ -100,31 +103,29 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn build_help_items(app: &App) -> Vec<(String, String)> {
-    let mut items: Vec<(String, String)> = Vec::new();
-
-    // Global
-    items.push(("Ctrl+C".to_string(), "Quit".to_string()));
-    items.push(("Ctrl+L".to_string(), "Redraw screen".to_string()));
-    items.push(("Shift+Tab".to_string(), "Cycle mode".to_string()));
-    items.push(("Ctrl+O".to_string(), "Toggle tool collapse".to_string()));
-    items.push((
-        "Ctrl+T".to_string(),
-        "Toggle todos (when available)".to_string(),
-    ));
-
-    // Input + navigation
-    items.push(("Enter".to_string(), "Send message".to_string()));
-    items.push(("Shift+Enter".to_string(), "Insert newline".to_string()));
-    items.push(("Left/Right".to_string(), "Move cursor".to_string()));
-    items.push(("Up/Down".to_string(), "Move line".to_string()));
-    items.push(("Home/End".to_string(), "Line start/end".to_string()));
-    items.push(("Backspace".to_string(), "Delete before".to_string()));
-    items.push(("Delete".to_string(), "Delete after".to_string()));
-    items.push(("Paste".to_string(), "Insert text".to_string()));
-
-    // Chat scrolling
-    items.push(("Ctrl+Up/Down".to_string(), "Scroll chat".to_string()));
-    items.push(("Mouse wheel".to_string(), "Scroll chat".to_string()));
+    let mut items: Vec<(String, String)> = vec![
+        // Global
+        ("Ctrl+C".to_string(), "Quit".to_string()),
+        ("Ctrl+L".to_string(), "Redraw screen".to_string()),
+        ("Shift+Tab".to_string(), "Cycle mode".to_string()),
+        ("Ctrl+O".to_string(), "Toggle tool collapse".to_string()),
+        (
+            "Ctrl+T".to_string(),
+            "Toggle todos (when available)".to_string(),
+        ),
+        // Input + navigation
+        ("Enter".to_string(), "Send message".to_string()),
+        ("Shift+Enter".to_string(), "Insert newline".to_string()),
+        ("Left/Right".to_string(), "Move cursor".to_string()),
+        ("Up/Down".to_string(), "Move line".to_string()),
+        ("Home/End".to_string(), "Line start/end".to_string()),
+        ("Backspace".to_string(), "Delete before".to_string()),
+        ("Delete".to_string(), "Delete after".to_string()),
+        ("Paste".to_string(), "Insert text".to_string()),
+        // Chat scrolling
+        ("Ctrl+Up/Down".to_string(), "Scroll chat".to_string()),
+        ("Mouse wheel".to_string(), "Scroll chat".to_string()),
+    ];
 
     // Turn control
     if matches!(

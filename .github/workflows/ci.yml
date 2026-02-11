@@ -55,7 +55,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.86.0"
+          toolchain: "1.88.0"
       - uses: Swatinem/rust-cache@v2
       - name: Check MSRV
         run: cargo check --all-features

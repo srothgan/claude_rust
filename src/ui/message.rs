@@ -14,7 +14,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use crate::app::{BlockCache, ChatMessage, InlinePermission, MessageBlock, MessageRole, ToolCallInfo};
+use crate::app::{
+    BlockCache, ChatMessage, InlinePermission, MessageBlock, MessageRole, ToolCallInfo,
+};
 use crate::ui::tables;
 use crate::ui::theme;
 use agent_client_protocol::{self as acp, PermissionOptionKind};
@@ -103,6 +105,7 @@ pub fn render_message(
                         prev_was_tool = false;
                     }
                     MessageBlock::ToolCall(tc) => {
+                        let tc = tc.as_mut();
                         // Skip hidden tool calls (subagent children)
                         if tc.hidden {
                             continue;
@@ -177,8 +180,7 @@ fn render_text_cached(
     if preserve_newlines {
         preprocessed = force_markdown_line_breaks(&preprocessed);
     }
-    let fresh: Vec<Line<'static>> =
-        tables::render_markdown_with_tables(&preprocessed, width, bg);
+    let fresh: Vec<Line<'static>> = tables::render_markdown_with_tables(&preprocessed, width, bg);
 
     cache.store(fresh);
     // unwrap is safe: we just stored the lines above
@@ -206,14 +208,19 @@ fn force_markdown_line_breaks(text: &str) -> String {
 
 /// Render a tool call with caching. Only re-renders when cache is stale.
 /// InProgress tool calls skip caching because the icon color pulses each frame.
-fn render_tool_call_cached(tc: &mut ToolCallInfo, width: u16, spinner_frame: usize) -> Vec<Line<'static>> {
-    let is_in_progress = matches!(tc.status, acp::ToolCallStatus::InProgress | acp::ToolCallStatus::Pending);
+fn render_tool_call_cached(
+    tc: &mut ToolCallInfo,
+    width: u16,
+    spinner_frame: usize,
+) -> Vec<Line<'static>> {
+    let is_in_progress = matches!(
+        tc.status,
+        acp::ToolCallStatus::InProgress | acp::ToolCallStatus::Pending
+    );
 
     // Skip cache for in-progress tool calls (icon pulses)
-    if !is_in_progress {
-        if let Some(cached_lines) = tc.cache.get() {
-            return cached_lines.clone();
-        }
+    if !is_in_progress && let Some(cached_lines) = tc.cache.get() {
+        return cached_lines.clone();
     }
 
     let fresh = render_tool_call(tc, width, spinner_frame);
@@ -391,8 +398,8 @@ fn render_tool_call(tc: &ToolCallInfo, width: u16, spinner_frame: usize) -> Vec<
 
 /// Spinner frames as `&'static str` for use in status_icon return type.
 const SPINNER_STRS: &[&str] = &[
-    "\u{280B}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283C}",
-    "\u{2834}", "\u{2826}", "\u{2827}", "\u{2807}", "\u{280F}",
+    "\u{280B}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283C}", "\u{2834}", "\u{2826}", "\u{2827}",
+    "\u{2807}", "\u{280F}",
 ];
 
 fn status_icon(status: acp::ToolCallStatus, spinner_frame: usize) -> (&'static str, Color) {
@@ -418,7 +425,11 @@ fn status_icon(status: acp::ToolCallStatus, spinner_frame: usize) -> (&'static s
 /// Left border on all content lines, right border only on top/bottom rules.
 /// Top/bottom rules stretch to the full terminal width.
 /// Output is capped at TERMINAL_MAX_LINES (tail).
-fn render_execute_tool_call(tc: &ToolCallInfo, width: u16, spinner_frame: usize) -> Vec<Line<'static>> {
+fn render_execute_tool_call(
+    tc: &ToolCallInfo,
+    width: u16,
+    spinner_frame: usize,
+) -> Vec<Line<'static>> {
     let (status_icon_str, icon_color) = status_icon(tc.status, spinner_frame);
     let border = Style::default().fg(theme::DIM);
     let mut lines: Vec<Line<'static>> = Vec::new();

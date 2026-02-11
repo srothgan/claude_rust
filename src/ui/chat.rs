@@ -18,11 +18,11 @@ use crate::app::{App, AppStatus, SelectionKind, SelectionState};
 use crate::ui::message::{self, SpinnerState};
 use crate::ui::theme;
 use ratatui::Frame;
+use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Paragraph, Wrap, Widget};
-use ratatui::buffer::Buffer;
+use ratatui::widgets::{Paragraph, Widget, Wrap};
 
 pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     // Snapshot spinner state before the loop so we can take &mut msg
@@ -42,10 +42,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         all_lines.extend(message::render_message(msg, &spinner, area.width));
     }
 
-    app.rendered_chat_lines = all_lines
-        .iter()
-        .map(|line| line.to_string())
-        .collect();
+    app.rendered_chat_lines = all_lines.iter().map(|line| line.to_string()).collect();
 
     // Build paragraph once — line_count gives the real wrapped height
     let paragraph = Paragraph::new(Text::from(all_lines)).wrap(Wrap { trim: false });
@@ -66,11 +63,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         app.scroll_pos = 0.0;
         app.auto_scroll = true;
         app.rendered_chat_area = render_area;
-        app.rendered_chat_lines = render_lines_from_paragraph(
-            &paragraph,
-            render_area,
-            0,
-        );
+        app.rendered_chat_lines = render_lines_from_paragraph(&paragraph, render_area, 0);
         frame.render_widget(paragraph, render_area);
     } else {
         // Long content: scroll within the full viewport
@@ -93,23 +86,14 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
             app.auto_scroll = true;
         }
         app.rendered_chat_area = area;
-        app.rendered_chat_lines = render_lines_from_paragraph(
-            &paragraph,
-            area,
-            app.scroll_offset,
-        );
+        app.rendered_chat_lines = render_lines_from_paragraph(&paragraph, area, app.scroll_offset);
         frame.render_widget(paragraph.scroll((app.scroll_offset as u16, 0)), area);
     }
 
-    if let Some(sel) = app.selection {
-        if sel.kind == SelectionKind::Chat {
-            frame.render_widget(
-                SelectionOverlay {
-                    selection: sel,
-                },
-                app.rendered_chat_area,
-            );
-        }
+    if let Some(sel) = app.selection
+        && sel.kind == SelectionKind::Chat
+    {
+        frame.render_widget(SelectionOverlay { selection: sel }, app.rendered_chat_area);
     }
 }
 
@@ -119,14 +103,19 @@ struct SelectionOverlay {
 
 impl Widget for SelectionOverlay {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let (start, end) = crate::app::normalize_selection(self.selection.start, self.selection.end);
+        let (start, end) =
+            crate::app::normalize_selection(self.selection.start, self.selection.end);
         for row in start.row..=end.row {
             let y = area.y.saturating_add(row as u16);
             if y >= area.bottom() {
                 break;
             }
             let row_start = if row == start.row { start.col } else { 0 };
-            let row_end = if row == end.row { end.col } else { area.width as usize };
+            let row_end = if row == end.row {
+                end.col
+            } else {
+                area.width as usize
+            };
             for col in row_start..row_end {
                 let x = area.x.saturating_add(col as u16);
                 if x >= area.right() {

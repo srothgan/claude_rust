@@ -186,8 +186,7 @@ fn render_table_lines(table: &TableBlock, width: u16, bg: Option<Color>) -> Vec<
             .max_by_key(|(_, w)| *w)
         {
             widths[idx] -= 1;
-            total = widths.iter().sum::<usize>()
-                + spacing.saturating_mul(cols.saturating_sub(1));
+            total = widths.iter().sum::<usize>() + spacing.saturating_mul(cols.saturating_sub(1));
         } else {
             break;
         }
@@ -199,9 +198,9 @@ fn render_table_lines(table: &TableBlock, width: u16, bg: Option<Color>) -> Vec<
     if let Some(bg_color) = bg {
         header_style = header_style.bg(bg_color);
     }
-    for i in 0..cols {
+    for (i, width) in widths.iter().enumerate().take(cols) {
         let text = table.header.get(i).map(|s| s.as_str()).unwrap_or("");
-        let lines = wrap_inline_markdown(text, widths[i], header_style);
+        let lines = wrap_inline_markdown(text, *width, header_style);
         header_height = header_height.max(lines.len() as u16);
         header_cells.push(Cell::from(Text::from(lines)));
     }
@@ -218,9 +217,9 @@ fn render_table_lines(table: &TableBlock, width: u16, bg: Option<Color>) -> Vec<
             row_style = row_style.bg(bg_color);
         }
         let mut row_height = 1u16;
-        for i in 0..cols {
+        for (i, width) in widths.iter().enumerate().take(cols) {
             let text = row.get(i).map(|s| s.as_str()).unwrap_or("");
-            let lines = wrap_inline_markdown(text, widths[i], row_style);
+            let lines = wrap_inline_markdown(text, *width, row_style);
             row_height = row_height.max(lines.len() as u16);
             cells.push(Cell::from(Text::from(lines)));
         }
@@ -270,7 +269,10 @@ fn buffer_to_lines(buffer: &Buffer, area: Rect, bg: Option<Color>) -> Vec<Line<'
             }
         }
         if !current_text.is_empty() {
-            spans.push(Span::styled(current_text, current_style.unwrap_or_default()));
+            spans.push(Span::styled(
+                current_text,
+                current_style.unwrap_or_default(),
+            ));
         }
         lines.push(Line::from(spans));
     }
@@ -300,9 +302,7 @@ fn parse_inline_chunks(text: &str, base_style: Style) -> Vec<StyledChunk> {
     let mut style_stack: Vec<Style> = vec![base_style];
     let mut current_style = base_style;
 
-    let flush_current = |chunks: &mut Vec<StyledChunk>,
-                         current: &mut String,
-                         style: Style| {
+    let flush_current = |chunks: &mut Vec<StyledChunk>, current: &mut String, style: Style| {
         if !current.is_empty() {
             chunks.push(StyledChunk {
                 text: std::mem::take(current),

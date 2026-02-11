@@ -2,7 +2,7 @@
 name = "claude_rust"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.86.0"
+rust-version = "1.88.0"
 license = "AGPL-3.0-or-later"
 description = "A native Rust terminal interface for Claude Code"
 repository = "https://github.com/srothgan/claude_rust"

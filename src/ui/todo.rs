@@ -118,7 +118,11 @@ fn render_open(frame: &mut Frame, area: Rect, app: &mut App) {
     }
 
     // Auto-scroll to keep the in-progress item visible
-    if let Some(ip_idx) = app.todos.iter().position(|t| t.status == TodoStatus::InProgress) {
+    if let Some(ip_idx) = app
+        .todos
+        .iter()
+        .position(|t| t.status == TodoStatus::InProgress)
+    {
         if ip_idx < app.todo_scroll {
             app.todo_scroll = ip_idx;
         } else if ip_idx >= app.todo_scroll + visible {
@@ -130,9 +134,9 @@ fn render_open(frame: &mut Frame, area: Rect, app: &mut App) {
 
     for todo in app.todos.iter().skip(app.todo_scroll).take(visible) {
         let (icon, icon_color) = match todo.status {
-            TodoStatus::Completed => ("\u{2713}", Color::Green),     // ✓
+            TodoStatus::Completed => ("\u{2713}", Color::Green), // ✓
             TodoStatus::InProgress => ("\u{25b8}", theme::RUST_ORANGE), // ▸
-            TodoStatus::Pending => ("\u{25cb}", theme::DIM),         // ○
+            TodoStatus::Pending => ("\u{25cb}", theme::DIM),     // ○
         };
 
         let text_style = match todo.status {

@@ -20,8 +20,8 @@ mod help;
 mod input;
 mod layout;
 mod message;
-pub mod theme;
 mod tables;
+pub mod theme;
 mod todo;
 
 use crate::app::App;
