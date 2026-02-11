@@ -24,7 +24,7 @@ use ratatui::widgets::Paragraph;
 
 const HEADER_PAD: u16 = 2;
 
-pub fn render(frame: &mut Frame, area: Rect, app: &App) {
+pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     let padded = Rect {
         x: area.x + HEADER_PAD,
         y: area.y,
@@ -32,21 +32,21 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         height: area.height,
     };
 
-    let sep = Span::styled("  \u{2502}  ", Style::default().fg(theme::DIM));
+    if app.cached_header_line.is_none() {
+        let sep = Span::styled("  \u{2502}  ", Style::default().fg(theme::DIM));
+        app.cached_header_line = Some(Line::from(vec![
+            Span::styled("\u{1F980} ", Style::default().fg(theme::RUST_ORANGE)),
+            Span::styled(
+                "claude-rust",
+                Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
+            ),
+            sep,
+            Span::styled("Model: ", Style::default().fg(theme::DIM)),
+            Span::styled(app.model_name.clone(), Style::default().fg(ratatui::style::Color::White)),
+        ]));
+    }
 
-    let spans = vec![
-        // Crab + branding
-        Span::styled("\u{1F980} ", Style::default().fg(theme::RUST_ORANGE)),
-        Span::styled(
-            "claude-rust",
-            Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
-        ),
-        sep,
-        // Model name
-        Span::styled("Model: ", Style::default().fg(theme::DIM)),
-        Span::styled(&app.model_name, Style::default().fg(ratatui::style::Color::White)),
-    ];
-
-    let line = Line::from(spans);
-    frame.render_widget(Paragraph::new(line), padded);
+    if let Some(line) = &app.cached_header_line {
+        frame.render_widget(Paragraph::new(line.clone()), padded);
+    }
 }

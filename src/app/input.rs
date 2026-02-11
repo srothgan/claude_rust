@@ -19,11 +19,14 @@ pub struct InputState {
     pub lines: Vec<String>,
     pub cursor_row: usize,
     pub cursor_col: usize,
+    /// Monotonically increasing version counter. Bumped on every content or cursor change
+    /// so that downstream caches (e.g. wrap result) can detect staleness cheaply.
+    pub version: u64,
 }
 
 impl InputState {
     pub fn new() -> Self {
-        Self { lines: vec![String::new()], cursor_row: 0, cursor_col: 0 }
+        Self { lines: vec![String::new()], cursor_row: 0, cursor_col: 0, version: 0 }
     }
 
     #[must_use]
@@ -40,6 +43,7 @@ impl InputState {
         self.lines = vec![String::new()];
         self.cursor_row = 0;
         self.cursor_col = 0;
+        self.version += 1;
     }
 
     pub fn insert_char(&mut self, c: char) {
@@ -47,6 +51,7 @@ impl InputState {
         let byte_idx = char_to_byte_index(line, self.cursor_col);
         line.insert(byte_idx, c);
         self.cursor_col += 1;
+        self.version += 1;
     }
 
     pub fn insert_newline(&mut self) {
@@ -57,6 +62,7 @@ impl InputState {
         self.cursor_row += 1;
         self.lines.insert(self.cursor_row, rest);
         self.cursor_col = 0;
+        self.version += 1;
     }
 
     pub fn insert_str(&mut self, s: &str) {
@@ -75,11 +81,13 @@ impl InputState {
             self.cursor_col -= 1;
             let byte_idx = char_to_byte_index(line, self.cursor_col);
             line.remove(byte_idx);
+            self.version += 1;
         } else if self.cursor_row > 0 {
             let removed = self.lines.remove(self.cursor_row);
             self.cursor_row -= 1;
             self.cursor_col = self.lines[self.cursor_row].chars().count();
             self.lines[self.cursor_row].push_str(&removed);
+            self.version += 1;
         }
     }
 
@@ -89,18 +97,22 @@ impl InputState {
             let line = &mut self.lines[self.cursor_row];
             let byte_idx = char_to_byte_index(line, self.cursor_col);
             line.remove(byte_idx);
+            self.version += 1;
         } else if self.cursor_row + 1 < self.lines.len() {
             let next = self.lines.remove(self.cursor_row + 1);
             self.lines[self.cursor_row].push_str(&next);
+            self.version += 1;
         }
     }
 
     pub fn move_left(&mut self) {
         if self.cursor_col > 0 {
             self.cursor_col -= 1;
+            self.version += 1;
         } else if self.cursor_row > 0 {
             self.cursor_row -= 1;
             self.cursor_col = self.lines[self.cursor_row].chars().count();
+            self.version += 1;
         }
     }
 
@@ -108,9 +120,11 @@ impl InputState {
         let line_len = self.lines[self.cursor_row].chars().count();
         if self.cursor_col < line_len {
             self.cursor_col += 1;
+            self.version += 1;
         } else if self.cursor_row + 1 < self.lines.len() {
             self.cursor_row += 1;
             self.cursor_col = 0;
+            self.version += 1;
         }
     }
 
@@ -119,6 +133,7 @@ impl InputState {
             self.cursor_row -= 1;
             let line_len = self.lines[self.cursor_row].chars().count();
             self.cursor_col = self.cursor_col.min(line_len);
+            self.version += 1;
         }
     }
 
@@ -127,15 +142,18 @@ impl InputState {
             self.cursor_row += 1;
             let line_len = self.lines[self.cursor_row].chars().count();
             self.cursor_col = self.cursor_col.min(line_len);
+            self.version += 1;
         }
     }
 
     pub fn move_home(&mut self) {
         self.cursor_col = 0;
+        self.version += 1;
     }
 
     pub fn move_end(&mut self) {
         self.cursor_col = self.lines[self.cursor_row].chars().count();
+        self.version += 1;
     }
 
     #[must_use]

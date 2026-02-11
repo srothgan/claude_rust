@@ -65,38 +65,40 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
 
 /// Closed state: single compact line showing progress and current task.
 /// Format: `  [3/7] Running tests`
-fn render_closed(frame: &mut Frame, area: Rect, app: &App) {
-    let completed = app.todos.iter().filter(|t| t.status == TodoStatus::Completed).count();
-    let total = app.todos.len();
+/// The line is cached on `App` and only rebuilt when `set_todos()` invalidates.
+fn render_closed(frame: &mut Frame, area: Rect, app: &mut App) {
+    if app.cached_todo_compact.is_none() {
+        let completed = app.todos.iter().filter(|t| t.status == TodoStatus::Completed).count();
+        let total = app.todos.len();
 
-    // Find the current in-progress task's activeForm, or fall back to content
-    let current = app.todos.iter().find(|t| t.status == TodoStatus::InProgress);
-
-    let task_text = match current {
-        Some(t) if !t.active_form.is_empty() => t.active_form.clone(),
-        Some(t) => t.content.clone(),
-        None => {
-            // No in-progress task — show next pending or "All done"
-            if completed == total {
-                "All tasks completed".to_owned()
-            } else {
-                app.todos
-                    .iter()
-                    .find(|t| t.status == TodoStatus::Pending)
-                    .map(|t| t.content.clone())
-                    .unwrap_or_default()
+        let current = app.todos.iter().find(|t| t.status == TodoStatus::InProgress);
+        let task_text = match current {
+            Some(t) if !t.active_form.is_empty() => t.active_form.clone(),
+            Some(t) => t.content.clone(),
+            None => {
+                if completed == total {
+                    "All tasks completed".to_owned()
+                } else {
+                    app.todos
+                        .iter()
+                        .find(|t| t.status == TodoStatus::Pending)
+                        .map(|t| t.content.clone())
+                        .unwrap_or_default()
+                }
             }
-        }
-    };
+        };
 
-    let line = Line::from(vec![
-        Span::styled("  [", Style::default().fg(theme::DIM)),
-        Span::styled(format!("{completed}/{total}"), Style::default().fg(theme::RUST_ORANGE)),
-        Span::styled("] ", Style::default().fg(theme::DIM)),
-        Span::styled(task_text, Style::default().fg(Color::White)),
-    ]);
+        app.cached_todo_compact = Some(Line::from(vec![
+            Span::styled("  [", Style::default().fg(theme::DIM)),
+            Span::styled(format!("{completed}/{total}"), Style::default().fg(theme::RUST_ORANGE)),
+            Span::styled("] ", Style::default().fg(theme::DIM)),
+            Span::styled(task_text, Style::default().fg(Color::White)),
+        ]));
+    }
 
-    frame.render_widget(Paragraph::new(line), area);
+    if let Some(line) = &app.cached_todo_compact {
+        frame.render_widget(Paragraph::new(line.clone()), area);
+    }
 }
 
 /// Open state: full list with status icons, scrollable when > `MAX_VISIBLE`.

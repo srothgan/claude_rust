@@ -36,9 +36,16 @@ pub(super) fn submit_input(app: &mut App, conn: &Rc<acp::ClientSideConnection>) 
     app.messages.push(ChatMessage {
         role: MessageRole::User,
         blocks: vec![MessageBlock::Text(text.clone(), BlockCache::default())],
+        cached_visual_height: 0,
+        cached_visual_width: 0,
     });
     // Create empty assistant message immediately -- message.rs shows thinking indicator
-    app.messages.push(ChatMessage { role: MessageRole::Assistant, blocks: Vec::new() });
+    app.messages.push(ChatMessage {
+        role: MessageRole::Assistant,
+        blocks: Vec::new(),
+        cached_visual_height: 0,
+        cached_visual_width: 0,
+    });
     app.input.clear();
     app.status = AppStatus::Thinking;
     app.auto_scroll = true;

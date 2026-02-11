@@ -40,6 +40,7 @@ pub(super) fn parse_todos(raw_input: &serde_json::Value) -> Vec<TodoItem> {
 }
 
 pub(super) fn set_todos(app: &mut App, todos: Vec<TodoItem>) {
+    app.cached_todo_compact = None;
     if todos.is_empty() {
         app.todos.clear();
         app.show_todo_panel = false;
@@ -59,6 +60,7 @@ pub(super) fn set_todos(app: &mut App, todos: Vec<TodoItem>) {
 
 /// Convert ACP plan entries into the local todo list.
 pub(super) fn apply_plan_todos(app: &mut App, plan: &acp::Plan) {
+    app.cached_todo_compact = None;
     let mut todos = Vec::with_capacity(plan.entries.len());
     for entry in &plan.entries {
         let status_str = format!("{:?}", entry.status);

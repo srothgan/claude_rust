@@ -246,6 +246,11 @@ pub async fn connect(
         rendered_input_area: ratatui::layout::Rect::new(0, 0, 0, 0),
         mention: None,
         file_cache: None,
+        cached_welcome_lines: None,
+        input_wrap_cache: None,
+        cached_todo_compact: None,
+        cached_header_line: None,
+        cached_footer_line: None,
     };
 
     Ok((app, conn, child, terminals))

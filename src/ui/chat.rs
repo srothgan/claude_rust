@@ -24,64 +24,172 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Paragraph, Widget, Wrap};
 
-#[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss, clippy::cast_sign_loss)]
-pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
-    // Snapshot spinner state before the loop so we can take &mut msg
-    let is_thinking = matches!(app.status, AppStatus::Thinking);
+/// Minimum number of messages to render above/below the visible range as a margin.
+/// Absorbs approximation error from the visual height estimation.
+const CULLING_MARGIN: usize = 2;
+
+/// Build a `SpinnerState` for a specific message index.
+fn msg_spinner(
+    base: SpinnerState,
+    index: usize,
+    msg_count: usize,
+    is_thinking: bool,
+    msg: &crate::app::ChatMessage,
+) -> SpinnerState {
+    let is_last = index + 1 == msg_count;
+    let mid_turn = is_last
+        && is_thinking
+        && matches!(msg.role, MessageRole::Assistant)
+        && !msg.blocks.is_empty();
+    SpinnerState { is_last_message: is_last, is_thinking_mid_turn: mid_turn, ..base }
+}
+
+/// Ensure every message has an up-to-date `cached_visual_height` at the given width.
+/// The last message is always recomputed while streaming (content changes each frame).
+fn update_visual_heights(app: &mut App, base: SpinnerState, is_thinking: bool, width: u16) {
+    let msg_count = app.messages.len();
+    let is_streaming = matches!(app.status, AppStatus::Thinking | AppStatus::Running);
+    for i in 0..msg_count {
+        let is_last = i + 1 == msg_count;
+        if app.messages[i].cached_visual_width == width
+            && app.messages[i].cached_visual_height > 0
+            && !(is_last && is_streaming)
+        {
+            continue;
+        }
+        let sp = msg_spinner(base, i, msg_count, is_thinking, &app.messages[i]);
+        let mut tmp = Vec::new();
+        message::render_message(&mut app.messages[i], &sp, width, &mut tmp);
+        let h = Paragraph::new(Text::from(tmp)).wrap(Wrap { trim: false }).line_count(width);
+        app.messages[i].cached_visual_height = h;
+        app.messages[i].cached_visual_width = width;
+    }
+}
+
+/// Render all messages into `out` (no culling). Used when content fits in the viewport.
+fn render_all_messages(
+    app: &mut App,
+    base: SpinnerState,
+    is_thinking: bool,
+    width: u16,
+    out: &mut Vec<Line<'static>>,
+) {
+    if let Some(cached) = &app.cached_welcome_lines {
+        out.extend(cached.iter().cloned());
+    }
+    let msg_count = app.messages.len();
+    for i in 0..msg_count {
+        let sp = msg_spinner(base, i, msg_count, is_thinking, &app.messages[i]);
+        message::render_message(&mut app.messages[i], &sp, width, out);
+    }
+}
+
+/// Render only the visible message range into `out` (viewport culling).
+/// Returns the local scroll offset to pass to `Paragraph::scroll()`.
+#[allow(clippy::cast_possible_truncation, clippy::too_many_arguments)]
+fn render_culled_messages(
+    app: &mut App,
+    base: SpinnerState,
+    is_thinking: bool,
+    width: u16,
+    welcome_height: usize,
+    scroll: usize,
+    viewport_height: usize,
+    out: &mut Vec<Line<'static>>,
+) -> usize {
     let msg_count = app.messages.len();
 
-    let spinner = SpinnerState {
-        frame: app.spinner_frame,
-        is_active: matches!(app.status, AppStatus::Thinking | AppStatus::Running),
-        is_last_message: false,      // overridden per-message below
-        is_thinking_mid_turn: false, // overridden per-message below
-    };
+    // Walk cumulative heights to find the first message overlapping scroll_offset.
+    let mut cumulative = welcome_height;
+    let mut first_visible = 0;
+    for (i, msg) in app.messages.iter().enumerate() {
+        if cumulative + msg.cached_visual_height > scroll {
+            first_visible = i;
+            break;
+        }
+        cumulative += msg.cached_visual_height;
+        first_visible = i + 1;
+    }
+    first_visible = first_visible.min(msg_count.saturating_sub(1));
 
-    let mut all_lines = Vec::new();
+    // Apply margin: render a few extra messages above/below for safety
+    let render_start = first_visible.saturating_sub(CULLING_MARGIN);
 
-    // Welcome text always at the top
-    all_lines.extend(welcome_lines(app));
-
-    for (i, msg) in app.messages.iter_mut().enumerate() {
-        let is_last = i + 1 == msg_count;
-        // Show trailing "Thinking..." spinner only on the last assistant message
-        // when status is Thinking and the message already has content (mid-turn).
-        let mid_turn = is_last
-            && is_thinking
-            && matches!(msg.role, MessageRole::Assistant)
-            && !msg.blocks.is_empty();
-        let msg_spinner =
-            SpinnerState { is_last_message: is_last, is_thinking_mid_turn: mid_turn, ..spinner };
-        // Per-block caching is handled inside render_message -- each text block
-        // and tool call maintains its own cache, only re-rendering on mutation.
-        all_lines.extend(message::render_message(msg, &msg_spinner, area.width));
+    // Compute cumulative height before render_start (for local scroll offset)
+    let mut height_before_start = welcome_height;
+    for msg in &app.messages[..render_start] {
+        height_before_start += msg.cached_visual_height;
     }
 
-    app.rendered_chat_lines = all_lines.iter().map(ToString::to_string).collect();
+    // Include welcome text only if render_start is 0 (top is visible)
+    if render_start == 0 {
+        if let Some(cached) = &app.cached_welcome_lines {
+            out.extend(cached.iter().cloned());
+        }
+        height_before_start = 0;
+    }
 
-    // Build paragraph once — line_count gives the real wrapped height
-    let paragraph = Paragraph::new(Text::from(all_lines)).wrap(Wrap { trim: false });
-    let content_height = paragraph.line_count(area.width);
+    // Render messages from render_start onward, stopping when we have enough
+    let lines_needed = (scroll - height_before_start) + viewport_height + 100;
+    for i in render_start..msg_count {
+        let sp = msg_spinner(base, i, msg_count, is_thinking, &app.messages[i]);
+        message::render_message(&mut app.messages[i], &sp, width, out);
+        if out.len() > lines_needed {
+            break;
+        }
+    }
+
+    scroll.saturating_sub(height_before_start)
+}
+
+#[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss, clippy::cast_sign_loss)]
+pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
+    let is_thinking = matches!(app.status, AppStatus::Thinking);
+    let width = area.width;
+
+    let base_spinner = SpinnerState {
+        frame: app.spinner_frame,
+        is_active: matches!(app.status, AppStatus::Thinking | AppStatus::Running),
+        is_last_message: false,
+        is_thinking_mid_turn: false,
+    };
+
+    // Welcome text (cached once)
+    if app.cached_welcome_lines.is_none() {
+        app.cached_welcome_lines = Some(welcome_lines(app));
+    }
+
+    // Update per-message visual heights
+    update_visual_heights(app, base_spinner, is_thinking, width);
+
+    let welcome_height = app.cached_welcome_lines.as_ref().map_or(0, |lines| {
+        Paragraph::new(Text::from(lines.clone())).wrap(Wrap { trim: false }).line_count(width)
+    });
+    let content_height: usize =
+        welcome_height + app.messages.iter().map(|m| m.cached_visual_height).sum::<usize>();
     let viewport_height = area.height as usize;
 
     if content_height <= viewport_height {
-        // Short content: render in a bottom-aligned sub-rect (stacks above input)
-        let offset = (viewport_height - content_height) as u16;
-        let render_area = Rect {
-            x: area.x,
-            y: area.y + offset,
-            width: area.width,
-            height: content_height as u16,
-        };
+        // Short content: render everything, bottom-aligned
+        let mut all_lines = Vec::new();
+        render_all_messages(app, base_spinner, is_thinking, width, &mut all_lines);
+
+        let paragraph = Paragraph::new(Text::from(all_lines)).wrap(Wrap { trim: false });
+        let real_height = paragraph.line_count(width);
+        let offset = (viewport_height - real_height) as u16;
+        let render_area =
+            Rect { x: area.x, y: area.y + offset, width: area.width, height: real_height as u16 };
         app.scroll_offset = 0;
         app.scroll_target = 0;
         app.scroll_pos = 0.0;
         app.auto_scroll = true;
         app.rendered_chat_area = render_area;
-        app.rendered_chat_lines = render_lines_from_paragraph(&paragraph, render_area, 0);
+        if app.selection.is_some() {
+            app.rendered_chat_lines = render_lines_from_paragraph(&paragraph, render_area, 0);
+        }
         frame.render_widget(paragraph, render_area);
     } else {
-        // Long content: scroll within the full viewport
+        // Long content: smooth scroll + viewport culling
         let max_scroll = content_height - viewport_height;
         if app.auto_scroll {
             app.scroll_target = max_scroll;
@@ -93,16 +201,31 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         if delta.abs() < 0.01 {
             app.scroll_pos = target;
         } else {
-            // Smooth over ~2-3 frames at 30fps.
-            app.scroll_pos += delta * 0.5;
+            app.scroll_pos += delta * 0.3;
         }
         app.scroll_offset = app.scroll_pos.round() as usize;
         if app.scroll_offset >= max_scroll {
             app.auto_scroll = true;
         }
+
+        let mut all_lines = Vec::new();
+        let local_scroll = render_culled_messages(
+            app,
+            base_spinner,
+            is_thinking,
+            width,
+            welcome_height,
+            app.scroll_offset,
+            viewport_height,
+            &mut all_lines,
+        );
+        let paragraph = Paragraph::new(Text::from(all_lines)).wrap(Wrap { trim: false });
+
         app.rendered_chat_area = area;
-        app.rendered_chat_lines = render_lines_from_paragraph(&paragraph, area, app.scroll_offset);
-        frame.render_widget(paragraph.scroll((app.scroll_offset as u16, 0)), area);
+        if app.selection.is_some() {
+            app.rendered_chat_lines = render_lines_from_paragraph(&paragraph, area, local_scroll);
+        }
+        frame.render_widget(paragraph.scroll((local_scroll as u16, 0)), area);
     }
 
     if let Some(sel) = app.selection

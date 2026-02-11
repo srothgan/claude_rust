@@ -114,6 +114,16 @@ pub struct App {
     pub mention: Option<mention::MentionState>,
     /// Cached file list from cwd (scanned on first `@` trigger).
     pub file_cache: Option<Vec<mention::FileCandidate>>,
+    /// Cached welcome text lines (populated once, never changes after init).
+    pub cached_welcome_lines: Option<Vec<ratatui::text::Line<'static>>>,
+    /// Cached input wrap result (keyed by input version + width).
+    pub input_wrap_cache: Option<InputWrapCache>,
+    /// Cached todo compact line (invalidated on `set_todos()`).
+    pub cached_todo_compact: Option<ratatui::text::Line<'static>>,
+    /// Cached header line (populated once, never changes after init).
+    pub cached_header_line: Option<ratatui::text::Line<'static>>,
+    /// Cached footer line (invalidated on mode change).
+    pub cached_footer_line: Option<ratatui::text::Line<'static>>,
 }
 
 impl App {
@@ -170,6 +180,23 @@ pub struct SelectionState {
 pub struct ChatMessage {
     pub role: MessageRole,
     pub blocks: Vec<MessageBlock>,
+    /// Approximate wrapped visual height (in terminal rows) at `cached_visual_width`.
+    /// Computed from the `Line` objects produced by `render_message` using
+    /// `Paragraph::line_count(width)`. Used for viewport culling -- messages outside
+    /// the visible window skip rendering and just contribute this height to the offset.
+    pub cached_visual_height: usize,
+    /// The viewport width used to compute `cached_visual_height`.
+    /// When the terminal is resized, heights are recomputed.
+    pub cached_visual_width: u16,
+}
+
+/// Cached result of `wrap_lines_and_cursor()` for the input field.
+/// Keyed by input version + width so the expensive wrapping runs at most once per frame.
+pub struct InputWrapCache {
+    pub version: u64,
+    pub content_width: u16,
+    pub wrapped_lines: Vec<ratatui::text::Line<'static>>,
+    pub cursor_pos: Option<(u16, u16)>,
 }
 
 /// Cached rendered lines for a block. Stores a version counter so the cache

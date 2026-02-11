@@ -231,6 +231,7 @@ fn handle_normal_key(app: &mut App, conn: &Rc<acp::ClientSideConnection>, key: K
                     current_mode_name: next_name,
                     available_modes: modes,
                 });
+                app.cached_footer_line = None;
             }
         }
         // Editing
@@ -285,6 +286,8 @@ fn toggle_all_tool_calls(app: &mut App) {
                 tc.cache.invalidate();
             }
         }
+        // Invalidate visual height cache -- collapsed state changes rendered height
+        msg.cached_visual_height = 0;
     }
 }
 
@@ -450,6 +453,8 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
                 app.messages.push(ChatMessage {
                     role: MessageRole::Assistant,
                     blocks: vec![MessageBlock::Text(text.text.clone(), BlockCache::default())],
+                    cached_visual_height: 0,
+                    cached_visual_width: 0,
                 });
             }
         }
@@ -569,6 +574,7 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
                     mode.current_mode_name.clone_from(&mode_id);
                     mode.current_mode_id = mode_id;
                 }
+                app.cached_footer_line = None;
             }
         }
         acp::SessionUpdate::ConfigOptionUpdate(config) => {

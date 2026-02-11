@@ -30,8 +30,9 @@ pub use connect::connect;
 pub use input::InputState;
 pub(crate) use selection::normalize_selection;
 pub use state::{
-    App, AppStatus, BlockCache, ChatMessage, InlinePermission, MessageBlock, MessageRole, ModeInfo,
-    ModeState, SelectionKind, SelectionPoint, SelectionState, TodoItem, TodoStatus, ToolCallInfo,
+    App, AppStatus, BlockCache, ChatMessage, InlinePermission, InputWrapCache, MessageBlock,
+    MessageRole, ModeInfo, ModeState, SelectionKind, SelectionPoint, SelectionState, TodoItem,
+    TodoStatus, ToolCallInfo,
 };
 
 use agent_client_protocol::{self as acp, Agent as _};
@@ -64,7 +65,7 @@ pub async fn run_tui(app: &mut App, conn: Rc<acp::ClientSideConnection>) -> anyh
     );
 
     let mut events = EventStream::new();
-    let tick_duration = Duration::from_millis(33);
+    let tick_duration = Duration::from_millis(16);
     let mut last_render = Instant::now();
 
     loop {

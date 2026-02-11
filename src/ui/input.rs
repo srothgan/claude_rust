@@ -17,8 +17,8 @@
 // TODO: Replace custom InputState with tui-textarea when it supports ratatui 0.30
 // Track: https://github.com/rhysd/tui-textarea/pull/118
 
-use crate::app::App;
 use crate::app::mention;
+use crate::app::{App, InputWrapCache};
 use crate::ui::theme;
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
@@ -69,25 +69,26 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         return;
     }
 
-    // Build wrapped input lines using character-based wrapping for stability.
+    // Build wrapped input lines using cached character-based wrapping.
     let content_width = input_area.width;
     if content_width == 0 {
         return;
     }
 
-    let (lines, cursor_pos) = wrap_lines_and_cursor(
-        &app.input.lines,
-        app.input.cursor_row,
-        app.input.cursor_col,
-        content_width,
-    );
+    get_or_compute_wrap(app, content_width);
+    let (lines, cursor_pos) = match app.input_wrap_cache.as_ref() {
+        Some(c) => (c.wrapped_lines.clone(), c.cursor_pos),
+        None => return,
+    };
 
     // Post-process: highlight @mentions in cyan
     let lines = highlight_mentions(lines);
 
     let paragraph = Paragraph::new(lines);
     app.rendered_input_area = input_area;
-    app.rendered_input_lines = render_lines_from_paragraph(&paragraph, input_area);
+    if app.selection.is_some() {
+        app.rendered_input_lines = render_lines_from_paragraph(&paragraph, input_area);
+    }
     frame.render_widget(paragraph, input_area);
 
     if let Some(sel) = app.selection
@@ -150,27 +151,45 @@ fn render_lines_from_paragraph(paragraph: &Paragraph, area: Rect) -> Vec<String>
     lines
 }
 
+/// Compute (or return cached) wrap result for the input field.
+/// The cache is keyed by `(input.version, content_width)` and is stored on `App`.
+#[allow(clippy::cast_possible_truncation)]
+fn get_or_compute_wrap(app: &mut App, content_width: u16) {
+    let fresh = app
+        .input_wrap_cache
+        .as_ref()
+        .is_none_or(|c| c.version != app.input.version || c.content_width != content_width);
+    if fresh {
+        let (wrapped_lines, cursor_pos) = wrap_lines_and_cursor(
+            &app.input.lines,
+            app.input.cursor_row,
+            app.input.cursor_col,
+            content_width,
+        );
+        app.input_wrap_cache = Some(InputWrapCache {
+            version: app.input.version,
+            content_width,
+            wrapped_lines,
+            cursor_pos,
+        });
+    }
+}
+
 /// Compute the number of visual lines the input occupies, accounting for wrapping.
 /// Used by the layout to allocate the correct input area height.
 #[allow(clippy::cast_possible_truncation)]
-pub fn visual_line_count(app: &App, area_width: u16) -> u16 {
+pub fn visual_line_count(app: &mut App, area_width: u16) -> u16 {
     if app.input.is_empty() {
         return 1;
     }
-    // Input content width = total area minus horizontal padding minus prompt column
-    let content_width =
-        area_width.saturating_sub(INPUT_PAD * 2).saturating_sub(PROMPT_WIDTH) as usize;
+    let content_width = area_width.saturating_sub(INPUT_PAD * 2).saturating_sub(PROMPT_WIDTH);
     if content_width == 0 {
         return app.input.line_count();
     }
-
-    let (lines, _) = wrap_lines_and_cursor(
-        &app.input.lines,
-        app.input.cursor_row,
-        app.input.cursor_col,
-        content_width as u16,
-    );
-    (lines.len() as u16).min(MAX_INPUT_HEIGHT)
+    get_or_compute_wrap(app, content_width);
+    app.input_wrap_cache
+        .as_ref()
+        .map_or(1, |c| (c.wrapped_lines.len() as u16).min(MAX_INPUT_HEIGHT))
 }
 
 #[allow(clippy::cast_possible_truncation)]

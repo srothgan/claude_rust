@@ -85,7 +85,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
 const FOOTER_PAD: u16 = 2;
 
-fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
+fn render_footer(frame: &mut Frame, area: Rect, app: &mut App) {
     let padded = Rect {
         x: area.x + FOOTER_PAD,
         y: area.y,
@@ -93,25 +93,29 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
         height: area.height,
     };
 
-    // Left side: mode pill
-    let left = if let Some(ref mode) = app.mode {
-        let color = mode_color(&mode.current_mode_id);
-        Line::from(vec![
-            Span::styled("[", Style::default().fg(color)),
-            Span::styled(&mode.current_mode_name, Style::default().fg(color)),
-            Span::styled("]", Style::default().fg(color)),
-            Span::raw("  "),
-            Span::styled("?", Style::default().fg(Color::White)),
-            Span::styled(" : help", Style::default().fg(theme::DIM)),
-        ])
-    } else {
-        Line::from(vec![
-            Span::styled("?", Style::default().fg(Color::White)),
-            Span::styled(" : help", Style::default().fg(theme::DIM)),
-        ])
-    };
+    if app.cached_footer_line.is_none() {
+        let line = if let Some(ref mode) = app.mode {
+            let color = mode_color(&mode.current_mode_id);
+            Line::from(vec![
+                Span::styled("[", Style::default().fg(color)),
+                Span::styled(mode.current_mode_name.clone(), Style::default().fg(color)),
+                Span::styled("]", Style::default().fg(color)),
+                Span::raw("  "),
+                Span::styled("?", Style::default().fg(Color::White)),
+                Span::styled(" : help", Style::default().fg(theme::DIM)),
+            ])
+        } else {
+            Line::from(vec![
+                Span::styled("?", Style::default().fg(Color::White)),
+                Span::styled(" : help", Style::default().fg(theme::DIM)),
+            ])
+        };
+        app.cached_footer_line = Some(line);
+    }
 
-    frame.render_widget(Paragraph::new(left), padded);
+    if let Some(line) = &app.cached_footer_line {
+        frame.render_widget(Paragraph::new(line.clone()), padded);
+    }
 }
 
 /// Returns a color for the given mode ID.

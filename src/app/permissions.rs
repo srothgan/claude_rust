@@ -40,14 +40,16 @@ fn set_permission_focused(app: &mut App, queue_index: usize, focused: bool) {
     let Some((mi, bi)) = app.tool_call_index.get(tool_id).copied() else {
         return;
     };
-    if let Some(MessageBlock::ToolCall(tc)) =
-        app.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
-    {
-        let tc = tc.as_mut();
-        if let Some(ref mut perm) = tc.pending_permission {
-            perm.focused = focused;
+    if let Some(msg) = app.messages.get_mut(mi) {
+        if let Some(MessageBlock::ToolCall(tc)) = msg.blocks.get_mut(bi) {
+            let tc = tc.as_mut();
+            if let Some(ref mut perm) = tc.pending_permission {
+                perm.focused = focused;
+            }
+            tc.cache.invalidate();
         }
-        tc.cache.invalidate();
+        // Invalidate visual height -- focused/unfocused permission lines differ
+        msg.cached_visual_height = 0;
     }
 }
 

@@ -246,6 +246,7 @@ pub fn confirm_selection(app: &mut App) {
 
     app.input.lines[trigger_row] = new_line;
     app.input.cursor_col = new_cursor_col;
+    app.input.version += 1;
 }
 
 /// Deactivate mention autocomplete.

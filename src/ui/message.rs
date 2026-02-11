@@ -23,7 +23,7 @@ use agent_client_protocol::{self as acp, PermissionOptionKind};
 use ansi_to_tui::IntoText as _;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use similar::{ChangeTag, TextDiff};
+use similar::TextDiff;
 
 const SPINNER_FRAMES: &[char] = &[
     '\u{280B}', '\u{2819}', '\u{2839}', '\u{2838}', '\u{283C}', '\u{2834}', '\u{2826}', '\u{2827}',
@@ -55,13 +55,12 @@ pub fn render_message(
     msg: &mut ChatMessage,
     spinner: &SpinnerState,
     width: u16,
-) -> Vec<Line<'static>> {
-    let mut lines: Vec<Line<'static>> = Vec::new();
-
+    out: &mut Vec<Line<'static>>,
+) {
     match msg.role {
         MessageRole::User => {
             // "User" label in gray bold
-            lines.push(Line::from(Span::styled(
+            out.push(Line::from(Span::styled(
                 "User",
                 Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
             )));
@@ -69,19 +68,13 @@ pub fn render_message(
             // User message: markdown-rendered with background overlay
             for block in &mut msg.blocks {
                 if let MessageBlock::Text(text, cache) = block {
-                    lines.extend(render_text_cached(
-                        text,
-                        cache,
-                        width,
-                        Some(theme::USER_MSG_BG),
-                        true,
-                    ));
+                    render_text_cached(text, cache, width, Some(theme::USER_MSG_BG), true, out);
                 }
             }
         }
         MessageRole::Assistant => {
             // "Claude" label in Rust orange bold
-            lines.push(Line::from(Span::styled(
+            out.push(Line::from(Span::styled(
                 "Claude",
                 Style::default().fg(theme::ROLE_ASSISTANT).add_modifier(Modifier::BOLD),
             )));
@@ -89,12 +82,12 @@ pub fn render_message(
             // Empty blocks + thinking = show spinner (only on the last message)
             if msg.blocks.is_empty() && spinner.is_active && spinner.is_last_message {
                 let ch = SPINNER_FRAMES[spinner.frame % SPINNER_FRAMES.len()];
-                lines.push(Line::from(Span::styled(
+                out.push(Line::from(Span::styled(
                     format!("{ch} Thinking..."),
                     Style::default().fg(theme::DIM),
                 )));
-                lines.push(Line::default());
-                return lines;
+                out.push(Line::default());
+                return;
             }
 
             // Render blocks in order with spacing at text<->tool transitions
@@ -104,9 +97,9 @@ pub fn render_message(
                     MessageBlock::Text(text, cache) => {
                         // Add half-spacing when transitioning from tools back to text
                         if prev_was_tool {
-                            lines.push(Line::default());
+                            out.push(Line::default());
                         }
-                        lines.extend(render_text_cached(text, cache, width, None, false));
+                        render_text_cached(text, cache, width, None, false, out);
                         prev_was_tool = false;
                     }
                     MessageBlock::ToolCall(tc) => {
@@ -116,10 +109,10 @@ pub fn render_message(
                             continue;
                         }
                         // Add half-spacing when transitioning from text to tools
-                        if !prev_was_tool && lines.len() > 1 {
-                            lines.push(Line::default());
+                        if !prev_was_tool && out.len() > 1 {
+                            out.push(Line::default());
                         }
-                        lines.extend(render_tool_call_cached(tc, width, spinner.frame));
+                        render_tool_call_cached(tc, width, spinner.frame, out);
                         prev_was_tool = true;
                     }
                 }
@@ -127,9 +120,9 @@ pub fn render_message(
 
             // Trailing "Thinking..." spinner when all tool calls finished mid-turn
             if spinner.is_thinking_mid_turn {
-                lines.push(Line::default());
+                out.push(Line::default());
                 let ch = SPINNER_FRAMES[spinner.frame % SPINNER_FRAMES.len()];
-                lines.push(Line::from(Span::styled(
+                out.push(Line::from(Span::styled(
                     format!("{ch} Thinking..."),
                     Style::default().fg(theme::DIM),
                 )));
@@ -138,9 +131,7 @@ pub fn render_message(
     }
 
     // Blank separator between messages
-    lines.push(Line::default());
-
-    lines
+    out.push(Line::default());
 }
 
 /// Preprocess markdown that `tui_markdown` doesn't handle well.
@@ -184,9 +175,11 @@ fn render_text_cached(
     width: u16,
     bg: Option<Color>,
     preserve_newlines: bool,
-) -> Vec<Line<'static>> {
+    out: &mut Vec<Line<'static>>,
+) {
     if let Some(cached_lines) = cache.get() {
-        return cached_lines.clone();
+        out.extend_from_slice(cached_lines);
+        return;
     }
 
     // Cache miss — preprocess headings (tui_markdown doesn't handle them well),
@@ -197,9 +190,11 @@ fn render_text_cached(
     }
     let fresh: Vec<Line<'static>> = tables::render_markdown_with_tables(&preprocessed, width, bg);
 
-    let cloned = fresh.clone();
+    // Store first, then extend from stored ref to avoid double-clone.
     cache.store(fresh);
-    cloned
+    if let Some(stored) = cache.get() {
+        out.extend_from_slice(stored);
+    }
 }
 
 /// Convert single line breaks into hard breaks so user-entered newlines persist.
@@ -227,23 +222,30 @@ fn render_tool_call_cached(
     tc: &mut ToolCallInfo,
     width: u16,
     spinner_frame: usize,
-) -> Vec<Line<'static>> {
+    out: &mut Vec<Line<'static>>,
+) {
     let is_in_progress =
         matches!(tc.status, acp::ToolCallStatus::InProgress | acp::ToolCallStatus::Pending);
 
     // Skip cache for in-progress tool calls (icon pulses)
     if !is_in_progress && let Some(cached_lines) = tc.cache.get() {
-        return cached_lines.clone();
+        out.extend_from_slice(cached_lines);
+        return;
     }
 
     let fresh = render_tool_call(tc, width, spinner_frame);
 
     // Only cache completed/failed tool calls
-    if !is_in_progress {
-        tc.cache.store(fresh.clone());
+    if is_in_progress {
+        // In-progress: move directly, no caching needed.
+        out.extend(fresh);
+    } else {
+        // Store first, then extend from stored ref to avoid double-clone.
+        tc.cache.store(fresh);
+        if let Some(stored) = tc.cache.get() {
+            out.extend_from_slice(stored);
+        }
     }
-
-    fresh
 }
 
 /// Max visible output lines for Execute/Bash tool calls.
@@ -695,27 +697,29 @@ fn render_diff(diff: &acp::Diff) -> Vec<Line<'static>> {
     let new = &diff.new_text;
     let text_diff = TextDiff::from_lines(old, new);
 
-    for change in text_diff.iter_all_changes() {
-        let value = change.as_str().unwrap_or("").trim_end_matches('\n');
-        match change.tag() {
-            ChangeTag::Delete => {
-                lines.push(Line::from(Span::styled(
-                    format!("- {value}"),
-                    Style::default().fg(Color::Red),
-                )));
-            }
-            ChangeTag::Insert => {
-                lines.push(Line::from(Span::styled(
-                    format!("+ {value}"),
-                    Style::default().fg(Color::Green),
-                )));
-            }
-            ChangeTag::Equal => {
-                lines.push(Line::from(Span::styled(
-                    format!("  {value}"),
-                    Style::default().fg(theme::DIM),
-                )));
-            }
+    // Use unified diff with 3 lines of context -- only shows changed hunks
+    // instead of the full file content.
+    let udiff = text_diff.unified_diff();
+    for hunk in udiff.iter_hunks() {
+        // Extract the @@ header from the hunk's Display output (first line).
+        let hunk_str = hunk.to_string();
+        if let Some(header) = hunk_str.lines().next()
+            && header.starts_with("@@")
+        {
+            lines.push(Line::from(Span::styled(
+                header.to_owned(),
+                Style::default().fg(Color::Cyan),
+            )));
+        }
+
+        for change in hunk.iter_changes() {
+            let value = change.as_str().unwrap_or("").trim_end_matches('\n');
+            let (prefix, style) = match change.tag() {
+                similar::ChangeTag::Delete => ("-", Style::default().fg(Color::Red)),
+                similar::ChangeTag::Insert => ("+", Style::default().fg(Color::Green)),
+                similar::ChangeTag::Equal => (" ", Style::default().fg(theme::DIM)),
+            };
+            lines.push(Line::from(Span::styled(format!("{prefix} {value}"), style)));
         }
     }
 

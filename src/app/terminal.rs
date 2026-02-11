@@ -35,18 +35,22 @@ pub(super) fn update_terminal_outputs(app: &mut App) {
                 if let Some(ref tid) = tc.terminal_id
                     && let Some(terminal) = terminals.get(tid.as_str())
                 {
-                    let Ok(buf) = terminal.output_buffer.lock() else {
-                        continue;
+                    // Clone raw bytes under the lock, then convert outside
+                    // the critical section to avoid blocking output writers.
+                    let raw = {
+                        let Ok(buf) = terminal.output_buffer.lock() else {
+                            continue;
+                        };
+                        let current_len = buf.len();
+                        if current_len == 0 || current_len == tc.terminal_output_len {
+                            continue;
+                        }
+                        tc.terminal_output_len = current_len;
+                        buf.clone()
                     };
-                    let current_len = buf.len();
-                    if current_len == 0 || current_len == tc.terminal_output_len {
-                        continue;
-                    }
-                    let snapshot = String::from_utf8_lossy(&buf).to_string();
-                    drop(buf);
+                    let snapshot = String::from_utf8_lossy(&raw).to_string();
 
                     tc.terminal_output = Some(snapshot);
-                    tc.terminal_output_len = current_len;
                     tc.cache.invalidate();
                 }
             }
