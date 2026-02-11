@@ -97,17 +97,12 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         height: input_main_area.height,
     };
 
-    // During Connecting state, show a pulsing spinner instead of the input prompt
+    // During Connecting state, show a spinner with static text
     if app.status == AppStatus::Connecting {
         let spinner_ch = SPINNER_FRAMES[app.spinner_frame % SPINNER_FRAMES.len()];
-        let pulse_style = if app.spinner_frame % 4 < 2 {
-            Style::default().fg(theme::RUST_ORANGE)
-        } else {
-            Style::default().fg(theme::DIM)
-        };
         let line = Line::from(vec![
-            Span::styled(format!("{spinner_ch} "), pulse_style),
-            Span::styled("Connecting to Claude Code...", pulse_style),
+            Span::styled(format!("{spinner_ch} "), Style::default().fg(theme::DIM)),
+            Span::styled("Connecting to Claude Code...", Style::default().fg(theme::DIM)),
         ]);
         frame.render_widget(Paragraph::new(line), padded);
         return;
