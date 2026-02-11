@@ -677,6 +677,55 @@ fn strip_outer_code_fence(text: &str) -> String {
     text.to_owned()
 }
 
+/// Render a diff with proper unified-style output using the `similar` crate.
+/// The ACP `Diff` struct provides `old_text`/`new_text` -- we compute the actual
+/// line-level changes and show only changed lines with context.
+fn render_diff(diff: &acp::Diff) -> Vec<Line<'static>> {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+
+    // File path header
+    let name = diff.path.file_name().map_or_else(
+        || diff.path.to_string_lossy().into_owned(),
+        |f| f.to_string_lossy().into_owned(),
+    );
+    lines.push(Line::from(Span::styled(
+        name,
+        Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+    )));
+
+    let old = diff.old_text.as_deref().unwrap_or("");
+    let new = &diff.new_text;
+    let text_diff = TextDiff::from_lines(old, new);
+
+    // Use unified diff with 3 lines of context -- only shows changed hunks
+    // instead of the full file content.
+    let udiff = text_diff.unified_diff();
+    for hunk in udiff.iter_hunks() {
+        // Extract the @@ header from the hunk's Display output (first line).
+        let hunk_str = hunk.to_string();
+        if let Some(header) = hunk_str.lines().next()
+            && header.starts_with("@@")
+        {
+            lines.push(Line::from(Span::styled(
+                header.to_owned(),
+                Style::default().fg(Color::Cyan),
+            )));
+        }
+
+        for change in hunk.iter_changes() {
+            let value = change.as_str().unwrap_or("").trim_end_matches('\n');
+            let (prefix, style) = match change.tag() {
+                similar::ChangeTag::Delete => ("-", Style::default().fg(Color::Red)),
+                similar::ChangeTag::Insert => ("+", Style::default().fg(Color::Green)),
+                similar::ChangeTag::Equal => (" ", Style::default().fg(theme::DIM)),
+            };
+            lines.push(Line::from(Span::styled(format!("{prefix} {value}"), style)));
+        }
+    }
+
+    lines
+}
+
 #[cfg(test)]
 mod tests {
     // =====
@@ -913,7 +962,7 @@ mod tests {
         assert_eq!(result, "line1\nline2\nline3");
     }
 
-    /// Quadruple backtick fence — starts with ````` which starts with ```, so it should still work.
+    /// Quadruple backtick fence -- starts with 4 backticks which starts with 3, so it should still work.
     #[test]
     fn strip_quadruple_backtick_fence() {
         let input = "````\ncontent here\n````";
@@ -925,7 +974,7 @@ mod tests {
         assert!(result.contains("content here"));
     }
 
-    /// Tilde fences — NOT handled by strip_outer_code_fence (only checks ```).
+    /// Tilde fences -- NOT handled by `strip_outer_code_fence` (only checks triple backticks).
     #[test]
     fn strip_tilde_fence_passthrough() {
         let input = "~~~\ncontent\n~~~";
@@ -946,7 +995,11 @@ mod tests {
     /// Very large content inside fence — stress test.
     #[test]
     fn strip_large_fenced_content() {
-        let big: String = (0..10_000).map(|i| format!("line {i}\n")).collect();
+        let big: String = (0..10_000).fold(String::new(), |mut s, i| {
+            use std::fmt::Write;
+            writeln!(s, "line {i}").unwrap();
+            s
+        });
         let input = format!("```\n{big}```");
         let result = strip_outer_code_fence(&input);
         assert!(result.contains("line 0"));
@@ -962,7 +1015,7 @@ mod tests {
         assert!(result.is_empty() || result.chars().all(|c| c == '\n'));
     }
 
-    /// Text starting with ``` but not at the beginning (leading whitespace).
+    /// Text starting with triple backticks but not at the beginning (leading whitespace).
     #[test]
     fn strip_fence_with_leading_whitespace() {
         let input = "  ```\ncontent\n```";
@@ -1248,53 +1301,4 @@ mod tests {
         let (icon, _) = status_icon(acp::ToolCallStatus::Pending, 999_999);
         assert!(!icon.is_empty());
     }
-}
-
-/// Render a diff with proper unified-style output using the `similar` crate.
-/// The ACP `Diff` struct provides `old_text`/`new_text` — we compute the actual
-/// line-level changes and show only changed lines with context.
-fn render_diff(diff: &acp::Diff) -> Vec<Line<'static>> {
-    let mut lines: Vec<Line<'static>> = Vec::new();
-
-    // File path header
-    let name = diff.path.file_name().map_or_else(
-        || diff.path.to_string_lossy().into_owned(),
-        |f| f.to_string_lossy().into_owned(),
-    );
-    lines.push(Line::from(Span::styled(
-        name,
-        Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
-    )));
-
-    let old = diff.old_text.as_deref().unwrap_or("");
-    let new = &diff.new_text;
-    let text_diff = TextDiff::from_lines(old, new);
-
-    // Use unified diff with 3 lines of context -- only shows changed hunks
-    // instead of the full file content.
-    let udiff = text_diff.unified_diff();
-    for hunk in udiff.iter_hunks() {
-        // Extract the @@ header from the hunk's Display output (first line).
-        let hunk_str = hunk.to_string();
-        if let Some(header) = hunk_str.lines().next()
-            && header.starts_with("@@")
-        {
-            lines.push(Line::from(Span::styled(
-                header.to_owned(),
-                Style::default().fg(Color::Cyan),
-            )));
-        }
-
-        for change in hunk.iter_changes() {
-            let value = change.as_str().unwrap_or("").trim_end_matches('\n');
-            let (prefix, style) = match change.tag() {
-                similar::ChangeTag::Delete => ("-", Style::default().fg(Color::Red)),
-                similar::ChangeTag::Insert => ("+", Style::default().fg(Color::Green)),
-                similar::ChangeTag::Equal => (" ", Style::default().fg(theme::DIM)),
-            };
-            lines.push(Line::from(Span::styled(format!("{prefix} {value}"), style)));
-        }
-    }
-
-    lines
 }

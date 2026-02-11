@@ -276,7 +276,7 @@ mod tests {
         assert_eq!(slice_by_cols("hi", 50, 100), "");
     }
 
-    /// start_col > end_col — no guard in the function, loop condition
+    /// `start_col` > `end_col` -- no guard in the function, loop condition
     /// `i >= end_col` triggers immediately, so result is empty.
     #[test]
     fn slice_start_greater_than_end() {
@@ -411,7 +411,7 @@ mod tests {
     /// Stress test: 10K emoji string.
     #[test]
     fn slice_stress_10k_emoji() {
-        let s: String = std::iter::repeat('\u{1F600}').take(10_000).collect();
+        let s: String = "\u{1F600}".repeat(10_000);
         let sliced = slice_by_cols(&s, 9990, 10_000);
         assert_eq!(sliced.chars().count(), 10);
     }

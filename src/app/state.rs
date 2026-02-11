@@ -81,14 +81,14 @@ pub struct App {
     pub tools_collapsed: bool,
     /// IDs of Task tool calls currently `InProgress` -- their children get hidden.
     /// Use `insert_active_task()`, `remove_active_task()`.
-    pub(super) active_task_ids: HashSet<String>,
+    pub active_task_ids: HashSet<String>,
     /// Shared terminal process map — used to snapshot output on completion.
     pub terminals: crate::acp::client::TerminalMap,
     /// Force a full terminal clear on next render frame.
     pub force_redraw: bool,
     /// O(1) lookup: `tool_call_id` -> `(message_index, block_index)`.
     /// Use `lookup_tool_call()`, `index_tool_call()`.
-    pub(super) tool_call_index: HashMap<String, (usize, usize)>,
+    pub tool_call_index: HashMap<String, (usize, usize)>,
     /// Current todo list from Claude's `TodoWrite` tool calls.
     pub todos: Vec<TodoItem>,
     /// Whether the todo panel is expanded (true) or shows compact status line (false).
@@ -148,6 +148,57 @@ impl App {
     /// Register a tool call's position in the message/block arrays.
     pub fn index_tool_call(&mut self, id: String, msg_idx: usize, block_idx: usize) {
         self.tool_call_index.insert(id, (msg_idx, block_idx));
+    }
+
+    /// Build a minimal `App` for unit/integration tests.
+    /// All fields get sensible defaults; the `mpsc` channel is wired up internally.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn test_default() -> Self {
+        let (tx, rx) = mpsc::unbounded_channel();
+        Self {
+            messages: Vec::new(),
+            scroll_offset: 0,
+            scroll_target: 0,
+            scroll_pos: 0.0,
+            auto_scroll: true,
+            input: InputState::new(),
+            status: AppStatus::Ready,
+            should_quit: false,
+            session_id: None,
+            model_name: "test-model".into(),
+            cwd: "/test".into(),
+            cwd_raw: "/test".into(),
+            files_accessed: 0,
+            mode: None,
+            pending_permission_ids: Vec::new(),
+            event_tx: tx,
+            event_rx: rx,
+            spinner_frame: 0,
+            tools_collapsed: false,
+            active_task_ids: HashSet::default(),
+            terminals: std::rc::Rc::default(),
+            force_redraw: false,
+            tool_call_index: HashMap::default(),
+            todos: Vec::new(),
+            show_todo_panel: false,
+            todo_scroll: 0,
+            available_commands: Vec::new(),
+            cached_frame_area: ratatui::layout::Rect::default(),
+            selection: None,
+            rendered_chat_lines: Vec::new(),
+            rendered_chat_area: ratatui::layout::Rect::default(),
+            rendered_input_lines: Vec::new(),
+            rendered_input_area: ratatui::layout::Rect::default(),
+            mention: None,
+            file_cache: None,
+            cached_welcome_lines: None,
+            input_wrap_cache: None,
+            cached_todo_compact: None,
+            git_branch: None,
+            cached_header_line: None,
+            cached_footer_line: None,
+        }
     }
 
     /// Detect the current git branch and invalidate the header cache if it changed.
@@ -291,6 +342,18 @@ pub struct ToolCallInfo {
     pub pending_permission: Option<InlinePermission>,
 }
 
+/// Permission state stored inline on a `ToolCallInfo`, so the permission
+/// controls render inside the tool call block (unified edit/permission UX).
+pub struct InlinePermission {
+    pub options: Vec<acp::PermissionOption>,
+    pub response_tx: tokio::sync::oneshot::Sender<acp::RequestPermissionResponse>,
+    pub selected_index: usize,
+    /// Whether this permission currently has keyboard focus.
+    /// When multiple permissions are pending, only the focused one
+    /// shows the selection arrow and accepts Left/Right/Enter input.
+    pub focused: bool,
+}
+
 #[cfg(test)]
 mod tests {
     // =====
@@ -373,7 +436,7 @@ mod tests {
         assert_eq!(content, "second");
     }
 
-    /// get() called twice returns consistent data.
+    /// `get()` called twice returns consistent data.
     #[test]
     fn cache_get_twice_consistent() {
         let mut cache = BlockCache::default();
@@ -457,50 +520,7 @@ mod tests {
     // App tool_call_index
 
     fn make_test_app() -> App {
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        App {
-            messages: Vec::new(),
-            scroll_offset: 0,
-            scroll_target: 0,
-            scroll_pos: 0.0,
-            auto_scroll: true,
-            input: InputState::new(),
-            status: AppStatus::Ready,
-            should_quit: false,
-            session_id: None,
-            model_name: "test".into(),
-            cwd: "/test".into(),
-            cwd_raw: "/test".into(),
-            files_accessed: 0,
-            mode: None,
-            pending_permission_ids: Vec::new(),
-            event_tx: tx,
-            event_rx: rx,
-            spinner_frame: 0,
-            tools_collapsed: false,
-            active_task_ids: Default::default(),
-            terminals: Default::default(),
-            force_redraw: false,
-            tool_call_index: Default::default(),
-            todos: Vec::new(),
-            show_todo_panel: false,
-            todo_scroll: 0,
-            available_commands: Vec::new(),
-            cached_frame_area: Default::default(),
-            selection: None,
-            rendered_chat_lines: Vec::new(),
-            rendered_chat_area: Default::default(),
-            rendered_input_lines: Vec::new(),
-            rendered_input_area: Default::default(),
-            mention: None,
-            file_cache: None,
-            cached_welcome_lines: None,
-            input_wrap_cache: None,
-            cached_todo_compact: None,
-            git_branch: None,
-            cached_header_line: None,
-            cached_footer_line: None,
-        }
+        App::test_default()
     }
 
     #[test]
@@ -627,16 +647,4 @@ mod tests {
         }
         assert!(app.active_task_ids.is_empty());
     }
-}
-
-/// Permission state stored inline on a `ToolCallInfo`, so the permission
-/// controls render inside the tool call block (unified edit/permission UX).
-pub struct InlinePermission {
-    pub options: Vec<acp::PermissionOption>,
-    pub response_tx: tokio::sync::oneshot::Sender<acp::RequestPermissionResponse>,
-    pub selected_index: usize,
-    /// Whether this permission currently has keyboard focus.
-    /// When multiple permissions are pending, only the focused one
-    /// shows the selection arrow and accepts Left/Right/Enter input.
-    pub focused: bool,
 }

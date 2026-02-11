@@ -27,6 +27,7 @@ mod todos;
 
 // Re-export all public types so `crate::app::App`, `crate::app::BlockCache`, etc. still work.
 pub use connect::connect;
+pub use events::{handle_acp_event, handle_terminal_event};
 pub use input::InputState;
 pub(crate) use selection::normalize_selection;
 pub use state::{

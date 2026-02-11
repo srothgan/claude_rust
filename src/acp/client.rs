@@ -56,7 +56,7 @@ pub struct ClaudeClient {
     cwd: PathBuf,
 }
 
-pub(crate) struct TerminalProcess {
+pub struct TerminalProcess {
     child: tokio::process::Child,
     /// Accumulated stdout+stderr — append-only, never cleared.
     /// Shared with background reader tasks via Arc.

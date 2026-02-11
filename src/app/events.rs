@@ -30,11 +30,7 @@ use crossterm::event::{
 };
 use std::rc::Rc;
 
-pub(super) fn handle_terminal_event(
-    app: &mut App,
-    conn: &Rc<acp::ClientSideConnection>,
-    event: Event,
-) {
+pub fn handle_terminal_event(app: &mut App, conn: &Rc<acp::ClientSideConnection>, event: Event) {
     match event {
         Event::Key(key) if key.kind == KeyEventKind::Press => {
             if app.mention.is_some() {
@@ -294,7 +290,7 @@ fn toggle_all_tool_calls(app: &mut App) {
     }
 }
 
-pub(super) fn handle_acp_event(app: &mut App, event: ClientEvent) {
+pub fn handle_acp_event(app: &mut App, event: ClientEvent) {
     match event {
         ClientEvent::SessionUpdate(update) => handle_session_update(app, update),
         ClientEvent::PermissionRequest { request, response_tx } => {
@@ -331,6 +327,7 @@ pub(super) fn handle_acp_event(app: &mut App, event: ClientEvent) {
         }
         ClientEvent::TurnComplete => {
             app.status = AppStatus::Ready;
+            app.files_accessed = 0;
             app.refresh_git_branch();
         }
         ClientEvent::TurnError(msg) => {
@@ -423,6 +420,17 @@ fn handle_tool_call(app: &mut App, tc: acp::ToolCall) {
             last.blocks.push(MessageBlock::ToolCall(Box::new(tool_info)));
             app.index_tool_call(tc_id, msg_idx, block_idx);
         }
+    } else {
+        // No assistant message yet — create one for this tool call
+        let tc_id = tool_info.id.clone();
+        let new_idx = app.messages.len();
+        app.messages.push(ChatMessage {
+            role: MessageRole::Assistant,
+            blocks: vec![MessageBlock::ToolCall(Box::new(tool_info))],
+            cached_visual_height: 0,
+            cached_visual_width: 0,
+        });
+        app.index_tool_call(tc_id, new_idx, 0);
     }
 
     app.status = AppStatus::Running;
@@ -841,7 +849,11 @@ mod tests {
     /// Very long path (stress test).
     #[test]
     fn shorten_very_long_path() {
-        let segments: String = (0..50).map(|i| format!("/seg{i}")).collect();
+        let segments: String = (0..50).fold(String::new(), |mut s, i| {
+            use std::fmt::Write;
+            write!(s, "/seg{i}").unwrap();
+            s
+        });
         let cwd = segments.clone();
         let title = format!("Read {segments}/deep/file.rs");
         let result = shorten_tool_title(&title, &cwd);
@@ -870,50 +882,7 @@ mod tests {
     // has_in_progress_tool_calls
 
     fn make_test_app() -> App {
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        App {
-            messages: Vec::new(),
-            scroll_offset: 0,
-            scroll_target: 0,
-            scroll_pos: 0.0,
-            auto_scroll: true,
-            input: super::super::InputState::new(),
-            status: AppStatus::Ready,
-            should_quit: false,
-            session_id: None,
-            model_name: "test".into(),
-            cwd: "/test".into(),
-            cwd_raw: "/test".into(),
-            files_accessed: 0,
-            mode: None,
-            pending_permission_ids: Vec::new(),
-            event_tx: tx,
-            event_rx: rx,
-            spinner_frame: 0,
-            tools_collapsed: false,
-            active_task_ids: Default::default(),
-            terminals: Default::default(),
-            force_redraw: false,
-            tool_call_index: Default::default(),
-            todos: Vec::new(),
-            show_todo_panel: false,
-            todo_scroll: 0,
-            available_commands: Vec::new(),
-            cached_frame_area: Default::default(),
-            selection: None,
-            rendered_chat_lines: Vec::new(),
-            rendered_chat_area: Default::default(),
-            rendered_input_lines: Vec::new(),
-            rendered_input_area: Default::default(),
-            mention: None,
-            file_cache: None,
-            cached_welcome_lines: None,
-            input_wrap_cache: None,
-            cached_todo_compact: None,
-            git_branch: None,
-            cached_header_line: None,
-            cached_footer_line: None,
-        }
+        App::test_default()
     }
 
     #[test]

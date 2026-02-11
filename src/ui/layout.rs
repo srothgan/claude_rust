@@ -372,7 +372,7 @@ mod tests {
 
     // compact mode with extras
 
-    /// Ultra-compact with help_height > 0.
+    /// Ultra-compact with `help_height` > 0.
     #[test]
     fn compact_with_help() {
         let layout = compute(area(80, 6), 1, true, 0, 2);

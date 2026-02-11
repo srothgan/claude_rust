@@ -14,31 +14,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-mod acp;
-mod app;
-mod ui;
-
 use clap::Parser;
-
-#[derive(Parser, Debug)]
-#[command(name = "claude-rust", about = "Native Rust terminal for Claude Code")]
-pub struct Cli {
-    /// Override the model (sonnet, opus, haiku)
-    #[arg(long, short)]
-    model: Option<String>,
-
-    /// Resume a previous session by ID
-    #[arg(long)]
-    resume: Option<String>,
-
-    /// Auto-approve all tool calls (dangerous)
-    #[arg(long)]
-    yolo: bool,
-
-    /// Working directory (defaults to cwd)
-    #[arg(long, short = 'C')]
-    dir: Option<std::path::PathBuf>,
-}
+use claude_rust::Cli;
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
@@ -63,13 +40,13 @@ fn main() -> anyhow::Result<()> {
 
     rt.block_on(local_set.run_until(async move {
         // Phase 1: connect (pre-TUI, errors to stderr)
-        let (mut app, conn, _child, terminals) = app::connect(cli, npx_path).await?;
+        let (mut app, conn, _child, terminals) = claude_rust::app::connect(cli, npx_path).await?;
 
         // Phase 2: TUI event loop
-        let result = app::run_tui(&mut app, conn).await;
+        let result = claude_rust::app::run_tui(&mut app, conn).await;
 
         // Kill any spawned terminal child processes before exiting
-        crate::acp::client::kill_all_terminals(&terminals);
+        claude_rust::acp::client::kill_all_terminals(&terminals);
 
         result
     }))

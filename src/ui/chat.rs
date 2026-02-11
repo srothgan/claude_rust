@@ -287,7 +287,7 @@ fn render_lines_from_paragraph(
 }
 
 const FERRIS_SAYS: &[&str] = &[
-    r" _________________________________ ",
+    r" --------------------------------- ",
     r"< Welcome back to Claude, in Rust! >",
     r" --------------------------------- ",
     r"        \             ",
