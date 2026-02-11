@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use crate::app::{App, AppStatus, SelectionKind, SelectionState};
+use crate::app::{App, AppStatus, MessageRole, SelectionKind, SelectionState};
 use crate::ui::message::{self, SpinnerState};
 use crate::ui::theme;
 use ratatui::Frame;
@@ -27,9 +27,14 @@ use ratatui::widgets::{Paragraph, Widget, Wrap};
 #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss, clippy::cast_sign_loss)]
 pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     // Snapshot spinner state before the loop so we can take &mut msg
+    let is_thinking = matches!(app.status, AppStatus::Thinking);
+    let msg_count = app.messages.len();
+
     let spinner = SpinnerState {
         frame: app.spinner_frame,
         is_active: matches!(app.status, AppStatus::Thinking | AppStatus::Running),
+        is_last_message: false, // overridden per-message below
+        is_thinking_mid_turn: false, // overridden per-message below
     };
 
     let mut all_lines = Vec::new();
@@ -37,10 +42,18 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     // Welcome text always at the top
     all_lines.extend(welcome_lines(app));
 
-    for msg in &mut app.messages {
-        // Per-block caching is handled inside render_message — each text block
+    for (i, msg) in app.messages.iter_mut().enumerate() {
+        let is_last = i + 1 == msg_count;
+        // Show trailing "Thinking..." spinner only on the last assistant message
+        // when status is Thinking and the message already has content (mid-turn).
+        let mid_turn = is_last
+            && is_thinking
+            && matches!(msg.role, MessageRole::Assistant)
+            && !msg.blocks.is_empty();
+        let msg_spinner = SpinnerState { is_last_message: is_last, is_thinking_mid_turn: mid_turn, ..spinner };
+        // Per-block caching is handled inside render_message -- each text block
         // and tool call maintains its own cache, only re-rendering on mutation.
-        all_lines.extend(message::render_message(msg, &spinner, area.width));
+        all_lines.extend(message::render_message(msg, &msg_spinner, area.width));
     }
 
     app.rendered_chat_lines = all_lines.iter().map(ToString::to_string).collect();

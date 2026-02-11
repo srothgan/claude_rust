@@ -395,6 +395,9 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
     match update {
         acp::SessionUpdate::AgentMessageChunk(chunk) => {
             if let acp::ContentBlock::Text(text) = chunk.content {
+                // Text is actively streaming — suppress the "Thinking..." spinner
+                app.status = AppStatus::Running;
+
                 // Append to last text block in current assistant message, or create new
                 if let Some(last) = app.messages.last_mut()
                     && matches!(last.role, MessageRole::Assistant)
@@ -499,12 +502,19 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
             if let Some(todos) = pending_todos {
                 set_todos(app, todos);
             }
+
+            // If all tool calls have completed/failed, flip back to Thinking
+            // (the turn is still active — TurnComplete hasn't arrived yet).
+            if matches!(app.status, AppStatus::Running) && !has_in_progress_tool_calls(app) {
+                app.status = AppStatus::Thinking;
+            }
         }
         acp::SessionUpdate::UserMessageChunk(_) => {
             // Our own message echoed back -- we already display it
         }
         acp::SessionUpdate::AgentThoughtChunk(chunk) => {
             tracing::debug!("Agent thought: {:?}", chunk);
+            app.status = AppStatus::Thinking;
         }
         acp::SessionUpdate::Plan(plan) => {
             tracing::debug!("Plan update: {:?}", plan);
@@ -570,6 +580,22 @@ fn shorten_tool_title(title: &str, cwd_raw: &str) -> String {
         return title_norm.replace(&with_sep, "");
     }
     title_norm
+}
+
+/// Check if any tool call in the current assistant message is still in-progress.
+fn has_in_progress_tool_calls(app: &App) -> bool {
+    if let Some(last) = app.messages.last()
+        && matches!(last.role, MessageRole::Assistant)
+    {
+        return last.blocks.iter().any(|block| {
+            matches!(
+                block,
+                MessageBlock::ToolCall(tc)
+                    if matches!(tc.status, acp::ToolCallStatus::InProgress | acp::ToolCallStatus::Pending)
+            )
+        });
+    }
+    false
 }
 
 /// Return a human-readable name for a `SessionUpdate` variant (for debug logging).

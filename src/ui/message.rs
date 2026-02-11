@@ -30,11 +30,18 @@ const SPINNER_FRAMES: &[char] = &[
     '\u{2807}', '\u{280F}',
 ];
 
-/// Snapshot of the app state needed by the spinner — extracted before
+/// Snapshot of the app state needed by the spinner -- extracted before
 /// the message loop so we don't need `&App` (which conflicts with `&mut msg`).
+#[derive(Clone, Copy)]
 pub struct SpinnerState {
     pub frame: usize,
     pub is_active: bool,
+    /// True when this is the last message in the conversation.
+    /// Thinking spinners only render on the last assistant message.
+    pub is_last_message: bool,
+    /// True when the agent is thinking mid-turn (all tool calls finished,
+    /// waiting for next action). Shows a trailing spinner after existing blocks.
+    pub is_thinking_mid_turn: bool,
 }
 
 // BlockCache model: version starts at 0, lines is None.
@@ -79,8 +86,8 @@ pub fn render_message(
                 Style::default().fg(theme::ROLE_ASSISTANT).add_modifier(Modifier::BOLD),
             )));
 
-            // Empty blocks + thinking = show spinner
-            if msg.blocks.is_empty() && spinner.is_active {
+            // Empty blocks + thinking = show spinner (only on the last message)
+            if msg.blocks.is_empty() && spinner.is_active && spinner.is_last_message {
                 let ch = SPINNER_FRAMES[spinner.frame % SPINNER_FRAMES.len()];
                 lines.push(Line::from(Span::styled(
                     format!("{ch} Thinking..."),
@@ -116,6 +123,16 @@ pub fn render_message(
                         prev_was_tool = true;
                     }
                 }
+            }
+
+            // Trailing "Thinking..." spinner when all tool calls finished mid-turn
+            if spinner.is_thinking_mid_turn {
+                lines.push(Line::default());
+                let ch = SPINNER_FRAMES[spinner.frame % SPINNER_FRAMES.len()];
+                lines.push(Line::from(Span::styled(
+                    format!("{ch} Thinking..."),
+                    Style::default().fg(theme::DIM),
+                )));
             }
         }
     }
