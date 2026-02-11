@@ -16,6 +16,7 @@
 
 mod autocomplete;
 mod chat;
+mod diff;
 mod header;
 mod help;
 mod input;
@@ -24,6 +25,7 @@ mod message;
 mod tables;
 pub mod theme;
 mod todo;
+mod tool_call;
 
 use crate::app::App;
 use ratatui::Frame;
