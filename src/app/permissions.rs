@@ -40,16 +40,14 @@ fn set_permission_focused(app: &mut App, queue_index: usize, focused: bool) {
     let Some((mi, bi)) = app.tool_call_index.get(tool_id).copied() else {
         return;
     };
-    if let Some(msg) = app.messages.get_mut(mi) {
-        if let Some(MessageBlock::ToolCall(tc)) = msg.blocks.get_mut(bi) {
-            let tc = tc.as_mut();
-            if let Some(ref mut perm) = tc.pending_permission {
-                perm.focused = focused;
-            }
-            tc.cache.invalidate();
+    if let Some(msg) = app.messages.get_mut(mi)
+        && let Some(MessageBlock::ToolCall(tc)) = msg.blocks.get_mut(bi)
+    {
+        let tc = tc.as_mut();
+        if let Some(ref mut perm) = tc.pending_permission {
+            perm.focused = focused;
         }
-        // Invalidate visual height -- focused/unfocused permission lines differ
-        msg.cached_visual_height = 0;
+        tc.cache.invalidate();
     }
 }
 
@@ -79,7 +77,7 @@ pub(super) fn handle_permission_key(app: &mut App, key: KeyEvent) {
             // Focus the new first permission
             set_permission_focused(app, 0, true);
             // Scroll to the newly focused permission's tool call
-            app.auto_scroll = true;
+            app.viewport.engage_auto_scroll();
         }
         KeyCode::Left => {
             if let Some(tc) = get_focused_permission_tc(app)

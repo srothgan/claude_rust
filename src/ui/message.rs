@@ -61,7 +61,15 @@ pub fn render_message(
             // User message: markdown-rendered with background overlay
             for block in &mut msg.blocks {
                 if let MessageBlock::Text(text, cache, incr) = block {
-                    render_text_cached(text, cache, incr, width, Some(theme::USER_MSG_BG), true, out);
+                    render_text_cached(
+                        text,
+                        cache,
+                        incr,
+                        width,
+                        Some(theme::USER_MSG_BG),
+                        true,
+                        out,
+                    );
                 }
             }
         }
@@ -201,10 +209,9 @@ pub(super) fn render_text_cached(
     // Store in the full block cache with wrapped height.
     // For streaming messages this will be invalidated on the next chunk,
     // but for completed messages it persists.
-    let h = Paragraph::new(Text::from(fresh.clone()))
-        .wrap(Wrap { trim: false })
-        .line_count(width);
-    cache.store_with_height(fresh, h, width);
+    let h = Paragraph::new(Text::from(fresh.clone())).wrap(Wrap { trim: false }).line_count(width);
+    cache.store(fresh);
+    cache.set_height(h, width);
     if let Some(stored) = cache.get() {
         out.extend_from_slice(stored);
     }

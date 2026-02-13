@@ -31,7 +31,7 @@ pub use events::{handle_acp_event, handle_terminal_event};
 pub use input::InputState;
 pub(crate) use selection::normalize_selection;
 pub use state::{
-    App, AppStatus, BlockCache, ChatMessage, IncrementalMarkdown, InlinePermission,
+    App, AppStatus, BlockCache, ChatMessage, ChatViewport, IncrementalMarkdown, InlinePermission,
     InputWrapCache, LoginHint, MessageBlock, MessageRole, ModeInfo, ModeState, SelectionKind,
     SelectionPoint, SelectionState, TodoItem, TodoStatus, ToolCallInfo,
 };
@@ -104,16 +104,14 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
         }
 
         // Phase 3: render once (only when something changed)
-        let is_animating = matches!(
-            app.status,
-            AppStatus::Connecting | AppStatus::Thinking | AppStatus::Running
-        );
+        let is_animating =
+            matches!(app.status, AppStatus::Connecting | AppStatus::Thinking | AppStatus::Running);
         if is_animating {
             app.spinner_frame = app.spinner_frame.wrapping_add(1);
             app.needs_redraw = true;
         }
         // Smooth scroll still settling
-        let scroll_delta = (app.scroll_target as f32 - app.scroll_pos).abs();
+        let scroll_delta = (app.viewport.scroll_target as f32 - app.viewport.scroll_pos).abs();
         if scroll_delta >= 0.01 {
             app.needs_redraw = true;
         }

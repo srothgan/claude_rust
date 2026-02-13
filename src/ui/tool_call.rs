@@ -48,16 +48,44 @@ pub fn status_icon(status: acp::ToolCallStatus, spinner_frame: usize) -> (&'stat
 
 /// Render a tool call with caching. Only re-renders when cache is stale.
 ///
-/// For in-progress tool calls, only the title line (containing the spinner icon)
-/// changes each frame. The body (content, diffs, terminal output) is cached
-/// separately and reused until invalidated. This avoids expensive markdown/ANSI
-/// parsing on every frame just for a spinner animation.
+/// For Execute/Bash tool calls, the cache stores **content only** (command, output,
+/// permissions) without border decoration. Borders are applied at render time using
+/// the current width, so they always fill the terminal correctly after resize.
+/// Height for Execute = `content_lines + 2` (title border + bottom border).
+///
+/// For other tool calls, in-progress calls split title (re-rendered each frame for
+/// spinner) from body (cached). Completed calls cache title + body together.
 pub fn render_tool_call_cached(
     tc: &mut ToolCallInfo,
     width: u16,
     spinner_frame: usize,
     out: &mut Vec<Line<'static>>,
 ) {
+    let is_execute = matches!(tc.kind, acp::ToolKind::Execute);
+
+    // Execute/Bash: two-layer rendering (cache content, apply borders at render time)
+    if is_execute {
+        // Ensure content is cached
+        if tc.cache.get().is_none() {
+            let _t = crate::perf::start("tc::render_exec");
+            let content = render_execute_content(tc);
+            tc.cache.store(content);
+        }
+        // Get content length for height, set height, then re-borrow for border rendering
+        if let Some(content) = tc.cache.get() {
+            let content_len = content.len();
+            // Height = content_lines + 2 (top border + bottom border)
+            tc.cache.set_height(content_len + 2, width);
+        }
+        // Apply borders at render time with current width
+        if let Some(content) = tc.cache.get() {
+            let bordered = render_execute_with_borders(tc, content, width, spinner_frame);
+            out.extend(bordered);
+        }
+        return;
+    }
+
+    // Non-Execute tool calls: existing caching strategy
     let is_in_progress =
         matches!(tc.status, acp::ToolCallStatus::InProgress | acp::ToolCallStatus::Pending);
 
@@ -69,10 +97,10 @@ pub fn render_tool_call_cached(
         }
         let _t = crate::perf::start("tc::render");
         let fresh = render_tool_call(tc, width, spinner_frame);
-        let h = Paragraph::new(Text::from(fresh.clone()))
-            .wrap(Wrap { trim: false })
-            .line_count(width);
-        tc.cache.store_with_height(fresh, h, width);
+        let h =
+            Paragraph::new(Text::from(fresh.clone())).wrap(Wrap { trim: false }).line_count(width);
+        tc.cache.store(fresh);
+        tc.cache.set_height(h, width);
         if let Some(stored) = tc.cache.get() {
             out.extend_from_slice(stored);
         }
@@ -88,24 +116,21 @@ pub fn render_tool_call_cached(
         out.extend_from_slice(cached_body);
     } else {
         let _t = crate::perf::start("tc::render_body");
-        let body = render_tool_call_body(tc, width, spinner_frame);
-        let h = Paragraph::new(Text::from(body.clone()))
-            .wrap(Wrap { trim: false })
-            .line_count(width);
-        tc.cache.store_with_height(body, h, width);
+        let body = render_tool_call_body(tc);
+        let h =
+            Paragraph::new(Text::from(body.clone())).wrap(Wrap { trim: false }).line_count(width);
+        tc.cache.store(body);
+        tc.cache.set_height(h, width);
         if let Some(stored) = tc.cache.get() {
             out.extend_from_slice(stored);
         }
     }
 }
 
-/// Render just the title line for a tool call (the line containing the spinner icon).
+/// Render just the title line for a non-Execute tool call (the line containing the spinner icon).
 /// Used for in-progress tool calls where only the spinner changes each frame.
-fn render_tool_call_title(tc: &ToolCallInfo, width: u16, spinner_frame: usize) -> Line<'static> {
-    if matches!(tc.kind, acp::ToolKind::Execute) {
-        return render_execute_title(tc, width, spinner_frame);
-    }
-
+/// Execute tool calls are handled separately via `render_execute_with_borders`.
+fn render_tool_call_title(tc: &ToolCallInfo, _width: u16, spinner_frame: usize) -> Line<'static> {
     let (icon, icon_color) = status_icon(tc.status, spinner_frame);
     let (kind_icon, _kind_name) = theme::tool_kind_label(tc.kind, tc.claude_tool_name.as_deref());
 
@@ -127,24 +152,18 @@ fn render_tool_call_title(tc: &ToolCallInfo, width: u16, spinner_frame: usize) -
     Line::from(title_spans)
 }
 
-/// Render the body lines (everything after the title) for a tool call.
+/// Render the body lines (everything after the title) for a non-Execute tool call.
 /// Used for in-progress tool calls where the body is cached separately from the title.
-fn render_tool_call_body(tc: &ToolCallInfo, width: u16, spinner_frame: usize) -> Vec<Line<'static>> {
-    if matches!(tc.kind, acp::ToolKind::Execute) {
-        return render_execute_body(tc, width, spinner_frame);
-    }
-
+/// Execute tool calls are handled separately via `render_execute_with_borders`.
+fn render_tool_call_body(tc: &ToolCallInfo) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     render_standard_body(tc, &mut lines);
     lines
 }
 
+/// Render a complete non-Execute tool call (title + body).
+/// Execute tool calls are handled separately via `render_execute_with_borders`.
 fn render_tool_call(tc: &ToolCallInfo, width: u16, spinner_frame: usize) -> Vec<Line<'static>> {
-    // Execute/Bash tool calls get a distinct rendering
-    if matches!(tc.kind, acp::ToolKind::Execute) {
-        return render_execute_tool_call(tc, width, spinner_frame);
-    }
-
     let title = render_tool_call_title(tc, width, spinner_frame);
     let mut lines = vec![title];
     render_standard_body(tc, &mut lines);
@@ -197,34 +216,15 @@ fn render_standard_body(tc: &ToolCallInfo, lines: &mut Vec<Line<'static>>) {
     }
 }
 
-/// Render the top border line of an Execute/Bash tool call box.
-fn render_execute_title(tc: &ToolCallInfo, width: u16, spinner_frame: usize) -> Line<'static> {
-    let (status_icon_str, icon_color) = status_icon(tc.status, spinner_frame);
-    let border = Style::default().fg(theme::DIM);
-    let inner_w = (width as usize).saturating_sub(2);
-    let label_overhead = 2 + 3 + 5 + 1 + 1;
-    let title_len = tc.title.chars().count();
-    let fill = inner_w.saturating_sub(label_overhead + title_len);
-    let top_fill: String = "\u{2500}".repeat(fill);
-    Line::from(vec![
-        Span::styled("  \u{256D}\u{2500}", border),
-        Span::styled(format!(" {status_icon_str} "), Style::default().fg(icon_color)),
-        Span::styled("Bash ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
-        Span::styled(tc.title.clone(), Style::default().fg(Color::White)),
-        Span::styled(format!(" {top_fill}\u{256E}"), border),
-    ])
-}
-
-/// Render the body of an Execute/Bash tool call (command + output + permissions + bottom border).
-fn render_execute_body(tc: &ToolCallInfo, width: u16, _spinner_frame: usize) -> Vec<Line<'static>> {
-    let border = Style::default().fg(theme::DIM);
-    let inner_w = (width as usize).saturating_sub(2);
+/// Render Execute/Bash content lines WITHOUT any border decoration.
+/// This is width-independent and safe to cache across resizes.
+/// Returns: command line + output lines + permission lines (no border prefixes).
+fn render_execute_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
 
-    // Command line
+    // Command line (no border prefix)
     if let Some(ref cmd) = tc.terminal_command {
         lines.push(Line::from(vec![
-            Span::styled("  \u{2502} ", border),
             Span::styled(
                 "$ ",
                 Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
@@ -233,7 +233,7 @@ fn render_execute_body(tc: &ToolCallInfo, width: u16, _spinner_frame: usize) -> 
         ]));
     }
 
-    // Output lines (capped)
+    // Output lines (capped, no border prefix)
     let mut body_lines: Vec<Line<'static>> = Vec::new();
 
     if let Some(ref output) = tc.terminal_output {
@@ -269,37 +269,55 @@ fn render_execute_body(tc: &ToolCallInfo, width: u16, _spinner_frame: usize) -> 
         body_lines.push(Line::from(Span::styled("running...", Style::default().fg(theme::DIM))));
     }
 
-    for content_line in body_lines {
-        let mut spans = vec![Span::styled("  \u{2502} ", border)];
-        spans.extend(content_line.spans);
-        lines.push(Line::from(spans));
-    }
+    lines.extend(body_lines);
 
-    // Inline permission controls (inside the box)
+    // Inline permission controls (no border prefix)
     if let Some(ref perm) = tc.pending_permission {
-        for perm_line in render_permission_lines(perm) {
-            let mut spans = vec![Span::styled("  \u{2502} ", border)];
-            spans.extend(perm_line.spans);
-            lines.push(Line::from(spans));
-        }
+        lines.extend(render_permission_lines(perm));
     }
-
-    // Bottom border
-    let bottom_fill: String = "\u{2500}".repeat(inner_w.saturating_sub(2));
-    lines.push(Line::from(Span::styled(format!("  \u{2570}{bottom_fill}\u{256F}"), border)));
 
     lines
 }
 
-fn render_execute_tool_call(
+/// Apply Execute/Bash box borders around pre-rendered content lines.
+/// This is called at render time with the current width, so borders always
+/// fill the terminal correctly even after resize.
+fn render_execute_with_borders(
     tc: &ToolCallInfo,
+    content: &[Line<'static>],
     width: u16,
     spinner_frame: usize,
 ) -> Vec<Line<'static>> {
-    let title = render_execute_title(tc, width, spinner_frame);
-    let mut lines = vec![title];
-    lines.extend(render_execute_body(tc, width, spinner_frame));
-    lines
+    let border = Style::default().fg(theme::DIM);
+    let inner_w = (width as usize).saturating_sub(2);
+    let mut out = Vec::with_capacity(content.len() + 2);
+
+    // Top border with status icon and title
+    let (status_icon_str, icon_color) = status_icon(tc.status, spinner_frame);
+    let label_overhead = 2 + 3 + 5 + 1 + 1;
+    let title_len = tc.title.chars().count();
+    let fill = inner_w.saturating_sub(label_overhead + title_len);
+    let top_fill: String = "\u{2500}".repeat(fill);
+    out.push(Line::from(vec![
+        Span::styled("  \u{256D}\u{2500}", border),
+        Span::styled(format!(" {status_icon_str} "), Style::default().fg(icon_color)),
+        Span::styled("Bash ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+        Span::styled(tc.title.clone(), Style::default().fg(Color::White)),
+        Span::styled(format!(" {top_fill}\u{256E}"), border),
+    ]));
+
+    // Content lines with left border prefix
+    for line in content {
+        let mut spans = vec![Span::styled("  \u{2502} ", border)];
+        spans.extend(line.spans.iter().cloned());
+        out.push(Line::from(spans));
+    }
+
+    // Bottom border
+    let bottom_fill: String = "\u{2500}".repeat(inner_w.saturating_sub(2));
+    out.push(Line::from(Span::styled(format!("  \u{2570}{bottom_fill}\u{256F}"), border)));
+
+    out
 }
 
 /// Render inline permission options on a single compact line.

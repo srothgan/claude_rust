@@ -54,7 +54,14 @@ pub fn handle_terminal_event(app: &mut App, event: Event) {
         Event::FocusGained => {
             app.refresh_git_branch();
         }
-        // Resize is handled automatically by ratatui
+        Event::Resize(_, _) => {
+            // Force a full terminal clear on resize. Without this, terminal
+            // emulators (especially on Windows) corrupt their scrollback buffer
+            // when the alternate screen is resized, causing the visible area to
+            // shift even though ratatui paints the correct content. The clear
+            // resets the terminal's internal state.
+            app.force_redraw = true;
+        }
         _ => {}
     }
 }
@@ -93,12 +100,10 @@ fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
     }
     match mouse.kind {
         MouseEventKind::ScrollUp => {
-            app.scroll_target = app.scroll_target.saturating_sub(MOUSE_SCROLL_LINES);
-            app.auto_scroll = false;
+            app.viewport.scroll_up(MOUSE_SCROLL_LINES);
         }
         MouseEventKind::ScrollDown => {
-            app.scroll_target = app.scroll_target.saturating_add(MOUSE_SCROLL_LINES);
-            // auto_scroll re-engagement handled by chat::render clamping
+            app.viewport.scroll_down(MOUSE_SCROLL_LINES);
         }
         _ => {}
     }
@@ -183,12 +188,11 @@ fn handle_normal_key(app: &mut App, key: KeyEvent) {
         (KeyCode::Right, _) => app.input.move_right(),
         (KeyCode::Up, m) if m.contains(KeyModifiers::CONTROL) => {
             // Ctrl+Up: scroll chat up
-            app.scroll_target = app.scroll_target.saturating_sub(1);
-            app.auto_scroll = false;
+            app.viewport.scroll_up(1);
         }
         (KeyCode::Down, m) if m.contains(KeyModifiers::CONTROL) => {
             // Ctrl+Down: scroll chat down (clamped in chat::render)
-            app.scroll_target = app.scroll_target.saturating_add(1);
+            app.viewport.scroll_down(1);
         }
         (KeyCode::Up, _) => app.input.move_up(),
         (KeyCode::Down, _) => app.input.move_down(),
@@ -303,8 +307,7 @@ fn toggle_all_tool_calls(app: &mut App) {
                 tc.cache.invalidate();
             }
         }
-        // Invalidate visual height cache -- collapsed state changes rendered height
-        msg.cached_visual_height = 0;
+        // Height caches are on the viewport; invalidating the block cache is enough.
     }
 }
 
@@ -328,7 +331,7 @@ pub fn handle_acp_event(app: &mut App, event: ClientEvent) {
                     });
                     tc.cache.invalidate();
                     app.pending_permission_ids.push(tool_id);
-                    app.auto_scroll = true;
+                    app.viewport.engage_auto_scroll();
                 }
             } else {
                 tracing::warn!(
@@ -384,9 +387,6 @@ pub fn handle_acp_event(app: &mut App, event: ClientEvent) {
                     BlockCache::default(),
                     IncrementalMarkdown::default(),
                 )],
-                cached_visual_height: 0,
-                cached_visual_width: 0,
-                
             });
         }
     }
@@ -482,9 +482,6 @@ fn handle_tool_call(app: &mut App, tc: acp::ToolCall) {
         app.messages.push(ChatMessage {
             role: MessageRole::Assistant,
             blocks: vec![MessageBlock::ToolCall(Box::new(tool_info))],
-            cached_visual_height: 0,
-            cached_visual_width: 0,
-
         });
         app.index_tool_call(tc_id, new_idx, 0);
     }
@@ -533,8 +530,6 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
                         BlockCache::default(),
                         incr,
                     )],
-                    cached_visual_height: 0,
-                    cached_visual_width: 0,
                 });
             }
         }
@@ -768,13 +763,7 @@ mod tests {
     }
 
     fn assistant_msg(blocks: Vec<MessageBlock>) -> ChatMessage {
-        ChatMessage {
-            role: MessageRole::Assistant,
-            blocks,
-            cached_visual_height: 0,
-            cached_visual_width: 0,
-
-        }
+        ChatMessage { role: MessageRole::Assistant, blocks }
     }
 
     fn user_msg(text: &str) -> ChatMessage {
@@ -785,9 +774,6 @@ mod tests {
                 BlockCache::default(),
                 IncrementalMarkdown::default(),
             )],
-            cached_visual_height: 0,
-            cached_visual_width: 0,
-
         }
     }
 
@@ -969,8 +955,11 @@ mod tests {
     #[test]
     fn has_in_progress_no_tool_calls() {
         let mut app = make_test_app();
-        app.messages
-            .push(assistant_msg(vec![MessageBlock::Text("hello".into(), BlockCache::default(), IncrementalMarkdown::default())]));
+        app.messages.push(assistant_msg(vec![MessageBlock::Text(
+            "hello".into(),
+            BlockCache::default(),
+            IncrementalMarkdown::default(),
+        )]));
         assert!(!has_in_progress_tool_calls(&app));
     }
 
@@ -1068,9 +1057,17 @@ mod tests {
     fn has_in_progress_text_and_tools_mixed() {
         let mut app = make_test_app();
         app.messages.push(assistant_msg(vec![
-            MessageBlock::Text("thinking...".into(), BlockCache::default(), IncrementalMarkdown::default()),
+            MessageBlock::Text(
+                "thinking...".into(),
+                BlockCache::default(),
+                IncrementalMarkdown::default(),
+            ),
             MessageBlock::ToolCall(Box::new(tool_call("tc1", acp::ToolCallStatus::Completed))),
-            MessageBlock::Text("done".into(), BlockCache::default(), IncrementalMarkdown::default()),
+            MessageBlock::Text(
+                "done".into(),
+                BlockCache::default(),
+                IncrementalMarkdown::default(),
+            ),
         ]));
         assert!(!has_in_progress_tool_calls(&app));
     }
@@ -1137,9 +1134,9 @@ mod tests {
     fn test_app_defaults() {
         let app = make_test_app();
         assert!(app.messages.is_empty());
-        assert_eq!(app.scroll_offset, 0);
-        assert_eq!(app.scroll_target, 0);
-        assert!(app.auto_scroll);
+        assert_eq!(app.viewport.scroll_offset, 0);
+        assert_eq!(app.viewport.scroll_target, 0);
+        assert!(app.viewport.auto_scroll);
         assert!(!app.should_quit);
         assert!(app.session_id.is_none());
         assert_eq!(app.files_accessed, 0);

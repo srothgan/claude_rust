@@ -64,9 +64,9 @@ async fn permission_request_attaches_to_tool_call() {
 #[tokio::test]
 async fn permission_request_enables_auto_scroll() {
     let mut app = test_app();
-    app.auto_scroll = false;
+    app.viewport.auto_scroll = false;
     let _rx = setup_permission(&mut app, "tc-scroll", allow_deny_options());
-    assert!(app.auto_scroll, "permission request should enable auto_scroll");
+    assert!(app.viewport.auto_scroll, "permission request should enable auto_scroll");
 }
 
 // --- Permission for unknown tool call auto-rejects ---
@@ -124,8 +124,8 @@ async fn multiple_permissions_queue_in_order() {
 #[tokio::test]
 async fn scroll_target_preserved_across_text_chunks() {
     let mut app = test_app();
-    app.scroll_target = 42;
-    app.auto_scroll = false;
+    app.viewport.scroll_target = 42;
+    app.viewport.auto_scroll = false;
 
     let chunk = acp::ContentChunk::new(acp::ContentBlock::Text(acp::TextContent::new("Some text")));
     send_acp_event(
@@ -134,21 +134,21 @@ async fn scroll_target_preserved_across_text_chunks() {
     );
 
     // Text chunks should NOT reset scroll when auto_scroll is off
-    assert_eq!(app.scroll_target, 42, "scroll_target should be preserved");
-    assert!(!app.auto_scroll, "auto_scroll should stay off");
+    assert_eq!(app.viewport.scroll_target, 42, "scroll_target should be preserved");
+    assert!(!app.viewport.auto_scroll, "auto_scroll should stay off");
 }
 
 #[tokio::test]
 async fn tool_call_does_not_change_scroll_when_auto_scroll_off() {
     let mut app = test_app();
-    app.scroll_target = 10;
-    app.auto_scroll = false;
+    app.viewport.scroll_target = 10;
+    app.viewport.auto_scroll = false;
 
     let tc = acp::ToolCall::new("tc-scroll", "Read file").status(acp::ToolCallStatus::InProgress);
     send_acp_event(&mut app, ClientEvent::SessionUpdate(acp::SessionUpdate::ToolCall(tc)));
 
-    assert_eq!(app.scroll_target, 10, "tool calls shouldn't touch scroll_target");
-    assert!(!app.auto_scroll);
+    assert_eq!(app.viewport.scroll_target, 10, "tool calls shouldn't touch scroll_target");
+    assert!(!app.viewport.auto_scroll);
 }
 
 // --- TurnComplete transient state reset ---
