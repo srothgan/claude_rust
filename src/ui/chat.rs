@@ -14,9 +14,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use crate::app::{App, AppStatus, MessageBlock, MessageRole, SelectionKind, SelectionState};
+use crate::app::{App, AppStatus, MessageRole, SelectionKind, SelectionState};
 use crate::ui::message::{self, SpinnerState};
-use crate::ui::tool_call;
 use crate::ui::theme;
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
@@ -45,142 +44,58 @@ fn msg_spinner(
     SpinnerState { is_last_message: is_last, is_thinking_mid_turn: mid_turn, ..base }
 }
 
-/// Ensure every message has an up-to-date `cached_visual_height` at the given width.
+/// Ensure every message has an up-to-date height in the viewport at the given width.
 /// The last message is always recomputed while streaming (content changes each frame).
 ///
-/// Height is computed by summing per-block cached heights. Only blocks with stale
-/// caches actually render -- completed blocks hit O(1) cache lookups.
+/// Height is ground truth: each message is rendered into a scratch buffer via
+/// `render_message()` and measured with `Paragraph::line_count(width)`. This uses
+/// the exact same wrapping algorithm as the actual render path, so heights can
+/// never drift from reality.
 ///
-/// Iterates in reverse so we can break early: once we hit a message whose cache
+/// Iterates in reverse so we can break early: once we hit a message whose height
 /// is already valid at this width, all earlier messages are also valid (content
 /// only changes at the tail during streaming). This turns the common case from
 /// O(n) to O(1).
 fn update_visual_heights(app: &mut App, base: SpinnerState, is_thinking: bool, width: u16) {
-    let _t = app.perf.as_ref().map(|p| p.start_with("chat::update_heights", "msgs", app.messages.len()));
+    let _t =
+        app.perf.as_ref().map(|p| p.start_with("chat::update_heights", "msgs", app.messages.len()));
     let msg_count = app.messages.len();
     let is_streaming = matches!(app.status, AppStatus::Thinking | AppStatus::Running);
+    let width_valid = app.viewport.message_heights_width == width;
     for i in (0..msg_count).rev() {
         let is_last = i + 1 == msg_count;
-        if app.messages[i].cached_visual_width == width
-            && app.messages[i].cached_visual_height > 0
+        if width_valid
+            && app.viewport.message_height(i) > 0
             && !(is_last && is_streaming)
         {
             break;
         }
         let sp = msg_spinner(base, i, msg_count, is_thinking, &app.messages[i]);
-        let h = compute_message_height(&mut app.messages[i], &sp, width);
+        let h = measure_message_height(&mut app.messages[i], &sp, width);
 
-        app.messages[i].cached_visual_height = h;
-        app.messages[i].cached_visual_width = width;
+        app.viewport.set_message_height(i, h);
     }
+    app.viewport.mark_heights_valid();
 }
 
-/// Compute message height by summing per-block cached heights.
+/// Measure message height using ground truth: render the message into a scratch
+/// buffer and call `Paragraph::line_count(width)`.
 ///
-/// Each block's height is read from `BlockCache::height_at()`. On cache miss,
-/// the block is rendered into a scratch vec (populating the cache via
-/// `store_with_height`), then the height is read.
-///
-/// Inter-block spacing (blank lines at text<->tool transitions) is computed
-/// arithmetically, mirroring the logic in `render_message()`.
-fn compute_message_height(
+/// This uses the exact same code path as actual rendering (`render_message()`),
+/// so heights can never diverge from what appears on screen. The scratch vec is
+/// temporary and discarded after measurement. Block-level caches are still
+/// populated as a side effect (via `render_text_cached` / `render_tool_call_cached`),
+/// so completed blocks remain O(1) on subsequent calls.
+fn measure_message_height(
     msg: &mut crate::app::ChatMessage,
     spinner: &SpinnerState,
     width: u16,
 ) -> usize {
-    // Role label: always 1 line ("User" or "Claude")
-    let mut total: usize = 1;
-
-    match msg.role {
-        MessageRole::User => {
-            // User messages: text blocks only, no spacing logic
-            for block in &mut msg.blocks {
-                if let MessageBlock::Text(text, cache, incr) = block {
-                    if let Some(h) = cache.height_at(width) {
-                        total += h;
-                    } else {
-                        let mut scratch = Vec::new();
-                        message::render_text_cached(
-                            text, cache, incr, width,
-                            Some(crate::ui::theme::USER_MSG_BG), true, &mut scratch,
-                        );
-                        total += cache.height_at(width).unwrap_or(0);
-                    }
-                }
-            }
-        }
-        MessageRole::Assistant => {
-            // Empty blocks + thinking spinner: render_message returns early
-            // without the trailing separator. Height = role(1) + "Thinking..."(1) + blank(1)
-            if msg.blocks.is_empty() && spinner.is_active && spinner.is_last_message {
-                return total + 2; // + "Thinking..." + blank (no trailing separator)
-            }
-
-            let mut prev_was_tool = false;
-            let mut any_rendered = false;
-
-            for block in &mut msg.blocks {
-                match block {
-                    MessageBlock::Text(text, cache, incr) => {
-                        // Spacing: tool -> text transition
-                        if prev_was_tool {
-                            total += 1;
-                        }
-                        if let Some(h) = cache.height_at(width) {
-                            total += h;
-                        } else {
-                            let mut scratch = Vec::new();
-                            message::render_text_cached(
-                                text, cache, incr, width, None, false, &mut scratch,
-                            );
-                            total += cache.height_at(width).unwrap_or(0);
-                        }
-                        prev_was_tool = false;
-                        any_rendered = true;
-                    }
-                    MessageBlock::ToolCall(tc) => {
-                        let tc = tc.as_mut();
-                        if tc.hidden {
-                            continue;
-                        }
-                        // Spacing: text -> tool transition (only if something was rendered)
-                        if !prev_was_tool && any_rendered {
-                            total += 1;
-                        }
-                        let is_in_progress = matches!(
-                            tc.status,
-                            agent_client_protocol::ToolCallStatus::InProgress
-                                | agent_client_protocol::ToolCallStatus::Pending
-                        );
-                        if let Some(h) = tc.cache.height_at(width) {
-                            // In-progress TC cache stores body only; add 1 for title
-                            total += if is_in_progress { h + 1 } else { h };
-                        } else {
-                            let mut scratch = Vec::new();
-                            tool_call::render_tool_call_cached(
-                                tc, width, spinner.frame, &mut scratch,
-                            );
-                            if let Some(h) = tc.cache.height_at(width) {
-                                total += if is_in_progress { h + 1 } else { h };
-                            }
-                        }
-                        prev_was_tool = true;
-                        any_rendered = true;
-                    }
-                }
-            }
-
-            // Mid-turn thinking spinner: blank + "Thinking..." = 2 lines
-            if spinner.is_thinking_mid_turn {
-                total += 2;
-            }
-        }
-    }
-
-    // Trailing separator (blank line between messages)
-    total += 1;
-
-    total
+    let mut scratch = Vec::new();
+    message::render_message(msg, spinner, width, &mut scratch);
+    Paragraph::new(Text::from(scratch))
+        .wrap(Wrap { trim: false })
+        .line_count(width)
 }
 
 /// Render all messages into `out` (no culling). Used when content fits in the viewport.
@@ -201,6 +116,72 @@ fn render_all_messages(
     }
 }
 
+/// Long content: smooth scroll + viewport culling.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::too_many_arguments,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
+fn render_scrolled(
+    frame: &mut Frame,
+    area: Rect,
+    app: &mut App,
+    base: SpinnerState,
+    is_thinking: bool,
+    width: u16,
+    welcome_height: usize,
+    content_height: usize,
+    viewport_height: usize,
+) {
+    let vp = &mut app.viewport;
+    let max_scroll = content_height.saturating_sub(viewport_height);
+    if vp.auto_scroll {
+        vp.scroll_target = max_scroll;
+    }
+    vp.scroll_target = vp.scroll_target.min(max_scroll);
+
+    let target = vp.scroll_target as f32;
+    let delta = target - vp.scroll_pos;
+    if delta.abs() < 0.01 {
+        vp.scroll_pos = target;
+    } else {
+        vp.scroll_pos += delta * 0.3;
+    }
+    vp.scroll_offset = vp.scroll_pos.round() as usize;
+    if vp.scroll_offset >= max_scroll {
+        vp.auto_scroll = true;
+    }
+
+    let scroll_offset = vp.scroll_offset;
+
+    let mut all_lines = Vec::new();
+    let local_scroll = {
+        let _t = app
+            .perf
+            .as_ref()
+            .map(|p| p.start_with("chat::render_msgs", "msgs", app.messages.len()));
+        render_culled_messages(
+            app,
+            base,
+            is_thinking,
+            width,
+            welcome_height,
+            scroll_offset,
+            viewport_height,
+            &mut all_lines,
+        )
+    };
+    let paragraph = Paragraph::new(Text::from(all_lines)).wrap(Wrap { trim: false });
+
+    app.rendered_chat_area = area;
+    if app.selection.is_some_and(|s| s.dragging) {
+        let _t = app.perf.as_ref().map(|p| p.start("chat::paragraph"));
+        app.rendered_chat_lines = render_lines_from_paragraph(&paragraph, area, local_scroll);
+    }
+    frame.render_widget(paragraph.scroll((local_scroll as u16, 0)), area);
+}
+
 /// Render only the visible message range into `out` (viewport culling).
 /// Returns the local scroll offset to pass to `Paragraph::scroll()`.
 #[allow(clippy::cast_possible_truncation, clippy::too_many_arguments)]
@@ -217,13 +198,14 @@ fn render_culled_messages(
     let msg_count = app.messages.len();
 
     // O(log n) binary search via prefix sums to find first visible message.
-    let first_visible = app.find_first_visible(scroll, welcome_height);
+    let first_visible = app.viewport.find_first_visible(scroll, welcome_height);
 
     // Apply margin: render a few extra messages above/below for safety
     let render_start = first_visible.saturating_sub(CULLING_MARGIN);
 
     // O(1) cumulative height lookup via prefix sums
-    let mut height_before_start = welcome_height + app.cumulative_height_before(render_start);
+    let mut height_before_start =
+        welcome_height + app.viewport.cumulative_height_before(render_start);
 
     // Include welcome text only if render_start is 0 (top is visible)
     if render_start == 0 {
@@ -258,6 +240,9 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         is_thinking_mid_turn: false,
     };
 
+    // Detect width change and invalidate layout caches
+    app.viewport.on_frame(width);
+
     // Welcome text (cached once)
     if app.cached_welcome_lines.is_none() {
         app.cached_welcome_lines = Some(welcome_lines(app));
@@ -269,88 +254,87 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     // Rebuild prefix sums (O(1) fast path when only last message changed)
     {
         let _t = app.perf.as_ref().map(|p| p.start("chat::prefix_sums"));
-        app.rebuild_prefix_sums(width);
+        app.viewport.rebuild_prefix_sums();
     }
 
-    let welcome_height = if let Some((cached_w, cached_h)) = app.cached_welcome_height
-        && cached_w == width
-    {
+    let welcome_height = if let Some(cached_h) = app.viewport.cached_welcome_height {
         cached_h
     } else {
         let h = app.cached_welcome_lines.as_ref().map_or(0, |lines| {
             Paragraph::new(Text::from(lines.clone())).wrap(Wrap { trim: false }).line_count(width)
         });
-        app.cached_welcome_height = Some((width, h));
+        app.viewport.cached_welcome_height = Some(h);
         h
     };
     // O(1) via prefix sums instead of O(n) sum every frame
-    let content_height: usize = welcome_height + app.total_message_height();
+    let content_height: usize = welcome_height + app.viewport.total_message_height();
     let viewport_height = area.height as usize;
+
+    tracing::trace!(
+        "RENDER: width={}, content_height={}, viewport_height={}, scroll_target={}, auto_scroll={}",
+        width, content_height, viewport_height, app.viewport.scroll_target, app.viewport.auto_scroll
+    );
 
     if content_height <= viewport_height {
         // Short content: render everything, bottom-aligned
         let mut all_lines = Vec::new();
         {
-            let _t = app.perf.as_ref().map(|p| p.start_with("chat::render_msgs", "msgs", app.messages.len()));
+            let _t = app
+                .perf
+                .as_ref()
+                .map(|p| p.start_with("chat::render_msgs", "msgs", app.messages.len()));
             render_all_messages(app, base_spinner, is_thinking, width, &mut all_lines);
         }
 
         let paragraph = Paragraph::new(Text::from(all_lines)).wrap(Wrap { trim: false });
         let real_height = paragraph.line_count(width);
-        let offset = viewport_height.saturating_sub(real_height) as u16;
-        let render_area =
-            Rect { x: area.x, y: area.y + offset, width: area.width, height: real_height as u16 };
-        app.scroll_offset = 0;
-        app.scroll_target = 0;
-        app.scroll_pos = 0.0;
-        app.auto_scroll = true;
-        app.rendered_chat_area = render_area;
-        if app.selection.is_some_and(|s| s.dragging) {
-            app.rendered_chat_lines = render_lines_from_paragraph(&paragraph, render_area, 0);
-        }
-        frame.render_widget(paragraph, render_area);
-    } else {
-        // Long content: smooth scroll + viewport culling
-        let max_scroll = content_height - viewport_height;
-        if app.auto_scroll {
-            app.scroll_target = max_scroll;
-        }
-        app.scroll_target = app.scroll_target.min(max_scroll);
 
-        let target = app.scroll_target as f32;
-        let delta = target - app.scroll_pos;
-        if delta.abs() < 0.01 {
-            app.scroll_pos = target;
+        // Guard: only reset scroll if the rendered content truly fits.
+        // With ground-truth heights this should always match, but verify.
+        if real_height <= viewport_height {
+            let offset = viewport_height.saturating_sub(real_height) as u16;
+            let render_area = Rect {
+                x: area.x,
+                y: area.y + offset,
+                width: area.width,
+                height: real_height as u16,
+            };
+            app.viewport.scroll_offset = 0;
+            app.viewport.scroll_target = 0;
+            app.viewport.scroll_pos = 0.0;
+            app.viewport.auto_scroll = true;
+            app.rendered_chat_area = render_area;
+            if app.selection.is_some_and(|s| s.dragging) {
+                app.rendered_chat_lines = render_lines_from_paragraph(&paragraph, render_area, 0);
+            }
+            frame.render_widget(paragraph, render_area);
         } else {
-            app.scroll_pos += delta * 0.3;
-        }
-        app.scroll_offset = app.scroll_pos.round() as usize;
-        if app.scroll_offset >= max_scroll {
-            app.auto_scroll = true;
-        }
-
-        let mut all_lines = Vec::new();
-        let local_scroll = {
-            let _t = app.perf.as_ref().map(|p| p.start_with("chat::render_msgs", "msgs", app.messages.len()));
-            render_culled_messages(
+            // Ground-truth height differs from estimated -- content doesn't fit.
+            // Fall through to scrolled rendering path.
+            render_scrolled(
+                frame,
+                area,
                 app,
                 base_spinner,
                 is_thinking,
                 width,
                 welcome_height,
-                app.scroll_offset,
+                real_height + welcome_height,
                 viewport_height,
-                &mut all_lines,
-            )
-        };
-        let paragraph = Paragraph::new(Text::from(all_lines)).wrap(Wrap { trim: false });
-
-        app.rendered_chat_area = area;
-        if app.selection.is_some_and(|s| s.dragging) {
-            let _t = app.perf.as_ref().map(|p| p.start("chat::paragraph"));
-            app.rendered_chat_lines = render_lines_from_paragraph(&paragraph, area, local_scroll);
+            );
         }
-        frame.render_widget(paragraph.scroll((local_scroll as u16, 0)), area);
+    } else {
+        render_scrolled(
+            frame,
+            area,
+            app,
+            base_spinner,
+            is_thinking,
+            width,
+            welcome_height,
+            content_height,
+            viewport_height,
+        );
     }
 
     if let Some(sel) = app.selection

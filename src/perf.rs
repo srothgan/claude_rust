@@ -49,12 +49,8 @@ mod enabled {
     impl PerfLogger {
         /// Open (or create) the log file. Returns `None` on I/O error.
         pub fn open(path: &Path) -> Option<Self> {
-            let file = OpenOptions::new()
-                .create(true)
-                .truncate(true)
-                .write(true)
-                .open(path)
-                .ok()?;
+            let file =
+                OpenOptions::new().create(true).truncate(true).write(true).open(path).ok()?;
             LOG_FILE.with(|f| *f.borrow_mut() = Some(file));
             Some(Self { _private: () })
         }
@@ -72,7 +68,12 @@ mod enabled {
 
         /// Start a named timer with an extra numeric field (e.g. message count).
         #[must_use]
-        pub fn start_with(&self, name: &'static str, extra_name: &'static str, extra_val: usize) -> Timer {
+        pub fn start_with(
+            &self,
+            name: &'static str,
+            extra_name: &'static str,
+            extra_val: usize,
+        ) -> Timer {
             Timer { name, start: Instant::now(), extra: Some((extra_name, extra_val)) }
         }
     }
@@ -104,10 +105,8 @@ mod enabled {
                             r#"{{"frame":{frame},"fn":"{name}","ms":{ms:.3},"{k}":{v}}}"#,
                         );
                     } else {
-                        let _ = writeln!(
-                            file,
-                            r#"{{"frame":{frame},"fn":"{name}","ms":{ms:.3}}}"#,
-                        );
+                        let _ =
+                            writeln!(file, r#"{{"frame":{frame},"fn":"{name}","ms":{ms:.3}}}"#,);
                     }
                 }
             });
@@ -125,15 +124,26 @@ mod disabled {
     #[allow(clippy::unused_self)]
     impl PerfLogger {
         #[inline]
-        pub fn open(_path: &Path) -> Option<Self> { None }
+        pub fn open(_path: &Path) -> Option<Self> {
+            None
+        }
         #[inline]
         pub fn next_frame(&mut self) {}
         #[inline]
         #[must_use]
-        pub fn start(&self, _name: &'static str) -> Timer { Timer }
+        pub fn start(&self, _name: &'static str) -> Timer {
+            Timer
+        }
         #[inline]
         #[must_use]
-        pub fn start_with(&self, _name: &'static str, _extra_name: &'static str, _extra_val: usize) -> Timer { Timer }
+        pub fn start_with(
+            &self,
+            _name: &'static str,
+            _extra_name: &'static str,
+            _extra_val: usize,
+        ) -> Timer {
+            Timer
+        }
     }
 
     #[allow(clippy::unused_self)]
@@ -163,7 +173,9 @@ pub fn start(name: &'static str) -> Option<Timer> {
 #[cfg(not(feature = "perf"))]
 #[must_use]
 #[inline]
-pub fn start(_name: &'static str) -> Option<Timer> { None }
+pub fn start(_name: &'static str) -> Option<Timer> {
+    None
+}
 
 #[cfg(feature = "perf")]
 pub use enabled::{PerfLogger, Timer};

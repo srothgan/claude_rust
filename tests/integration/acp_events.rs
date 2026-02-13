@@ -307,10 +307,11 @@ async fn text_chunk_after_user_message_creates_new_assistant_message() {
     // Simulate a user message already in the chat
     app.messages.push(claude_rust::app::ChatMessage {
         role: MessageRole::User,
-        blocks: vec![MessageBlock::Text("user question".into(), BlockCache::default(), IncrementalMarkdown::default())],
-        cached_visual_height: 0,
-        cached_visual_width: 0,
-
+        blocks: vec![MessageBlock::Text(
+            "user question".into(),
+            BlockCache::default(),
+            IncrementalMarkdown::default(),
+        )],
     });
 
     let chunk = acp::ContentChunk::new(acp::ContentBlock::Text(acp::TextContent::new("answer")));
@@ -361,10 +362,11 @@ async fn tool_call_after_user_message_creates_assistant_message() {
 
     app.messages.push(claude_rust::app::ChatMessage {
         role: MessageRole::User,
-        blocks: vec![MessageBlock::Text("question".into(), BlockCache::default(), IncrementalMarkdown::default())],
-        cached_visual_height: 0,
-        cached_visual_width: 0,
-
+        blocks: vec![MessageBlock::Text(
+            "question".into(),
+            BlockCache::default(),
+            IncrementalMarkdown::default(),
+        )],
     });
 
     let tc =

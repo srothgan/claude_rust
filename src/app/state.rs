@@ -61,13 +61,8 @@ pub enum TodoStatus {
 #[allow(clippy::struct_excessive_bools)]
 pub struct App {
     pub messages: Vec<ChatMessage>,
-    /// Rendered scroll offset (rounded from `scroll_pos`).
-    pub scroll_offset: usize,
-    /// Target scroll offset requested by user input or auto-scroll.
-    pub scroll_target: usize,
-    /// Smooth scroll position (fractional) for animation.
-    pub scroll_pos: f32,
-    pub auto_scroll: bool,
+    /// Single owner of all chat layout state: scroll, per-message heights, prefix sums.
+    pub viewport: ChatViewport,
     pub input: InputState,
     pub status: AppStatus,
     pub should_quit: bool,
@@ -141,8 +136,7 @@ pub struct App {
     pub cached_header_line: Option<ratatui::text::Line<'static>>,
     /// Cached footer line (invalidated on mode change).
     pub cached_footer_line: Option<ratatui::text::Line<'static>>,
-    /// Cached welcome text height: `(width, height)`. Recomputed only on resize.
-    pub cached_welcome_height: Option<(u16, usize)>,
+
     /// Indexed terminal tool calls: `(terminal_id, msg_idx, block_idx)`.
     /// Avoids O(n*m) scan of all messages/blocks every frame.
     pub terminal_tool_calls: Vec<(String, usize, usize)>,
@@ -152,14 +146,6 @@ pub struct App {
     /// Taken out (`Option::take`) during render, used, then put back to avoid
     /// borrow conflicts with `&mut App`.
     pub perf: Option<crate::perf::PerfLogger>,
-    /// Prefix sums of message visual heights: `height_prefix_sums[i]` is the
-    /// cumulative height of messages `0..=i`. Length equals `messages.len()`.
-    /// Updated by `rebuild_prefix_sums()` after `update_visual_heights()`.
-    /// Enables O(log n) binary search for first visible message and O(1) content height.
-    pub height_prefix_sums: Vec<usize>,
-    /// The width at which `height_prefix_sums` was last computed.
-    /// Invalidated on resize (width change).
-    pub prefix_sums_width: u16,
 }
 
 impl App {
@@ -171,60 +157,6 @@ impl App {
     /// Remove a Task tool call from the active set (completed/failed).
     pub fn remove_active_task(&mut self, id: &str) {
         self.active_task_ids.remove(id);
-    }
-
-    /// Rebuild prefix sums from `cached_visual_height` values.
-    /// Call after `update_visual_heights()` each frame.
-    /// Runs in O(n) but only when heights actually changed (width change or streaming).
-    pub fn rebuild_prefix_sums(&mut self, width: u16) {
-        let n = self.messages.len();
-        // Fast path: if width unchanged and array length matches, only update
-        // from the last message that could have changed (streaming appends at tail).
-        if self.prefix_sums_width == width && self.height_prefix_sums.len() == n && n > 0 {
-            // During streaming, only the last message's height changes.
-            // Recompute just the last entry.
-            let prev = if n >= 2 { self.height_prefix_sums[n - 2] } else { 0 };
-            self.height_prefix_sums[n - 1] = prev + self.messages[n - 1].cached_visual_height;
-            return;
-        }
-        // Full rebuild (resize or new messages added)
-        self.height_prefix_sums.clear();
-        self.height_prefix_sums.reserve(n);
-        let mut acc = 0;
-        for msg in &self.messages {
-            acc += msg.cached_visual_height;
-            self.height_prefix_sums.push(acc);
-        }
-        self.prefix_sums_width = width;
-    }
-
-    /// Total height of all messages (O(1) via prefix sums).
-    #[must_use]
-    pub fn total_message_height(&self) -> usize {
-        self.height_prefix_sums.last().copied().unwrap_or(0)
-    }
-
-    /// Cumulative height of messages `0..idx` (O(1) via prefix sums).
-    #[must_use]
-    pub fn cumulative_height_before(&self, idx: usize) -> usize {
-        if idx == 0 { 0 } else { self.height_prefix_sums.get(idx - 1).copied().unwrap_or(0) }
-    }
-
-    /// Binary search for the first message whose cumulative range overlaps `scroll_offset`.
-    /// Returns the message index. `welcome_height` is added as an offset before messages.
-    #[must_use]
-    pub fn find_first_visible(&self, scroll_offset: usize, welcome_height: usize) -> usize {
-        if self.height_prefix_sums.is_empty() {
-            return 0;
-        }
-        // We want the first i where welcome_height + prefix_sums[i] > scroll_offset
-        // i.e. prefix_sums[i] > scroll_offset - welcome_height
-        let target = scroll_offset.saturating_sub(welcome_height);
-        // partition_point returns first index where prefix_sums[i] > target
-        // (since prefix_sums is monotonically non-decreasing)
-        self.height_prefix_sums
-            .partition_point(|&h| h <= target)
-            .min(self.messages.len().saturating_sub(1))
     }
 
     /// Look up the (`message_index`, `block_index`) for a tool call ID.
@@ -246,10 +178,7 @@ impl App {
         let (tx, rx) = mpsc::unbounded_channel();
         Self {
             messages: Vec::new(),
-            scroll_offset: 0,
-            scroll_target: 0,
-            scroll_pos: 0.0,
-            auto_scroll: true,
+            viewport: ChatViewport::new(),
             input: InputState::new(),
             status: AppStatus::Ready,
             should_quit: false,
@@ -289,12 +218,9 @@ impl App {
             git_branch: None,
             cached_header_line: None,
             cached_footer_line: None,
-            cached_welcome_height: None,
             terminal_tool_calls: Vec::new(),
             needs_redraw: true,
             perf: None,
-            height_prefix_sums: Vec::new(),
-            prefix_sums_width: 0,
         }
     }
 
@@ -317,6 +243,189 @@ impl App {
             self.git_branch = new_branch;
             self.cached_header_line = None;
         }
+    }
+}
+
+/// Single owner of all chat layout state: scroll, per-message heights, and prefix sums.
+///
+/// Consolidates state previously scattered across `App` (scroll fields, prefix sums),
+/// `ChatMessage` (`cached_visual_height`/`cached_visual_width`), and `BlockCache` (`wrapped_height`/`wrapped_width`).
+/// Per-block heights remain on `BlockCache` via `set_height()` / `height_at()`, but
+/// the viewport owns the validity width that governs whether those caches are considered
+/// current. On resize, `on_frame()` zeroes message heights and clears prefix sums,
+/// causing the next `update_visual_heights()` pass to re-measure every message
+/// using ground-truth `Paragraph::line_count()`.
+pub struct ChatViewport {
+    // --- Scroll ---
+    /// Rendered scroll offset (rounded from `scroll_pos`).
+    pub scroll_offset: usize,
+    /// Target scroll offset requested by user input or auto-scroll.
+    pub scroll_target: usize,
+    /// Smooth scroll position (fractional) for animation.
+    pub scroll_pos: f32,
+    /// Whether to auto-scroll to bottom on new content.
+    pub auto_scroll: bool,
+
+    // --- Layout ---
+    /// Current terminal width. Set by `on_frame()` each render cycle.
+    pub width: u16,
+    /// Cached welcome text height: recomputed on resize.
+    pub cached_welcome_height: Option<usize>,
+
+    // --- Per-message heights ---
+    /// Visual height (in terminal rows) of each message, indexed by message position.
+    /// Zeroed on resize; rebuilt by `measure_message_height()`.
+    pub message_heights: Vec<usize>,
+    /// Width at which `message_heights` was last computed.
+    pub message_heights_width: u16,
+
+    // --- Prefix sums ---
+    /// Cumulative heights: `height_prefix_sums[i]` = sum of heights `0..=i`.
+    /// Enables O(log n) binary search for first visible message and O(1) total height.
+    pub height_prefix_sums: Vec<usize>,
+    /// Width at which prefix sums were last computed.
+    pub prefix_sums_width: u16,
+
+}
+
+impl ChatViewport {
+    /// Create a new viewport with default scroll state (auto-scroll enabled).
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            scroll_offset: 0,
+            scroll_target: 0,
+            scroll_pos: 0.0,
+            auto_scroll: true,
+            width: 0,
+            cached_welcome_height: None,
+            message_heights: Vec::new(),
+            message_heights_width: 0,
+            height_prefix_sums: Vec::new(),
+            prefix_sums_width: 0,
+        }
+    }
+
+    /// Called at top of each render frame. Detects width change and invalidates
+    /// all cached heights so they get re-measured at the new width.
+    pub fn on_frame(&mut self, width: u16) {
+        if self.width != 0 && self.width != width {
+            tracing::debug!(
+                "RESIZE: width {} -> {}, scroll_target={}, auto_scroll={}",
+                self.width, width, self.scroll_target, self.auto_scroll
+            );
+            self.handle_resize();
+        }
+        self.width = width;
+    }
+
+    /// Invalidate height caches on terminal resize.
+    ///
+    /// Setting `message_heights_width = 0` forces `update_visual_heights()`
+    /// to re-measure every message at the new width using ground-truth
+    /// `line_count()`. Old message heights are kept as approximations so
+    /// `content_height` stays reasonable on the resize frame.
+    fn handle_resize(&mut self) {
+        self.message_heights_width = 0;
+        self.prefix_sums_width = 0;
+        self.cached_welcome_height = None;
+    }
+
+    // --- Per-message height ---
+
+    /// Get the cached visual height for message `idx`. Returns 0 if not yet computed.
+    #[must_use]
+    pub fn message_height(&self, idx: usize) -> usize {
+        self.message_heights.get(idx).copied().unwrap_or(0)
+    }
+
+    /// Set the visual height for message `idx`, growing the vec if needed.
+    ///
+    /// Does NOT update `message_heights_width` — the caller must call
+    /// `mark_heights_valid()` after the full re-measurement pass completes.
+    pub fn set_message_height(&mut self, idx: usize, h: usize) {
+        if idx >= self.message_heights.len() {
+            self.message_heights.resize(idx + 1, 0);
+        }
+        self.message_heights[idx] = h;
+    }
+
+    /// Mark all message heights as valid at the current width.
+    /// Call after `update_visual_heights()` finishes re-measuring.
+    pub fn mark_heights_valid(&mut self) {
+        self.message_heights_width = self.width;
+    }
+
+    // --- Prefix sums ---
+
+    /// Rebuild prefix sums from `message_heights`.
+    /// O(1) fast path when width unchanged and only the last message changed (streaming).
+    pub fn rebuild_prefix_sums(&mut self) {
+        let n = self.message_heights.len();
+        if self.prefix_sums_width == self.width && self.height_prefix_sums.len() == n && n > 0 {
+            // Streaming fast path: only last message's height changed.
+            let prev = if n >= 2 { self.height_prefix_sums[n - 2] } else { 0 };
+            self.height_prefix_sums[n - 1] = prev + self.message_heights[n - 1];
+            return;
+        }
+        // Full rebuild (resize or new messages added)
+        self.height_prefix_sums.clear();
+        self.height_prefix_sums.reserve(n);
+        let mut acc = 0;
+        for &h in &self.message_heights {
+            acc += h;
+            self.height_prefix_sums.push(acc);
+        }
+        self.prefix_sums_width = self.width;
+    }
+
+    /// Total height of all messages (O(1) via prefix sums).
+    #[must_use]
+    pub fn total_message_height(&self) -> usize {
+        self.height_prefix_sums.last().copied().unwrap_or(0)
+    }
+
+    /// Cumulative height of messages `0..idx` (O(1) via prefix sums).
+    #[must_use]
+    pub fn cumulative_height_before(&self, idx: usize) -> usize {
+        if idx == 0 { 0 } else { self.height_prefix_sums.get(idx - 1).copied().unwrap_or(0) }
+    }
+
+    /// Binary search for the first message whose cumulative range overlaps `scroll_offset`.
+    /// `welcome_height` is added as an offset before messages.
+    #[must_use]
+    pub fn find_first_visible(&self, scroll_offset: usize, welcome_height: usize) -> usize {
+        if self.height_prefix_sums.is_empty() {
+            return 0;
+        }
+        let target = scroll_offset.saturating_sub(welcome_height);
+        self.height_prefix_sums
+            .partition_point(|&h| h <= target)
+            .min(self.message_heights.len().saturating_sub(1))
+    }
+
+    // --- Scroll ---
+
+    /// Scroll up by `lines`. Disables auto-scroll.
+    pub fn scroll_up(&mut self, lines: usize) {
+        self.scroll_target = self.scroll_target.saturating_sub(lines);
+        self.auto_scroll = false;
+    }
+
+    /// Scroll down by `lines`. Auto-scroll re-engagement handled by render.
+    pub fn scroll_down(&mut self, lines: usize) {
+        self.scroll_target = self.scroll_target.saturating_add(lines);
+    }
+
+    /// Re-engage auto-scroll (stick to bottom).
+    pub fn engage_auto_scroll(&mut self) {
+        self.auto_scroll = true;
+    }
+}
+
+impl Default for ChatViewport {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -353,14 +462,6 @@ pub struct SelectionState {
 pub struct ChatMessage {
     pub role: MessageRole,
     pub blocks: Vec<MessageBlock>,
-    /// Approximate wrapped visual height (in terminal rows) at `cached_visual_width`.
-    /// Sum of per-block heights plus role label (1) and trailing separator (1).
-    /// Used for viewport culling -- messages outside the visible window skip
-    /// rendering and just contribute this height to the offset.
-    pub cached_visual_height: usize,
-    /// The viewport width used to compute `cached_visual_height`.
-    /// When the terminal is resized, heights are recomputed.
-    pub cached_visual_width: u16,
 }
 
 /// Cached result of `wrap_lines_and_cursor()` for the input field.
@@ -401,19 +502,30 @@ impl BlockCache {
     }
 
     /// Store freshly rendered lines, marking the cache as clean.
-    /// Does not store height — use `store_with_height` when width is available.
+    /// Height is set separately via `set_height()` after measurement.
     pub fn store(&mut self, lines: Vec<ratatui::text::Line<'static>>) {
         self.lines = Some(lines);
         self.version = 0;
     }
 
-    /// Store freshly rendered lines together with their wrapped height.
-    /// `height` should be computed via `Paragraph::line_count(width)` on the same `lines`.
-    pub fn store_with_height(&mut self, lines: Vec<ratatui::text::Line<'static>>, height: usize, width: u16) {
-        self.lines = Some(lines);
+    /// Set the wrapped height for the cached lines at the given width.
+    /// Called by the viewport/chat layer after `Paragraph::line_count(width)`.
+    /// Separate from `store()` so height measurement is the viewport's job.
+    pub fn set_height(&mut self, height: usize, width: u16) {
         self.wrapped_height = height;
         self.wrapped_width = width;
-        self.version = 0;
+    }
+
+    /// Store lines and set height in one call.
+    /// Deprecated: prefer `store()` + `set_height()` to keep concerns separate.
+    pub fn store_with_height(
+        &mut self,
+        lines: Vec<ratatui::text::Line<'static>>,
+        height: usize,
+        width: u16,
+    ) {
+        self.store(lines);
+        self.set_height(height, width);
     }
 
     /// Get the cached wrapped height if cache is valid and was computed at the given width.
@@ -477,8 +589,10 @@ impl IncrementalMarkdown {
     /// Render all lines: cached paragraphs + fresh tail.
     /// `render_fn` converts a markdown source string into `Vec<Line>`.
     /// Lazily renders any paragraph whose cache is still empty.
-    pub fn lines(&mut self, render_fn: &impl Fn(&str) -> Vec<ratatui::text::Line<'static>>) -> Vec<ratatui::text::Line<'static>>
-    {
+    pub fn lines(
+        &mut self,
+        render_fn: &impl Fn(&str) -> Vec<ratatui::text::Line<'static>>,
+    ) -> Vec<ratatui::text::Line<'static>> {
         let mut out = Vec::new();
         for (src, lines) in &mut self.paragraphs {
             if lines.is_empty() {
@@ -502,7 +616,10 @@ impl IncrementalMarkdown {
     }
 
     /// Re-render any paragraph whose cached lines are empty (after `invalidate_renders`).
-    pub fn ensure_rendered(&mut self, render_fn: &impl Fn(&str) -> Vec<ratatui::text::Line<'static>>) {
+    pub fn ensure_rendered(
+        &mut self,
+        render_fn: &impl Fn(&str) -> Vec<ratatui::text::Line<'static>>,
+    ) {
         for (src, lines) in &mut self.paragraphs {
             if lines.is_empty() {
                 *lines = render_fn(src);
@@ -545,11 +662,7 @@ impl IncrementalMarkdown {
                 in_fence = !in_fence;
             }
             // Check for \n\n paragraph boundary (only outside code fences)
-            if !in_fence
-                && i + 1 < bytes.len()
-                && bytes[i] == b'\n'
-                && bytes[i + 1] == b'\n'
-            {
+            if !in_fence && i + 1 < bytes.len() && bytes[i] == b'\n' && bytes[i + 1] == b'\n' {
                 return (Some(i), in_fence, i);
             }
             i += 1;
@@ -819,6 +932,62 @@ mod tests {
         cache.store_with_height(vec![Line::from("new long line")], 3, 120);
         assert_eq!(cache.height_at(120), Some(3));
         assert!(cache.height_at(80).is_none());
+    }
+
+    // BlockCache set_height (separate from store)
+
+    #[test]
+    fn cache_set_height_after_store() {
+        let mut cache = BlockCache::default();
+        cache.store(vec![Line::from("hello")]);
+        assert!(cache.height_at(80).is_none()); // no height yet
+        cache.set_height(1, 80);
+        assert_eq!(cache.height_at(80), Some(1));
+        assert!(cache.get().is_some()); // lines still valid
+    }
+
+    #[test]
+    fn cache_set_height_update_width() {
+        let mut cache = BlockCache::default();
+        cache.store(vec![Line::from("hello world")]);
+        cache.set_height(1, 80);
+        assert_eq!(cache.height_at(80), Some(1));
+        // Re-measure at new width
+        cache.set_height(2, 40);
+        assert_eq!(cache.height_at(40), Some(2));
+        assert!(cache.height_at(80).is_none()); // old width no longer valid
+    }
+
+    #[test]
+    fn cache_set_height_invalidate_clears_height() {
+        let mut cache = BlockCache::default();
+        cache.store(vec![Line::from("data")]);
+        cache.set_height(3, 80);
+        cache.invalidate();
+        assert!(cache.height_at(80).is_none()); // version mismatch
+    }
+
+    #[test]
+    fn cache_set_height_on_invalidated_cache_returns_none() {
+        let mut cache = BlockCache::default();
+        cache.store(vec![Line::from("data")]);
+        cache.invalidate(); // version != 0
+        cache.set_height(5, 80);
+        // height_at returns None because cache is stale (version != 0)
+        assert!(cache.height_at(80).is_none());
+    }
+
+    #[test]
+    fn cache_store_then_set_height_matches_store_with_height() {
+        let mut cache_a = BlockCache::default();
+        cache_a.store(vec![Line::from("test")]);
+        cache_a.set_height(2, 100);
+
+        let mut cache_b = BlockCache::default();
+        cache_b.store_with_height(vec![Line::from("test")], 2, 100);
+
+        assert_eq!(cache_a.height_at(100), cache_b.height_at(100));
+        assert_eq!(cache_a.get().unwrap().len(), cache_b.get().unwrap().len());
     }
 
     // App tool_call_index
@@ -1110,5 +1279,173 @@ mod tests {
         incr.append("\n\n\n\n");
         // Two \n\n boundaries: empty string before first, empty between, remaining empty tail
         assert!(incr.paragraphs.len() >= 1);
+    }
+
+    // ChatViewport
+
+    #[test]
+    fn viewport_new_defaults() {
+        let vp = ChatViewport::new();
+        assert_eq!(vp.scroll_offset, 0);
+        assert_eq!(vp.scroll_target, 0);
+        assert!(vp.auto_scroll);
+        assert_eq!(vp.width, 0);
+        assert!(vp.message_heights.is_empty());
+        assert!(vp.height_prefix_sums.is_empty());
+    }
+
+    #[test]
+    fn viewport_on_frame_sets_width() {
+        let mut vp = ChatViewport::new();
+        vp.on_frame(80);
+        assert_eq!(vp.width, 80);
+    }
+
+    #[test]
+    fn viewport_on_frame_resize_invalidates() {
+        let mut vp = ChatViewport::new();
+        vp.on_frame(80);
+        vp.set_message_height(0, 10);
+        vp.set_message_height(1, 20);
+        vp.cached_welcome_height = Some(5);
+        vp.rebuild_prefix_sums();
+
+        // Resize: old heights are kept as approximations,
+        // but width markers are invalidated so re-measurement happens.
+        vp.on_frame(120);
+        assert_eq!(vp.message_height(0), 10); // kept, not zeroed
+        assert_eq!(vp.message_height(1), 20); // kept, not zeroed
+        assert!(vp.cached_welcome_height.is_none());
+        assert_eq!(vp.message_heights_width, 0); // forces re-measure
+        assert_eq!(vp.prefix_sums_width, 0); // forces rebuild
+    }
+
+    #[test]
+    fn viewport_on_frame_same_width_no_invalidation() {
+        let mut vp = ChatViewport::new();
+        vp.on_frame(80);
+        vp.set_message_height(0, 10);
+        vp.on_frame(80); // same width
+        assert_eq!(vp.message_height(0), 10); // not zeroed
+    }
+
+    #[test]
+    fn viewport_message_height_set_and_get() {
+        let mut vp = ChatViewport::new();
+        vp.on_frame(80);
+        vp.set_message_height(0, 5);
+        vp.set_message_height(1, 10);
+        assert_eq!(vp.message_height(0), 5);
+        assert_eq!(vp.message_height(1), 10);
+        assert_eq!(vp.message_height(2), 0); // out of bounds
+    }
+
+    #[test]
+    fn viewport_message_height_grows_vec() {
+        let mut vp = ChatViewport::new();
+        vp.on_frame(80);
+        vp.set_message_height(5, 42);
+        assert_eq!(vp.message_heights.len(), 6);
+        assert_eq!(vp.message_height(5), 42);
+        assert_eq!(vp.message_height(3), 0); // gap filled with 0
+    }
+
+    #[test]
+    fn viewport_prefix_sums_basic() {
+        let mut vp = ChatViewport::new();
+        vp.on_frame(80);
+        vp.set_message_height(0, 5);
+        vp.set_message_height(1, 10);
+        vp.set_message_height(2, 3);
+        vp.rebuild_prefix_sums();
+        assert_eq!(vp.total_message_height(), 18);
+        assert_eq!(vp.cumulative_height_before(0), 0);
+        assert_eq!(vp.cumulative_height_before(1), 5);
+        assert_eq!(vp.cumulative_height_before(2), 15);
+    }
+
+    #[test]
+    fn viewport_prefix_sums_streaming_fast_path() {
+        let mut vp = ChatViewport::new();
+        vp.on_frame(80);
+        vp.set_message_height(0, 5);
+        vp.set_message_height(1, 10);
+        vp.rebuild_prefix_sums();
+        assert_eq!(vp.total_message_height(), 15);
+
+        // Simulate streaming: last message grows
+        vp.set_message_height(1, 20);
+        vp.rebuild_prefix_sums(); // should hit fast path
+        assert_eq!(vp.total_message_height(), 25);
+        assert_eq!(vp.cumulative_height_before(1), 5);
+    }
+
+    #[test]
+    fn viewport_find_first_visible() {
+        let mut vp = ChatViewport::new();
+        vp.on_frame(80);
+        vp.set_message_height(0, 10);
+        vp.set_message_height(1, 10);
+        vp.set_message_height(2, 10);
+        vp.rebuild_prefix_sums();
+
+        assert_eq!(vp.find_first_visible(0, 0), 0);
+        assert_eq!(vp.find_first_visible(10, 0), 1);
+        assert_eq!(vp.find_first_visible(15, 0), 1);
+        assert_eq!(vp.find_first_visible(20, 0), 2);
+    }
+
+    #[test]
+    fn viewport_find_first_visible_with_welcome() {
+        let mut vp = ChatViewport::new();
+        vp.on_frame(80);
+        vp.set_message_height(0, 10);
+        vp.set_message_height(1, 10);
+        vp.rebuild_prefix_sums();
+
+        // welcome_height = 5, so messages start at offset 5
+        assert_eq!(vp.find_first_visible(0, 5), 0);
+        assert_eq!(vp.find_first_visible(5, 5), 0); // still in welcome area
+        assert_eq!(vp.find_first_visible(15, 5), 1);
+    }
+
+    #[test]
+    fn viewport_scroll_up_down() {
+        let mut vp = ChatViewport::new();
+        vp.scroll_target = 20;
+        vp.auto_scroll = true;
+
+        vp.scroll_up(5);
+        assert_eq!(vp.scroll_target, 15);
+        assert!(!vp.auto_scroll); // disabled on manual scroll
+
+        vp.scroll_down(3);
+        assert_eq!(vp.scroll_target, 18);
+        assert!(!vp.auto_scroll); // not re-engaged by scroll_down
+    }
+
+    #[test]
+    fn viewport_scroll_up_saturates() {
+        let mut vp = ChatViewport::new();
+        vp.scroll_target = 2;
+        vp.scroll_up(10);
+        assert_eq!(vp.scroll_target, 0);
+    }
+
+    #[test]
+    fn viewport_engage_auto_scroll() {
+        let mut vp = ChatViewport::new();
+        vp.auto_scroll = false;
+        vp.engage_auto_scroll();
+        assert!(vp.auto_scroll);
+    }
+
+    #[test]
+    fn viewport_default_eq_new() {
+        let a = ChatViewport::new();
+        let b = ChatViewport::default();
+        assert_eq!(a.width, b.width);
+        assert_eq!(a.auto_scroll, b.auto_scroll);
+        assert_eq!(a.message_heights.len(), b.message_heights.len());
     }
 }

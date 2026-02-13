@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use super::{App, AppStatus, ModeInfo, ModeState, SelectionState, TodoItem};
+use super::{App, AppStatus, ChatViewport, ModeInfo, ModeState, SelectionState, TodoItem};
 use crate::Cli;
 use crate::acp::client::{ClaudeClient, ClientEvent, TerminalMap};
 use crate::acp::connection;
@@ -50,10 +50,7 @@ pub fn create_app(cli: &Cli) -> App {
 
     let mut app = App {
         messages: Vec::new(),
-        scroll_offset: 0,
-        scroll_target: 0,
-        scroll_pos: 0.0,
-        auto_scroll: true,
+        viewport: ChatViewport::new(),
         input: super::InputState::new(),
         status: AppStatus::Connecting,
         should_quit: false,
@@ -93,12 +90,9 @@ pub fn create_app(cli: &Cli) -> App {
         git_branch: None,
         cached_header_line: None,
         cached_footer_line: None,
-        cached_welcome_height: None,
         terminal_tool_calls: Vec::new(),
         needs_redraw: true,
         perf: crate::perf::PerfLogger::open(std::path::Path::new("performance.log")),
-        height_prefix_sums: Vec::new(),
-        prefix_sums_width: 0,
     };
 
     app.refresh_git_branch();

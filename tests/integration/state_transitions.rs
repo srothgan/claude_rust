@@ -215,7 +215,7 @@ async fn tool_call_content_update() {
 #[tokio::test]
 async fn auto_scroll_maintained_during_streaming() {
     let mut app = test_app();
-    assert!(app.auto_scroll);
+    assert!(app.viewport.auto_scroll);
 
     for _ in 0..20 {
         let chunk =
@@ -226,7 +226,7 @@ async fn auto_scroll_maintained_during_streaming() {
         );
     }
 
-    assert!(app.auto_scroll, "auto_scroll should stay true during streaming");
+    assert!(app.viewport.auto_scroll, "auto_scroll should stay true during streaming");
 }
 
 // --- Stress: many tool calls in one turn ---
