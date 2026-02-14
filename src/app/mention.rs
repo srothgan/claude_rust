@@ -259,11 +259,8 @@ pub fn confirm_selection(app: &mut App) {
     // Rebuild the line: before_@ + @rel_path + optional trailing space + after_token
     let before: String = chars[..trigger_col].iter().collect();
     let after: String = chars[mention_end..].iter().collect();
-    let replacement = if after.is_empty() {
-        format!("@{rel_path} ")
-    } else {
-        format!("@{rel_path}")
-    };
+    let replacement =
+        if after.is_empty() { format!("@{rel_path} ") } else { format!("@{rel_path}") };
 
     let new_line = format!("{before}{replacement}{after}");
     let new_cursor_col = trigger_col + replacement.chars().count();

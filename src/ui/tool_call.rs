@@ -23,6 +23,7 @@ use ansi_to_tui::IntoText as _;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Paragraph, Wrap};
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// Spinner frames as `&'static str` for use in `status_icon` return type.
 const SPINNER_STRS: &[&str] = &[
@@ -143,11 +144,7 @@ fn render_tool_call_title(tc: &ToolCallInfo, _width: u16, spinner_frame: usize) 
         ),
     ];
 
-    if let Some(first_line) = markdown::render_markdown_safe(&tc.title, None).into_iter().next() {
-        for span in first_line.spans {
-            title_spans.push(Span::styled(span.content.into_owned(), span.style));
-        }
-    }
+    title_spans.extend(markdown_inline_spans(&tc.title));
 
     Line::from(title_spans)
 }
@@ -294,17 +291,25 @@ fn render_execute_with_borders(
 
     // Top border with status icon and title
     let (status_icon_str, icon_color) = status_icon(tc.status, spinner_frame);
-    let label_overhead = 2 + 3 + 5 + 1 + 1;
-    let title_len = tc.title.chars().count();
-    let fill = inner_w.saturating_sub(label_overhead + title_len);
-    let top_fill: String = "\u{2500}".repeat(fill);
-    out.push(Line::from(vec![
+    let line_budget = width as usize;
+    let left_prefix = vec![
         Span::styled("  \u{256D}\u{2500}", border),
         Span::styled(format!(" {status_icon_str} "), Style::default().fg(icon_color)),
         Span::styled("Bash ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
-        Span::styled(tc.title.clone(), Style::default().fg(Color::White)),
-        Span::styled(format!(" {top_fill}\u{256E}"), border),
-    ]));
+    ];
+    let prefix_w = spans_width(&left_prefix);
+    let right_border_w = 1; // "╮"
+    // Reserve at least one fill char so the border looks continuous.
+    let title_max_w = line_budget.saturating_sub(prefix_w + right_border_w + 1);
+    let title_spans = truncate_spans_to_width(markdown_inline_spans(&tc.title), title_max_w);
+    let title_w = spans_width(&title_spans);
+    let fill_w = line_budget.saturating_sub(prefix_w + title_w + right_border_w);
+    let top_fill: String = "\u{2500}".repeat(fill_w);
+
+    let mut top = left_prefix;
+    top.extend(title_spans);
+    top.push(Span::styled(format!("{top_fill}\u{256E}"), border));
+    out.push(Line::from(top));
 
     // Content lines with left border prefix
     for line in content {
@@ -369,7 +374,15 @@ fn render_permission_lines(perm: &InlinePermission) -> Vec<Line<'static>> {
         } else {
             Style::default().fg(Color::Gray)
         };
-        spans.push(Span::styled(opt.name.clone(), name_style));
+        let mut name_spans = markdown_inline_spans(&opt.name);
+        if name_spans.is_empty() {
+            spans.push(Span::styled(opt.name.clone(), name_style));
+        } else {
+            for span in &mut name_spans {
+                span.style = span.style.patch(name_style);
+            }
+            spans.extend(name_spans);
+        }
 
         let shortcut = match opt.kind {
             PermissionOptionKind::AllowOnce => " (Ctrl+y)",
@@ -388,6 +401,49 @@ fn render_permission_lines(perm: &InlinePermission) -> Vec<Line<'static>> {
             Style::default().fg(theme::DIM),
         )),
     ]
+}
+
+fn markdown_inline_spans(input: &str) -> Vec<Span<'static>> {
+    markdown::render_markdown_safe(input, None).into_iter().next().map_or_else(Vec::new, |line| {
+        line.spans.into_iter().map(|s| Span::styled(s.content.into_owned(), s.style)).collect()
+    })
+}
+
+fn spans_width(spans: &[Span<'static>]) -> usize {
+    spans.iter().map(|s| UnicodeWidthStr::width(s.content.as_ref())).sum()
+}
+
+fn truncate_spans_to_width(spans: Vec<Span<'static>>, max_width: usize) -> Vec<Span<'static>> {
+    if max_width == 0 {
+        return Vec::new();
+    }
+    if spans_width(&spans) <= max_width {
+        return spans;
+    }
+
+    let keep_width = max_width.saturating_sub(1);
+    let mut used = 0usize;
+    let mut out: Vec<Span<'static>> = Vec::new();
+
+    for span in spans {
+        if used >= keep_width {
+            break;
+        }
+        let mut chunk = String::new();
+        for ch in span.content.chars() {
+            let w = UnicodeWidthChar::width(ch).unwrap_or(0);
+            if used + w > keep_width {
+                break;
+            }
+            chunk.push(ch);
+            used += w;
+        }
+        if !chunk.is_empty() {
+            out.push(Span::styled(chunk, span.style));
+        }
+    }
+    out.push(Span::styled("\u{2026}", Style::default().fg(theme::DIM)));
+    out
 }
 
 /// One-line summary for collapsed tool calls.
@@ -464,6 +520,7 @@ fn render_tool_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
         } else if matches!(tc.status, acp::ToolCallStatus::InProgress) {
             lines.push(Line::from(Span::styled("running...", Style::default().fg(theme::DIM))));
         }
+        debug_failed_tool_render(tc);
         return lines;
     }
 
@@ -475,6 +532,12 @@ fn render_tool_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
             acp::ToolCallContent::Content(c) => {
                 if let acp::ContentBlock::Text(text) = &c.content {
                     let stripped = strip_outer_code_fence(&text.text);
+                    if matches!(tc.status, acp::ToolCallStatus::Failed)
+                        && looks_like_internal_error(&stripped)
+                    {
+                        lines.extend(render_internal_failure_content(&stripped));
+                        continue;
+                    }
                     let md_source = if is_markdown_file(&tc.title) {
                         stripped
                     } else {
@@ -495,7 +558,163 @@ fn render_tool_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
         }
     }
 
+    debug_failed_tool_render(tc);
     lines
+}
+
+fn render_internal_failure_content(payload: &str) -> Vec<Line<'static>> {
+    let summary = summarize_internal_error(payload);
+    let mut lines = vec![Line::from(Span::styled(
+        "Internal ACP/adapter error",
+        Style::default().fg(theme::STATUS_ERROR).add_modifier(Modifier::BOLD),
+    ))];
+    if !summary.is_empty() {
+        lines.push(Line::from(Span::styled(summary, Style::default().fg(theme::STATUS_ERROR))));
+    }
+    lines
+}
+
+fn debug_failed_tool_render(tc: &ToolCallInfo) {
+    if !matches!(tc.status, acp::ToolCallStatus::Failed) {
+        return;
+    }
+
+    let Some(text_payload) = tc.content.iter().find_map(|content| match content {
+        acp::ToolCallContent::Content(c) => match &c.content {
+            acp::ContentBlock::Text(t) => Some(t.text.as_str().to_owned()),
+            _ => None,
+        },
+        _ => None,
+    }) else {
+        // Skip generic command failures that only have terminal stderr/stdout.
+        // We want ACP/adapter-style structured error payloads here.
+        return;
+    };
+    if !looks_like_internal_error(&text_payload) {
+        return;
+    }
+    let text_preview = summarize_internal_error(&text_payload);
+
+    let terminal_preview = tc
+        .terminal_output
+        .as_deref()
+        .map_or_else(|| "<no terminal output>".to_owned(), preview_for_log);
+
+    tracing::debug!(
+        tool_call_id = %tc.id,
+        title = %tc.title,
+        kind = ?tc.kind,
+        content_blocks = tc.content.len(),
+        text_preview = %text_preview,
+        terminal_preview = %terminal_preview,
+        "Failed tool call render payload"
+    );
+}
+
+fn preview_for_log(input: &str) -> String {
+    const LIMIT: usize = 240;
+    let mut out = String::new();
+    for (i, ch) in input.chars().enumerate() {
+        if i >= LIMIT {
+            out.push_str("...");
+            break;
+        }
+        out.push(ch);
+    }
+    out.replace('\n', "\\n")
+}
+
+fn looks_like_internal_error(input: &str) -> bool {
+    let lower = input.to_ascii_lowercase();
+    has_internal_error_keywords(&lower)
+        || looks_like_json_rpc_error_shape(&lower)
+        || looks_like_xml_error_shape(&lower)
+}
+
+fn has_internal_error_keywords(lower: &str) -> bool {
+    [
+        "internal error",
+        "adapter",
+        "acp",
+        "json-rpc",
+        "rpc",
+        "protocol error",
+        "transport",
+        "handshake failed",
+        "session creation failed",
+        "connection closed",
+        "event channel closed",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
+fn looks_like_json_rpc_error_shape(lower: &str) -> bool {
+    (lower.contains("\"jsonrpc\"") && lower.contains("\"error\""))
+        || lower.contains("\"code\":-32603")
+        || lower.contains("\"code\": -32603")
+}
+
+fn looks_like_xml_error_shape(lower: &str) -> bool {
+    let has_error_node = lower.contains("<error") || lower.contains("<fault");
+    let has_detail_node = lower.contains("<message>") || lower.contains("<code>");
+    has_error_node && has_detail_node
+}
+
+fn summarize_internal_error(input: &str) -> String {
+    if let Some(msg) = extract_xml_tag_value(input, "message") {
+        return preview_for_log(msg);
+    }
+    if let Some(msg) = extract_json_string_field(input, "message") {
+        return preview_for_log(&msg);
+    }
+    let fallback = input.lines().find(|line| !line.trim().is_empty()).unwrap_or(input);
+    preview_for_log(fallback.trim())
+}
+
+fn extract_xml_tag_value<'a>(input: &'a str, tag: &str) -> Option<&'a str> {
+    let lower = input.to_ascii_lowercase();
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let start = lower.find(&open)? + open.len();
+    let end = start + lower[start..].find(&close)?;
+    let value = input[start..end].trim();
+    (!value.is_empty()).then_some(value)
+}
+
+fn extract_json_string_field(input: &str, field: &str) -> Option<String> {
+    let needle = format!("\"{field}\"");
+    let start = input.find(&needle)? + needle.len();
+    let rest = input[start..].trim_start();
+    let colon_idx = rest.find(':')?;
+    let mut chars = rest[colon_idx + 1..].trim_start().chars();
+    if chars.next()? != '"' {
+        return None;
+    }
+
+    let mut escaped = false;
+    let mut out = String::new();
+    for ch in chars {
+        if escaped {
+            let mapped = match ch {
+                'n' => '\n',
+                'r' => '\r',
+                't' => '\t',
+                '"' => '"',
+                '\\' => '\\',
+                _ => ch,
+            };
+            out.push(mapped);
+            escaped = false;
+            continue;
+        }
+        match ch {
+            '\\' => escaped = true,
+            '"' => return Some(out),
+            _ => out.push(ch),
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -566,5 +785,77 @@ mod tests {
     fn status_icon_spinner_large_frame() {
         let (icon, _) = status_icon(acp::ToolCallStatus::Pending, 999_999);
         assert!(!icon.is_empty());
+    }
+
+    #[test]
+    fn truncate_spans_adds_ellipsis_when_needed() {
+        let spans = vec![Span::raw("abcdefghijklmnopqrstuvwxyz")];
+        let out = truncate_spans_to_width(spans, 8);
+        let rendered: String = out.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(rendered, "abcdefg\u{2026}");
+        assert!(spans_width(&out) <= 8);
+    }
+
+    #[test]
+    fn markdown_inline_spans_removes_markdown_syntax() {
+        let spans = markdown_inline_spans("**Allow** _once_");
+        let rendered: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(rendered.contains("Allow"));
+        assert!(rendered.contains("once"));
+        assert!(!rendered.contains('*'));
+        assert!(!rendered.contains('_'));
+    }
+
+    #[test]
+    fn execute_top_border_does_not_wrap_for_long_title() {
+        use crate::app::BlockCache;
+
+        let tc = ToolCallInfo {
+            id: "tc-1".into(),
+            title: "echo very long command title with markdown **bold** and path /a/b/c/d/e/f"
+                .into(),
+            kind: acp::ToolKind::Execute,
+            status: acp::ToolCallStatus::Pending,
+            content: Vec::new(),
+            collapsed: false,
+            claude_tool_name: Some("Bash".into()),
+            hidden: false,
+            terminal_id: None,
+            terminal_command: None,
+            terminal_output: None,
+            terminal_output_len: 0,
+            cache: BlockCache::default(),
+            pending_permission: None,
+        };
+
+        let rendered = render_execute_with_borders(&tc, &[], 80, 0);
+        let top = rendered.first().expect("top border line");
+        assert!(spans_width(&top.spans) <= 80);
+    }
+
+    #[test]
+    fn internal_error_detection_accepts_xml_payload() {
+        let payload =
+            "<error><code>-32603</code><message>Adapter process crashed</message></error>";
+        assert!(looks_like_internal_error(payload));
+    }
+
+    #[test]
+    fn internal_error_detection_rejects_plain_bash_failure() {
+        let payload = "bash: unknown_command: command not found";
+        assert!(!looks_like_internal_error(payload));
+    }
+
+    #[test]
+    fn summarize_internal_error_prefers_xml_message() {
+        let payload =
+            "<error><code>-32603</code><message>Adapter process crashed</message></error>";
+        assert_eq!(summarize_internal_error(payload), "Adapter process crashed");
+    }
+
+    #[test]
+    fn summarize_internal_error_reads_json_rpc_message() {
+        let payload = r#"{"jsonrpc":"2.0","error":{"code":-32603,"message":"internal rpc fault"}}"#;
+        assert_eq!(summarize_internal_error(payload), "internal rpc fault");
     }
 }

@@ -26,7 +26,8 @@ use agent_client_protocol::{self as acp};
 use crossterm::event::KeyEvent;
 use crossterm::event::{Event, KeyEventKind, MouseEvent, MouseEventKind};
 
-const CONVERSATION_INTERRUPTED_HINT: &str = "Conversation interrupted. Tell the model how to proceed.";
+const CONVERSATION_INTERRUPTED_HINT: &str =
+    "Conversation interrupted. Tell the model how to proceed.";
 
 pub fn handle_terminal_event(app: &mut App, event: Event) {
     app.needs_redraw = true;
@@ -233,6 +234,12 @@ pub fn handle_acp_event(app: &mut App, event: ClientEvent) {
         }
         ClientEvent::TurnError(msg) => {
             tracing::error!("Turn error: {msg}");
+            if looks_like_internal_error(&msg) {
+                tracing::debug!(
+                    error_preview = %summarize_internal_error(&msg),
+                    "Internal ACP/adapter turn error payload"
+                );
+            }
             app.cancelled_turn_pending_hint = false;
             let _ = app.finalize_in_progress_tool_calls(acp::ToolCallStatus::Failed);
             app.status = AppStatus::Error;
@@ -441,6 +448,21 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
                 tcu.fields.title,
                 tcu.fields.status
             );
+            if matches!(tcu.fields.status, Some(acp::ToolCallStatus::Failed))
+                && let Some(content_preview) =
+                    internal_failed_tool_content_preview(tcu.fields.content.as_deref())
+            {
+                let claude_tool_name = tcu.meta.as_ref().and_then(|m| {
+                    m.get("claudeCode").and_then(|v| v.get("toolName")).and_then(|v| v.as_str())
+                });
+                tracing::debug!(
+                    tool_call_id = %id_str,
+                    title = ?tcu.fields.title,
+                    claude_tool_name = ?claude_tool_name,
+                    content_preview = %content_preview,
+                    "Internal failed ToolCallUpdate payload"
+                );
+            }
 
             // If this is a Task completing, remove from active list
             if matches!(
@@ -564,6 +586,128 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
             tracing::debug!("Unhandled session update");
         }
     }
+}
+
+fn internal_failed_tool_content_preview(
+    content: Option<&[acp::ToolCallContent]>,
+) -> Option<String> {
+    let text = content?.iter().find_map(|c| match c {
+        acp::ToolCallContent::Content(inner) => match &inner.content {
+            acp::ContentBlock::Text(t) => Some(t.text.as_str()),
+            _ => None,
+        },
+        _ => None,
+    })?;
+    if !looks_like_internal_error(text) {
+        return None;
+    }
+    Some(summarize_internal_error(text))
+}
+
+fn preview_for_log(input: &str) -> String {
+    const LIMIT: usize = 240;
+    let mut out = String::new();
+    for (i, ch) in input.chars().enumerate() {
+        if i >= LIMIT {
+            out.push_str("...");
+            break;
+        }
+        out.push(ch);
+    }
+    out.replace('\n', "\\n")
+}
+
+fn looks_like_internal_error(input: &str) -> bool {
+    let lower = input.to_ascii_lowercase();
+    has_internal_error_keywords(&lower)
+        || looks_like_json_rpc_error_shape(&lower)
+        || looks_like_xml_error_shape(&lower)
+}
+
+fn has_internal_error_keywords(lower: &str) -> bool {
+    [
+        "internal error",
+        "adapter",
+        "acp",
+        "json-rpc",
+        "rpc",
+        "protocol error",
+        "transport",
+        "handshake failed",
+        "session creation failed",
+        "connection closed",
+        "event channel closed",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
+fn looks_like_json_rpc_error_shape(lower: &str) -> bool {
+    (lower.contains("\"jsonrpc\"") && lower.contains("\"error\""))
+        || lower.contains("\"code\":-32603")
+        || lower.contains("\"code\": -32603")
+}
+
+fn looks_like_xml_error_shape(lower: &str) -> bool {
+    let has_error_node = lower.contains("<error") || lower.contains("<fault");
+    let has_detail_node = lower.contains("<message>") || lower.contains("<code>");
+    has_error_node && has_detail_node
+}
+
+fn summarize_internal_error(input: &str) -> String {
+    if let Some(msg) = extract_xml_tag_value(input, "message") {
+        return preview_for_log(msg);
+    }
+    if let Some(msg) = extract_json_string_field(input, "message") {
+        return preview_for_log(&msg);
+    }
+    let fallback = input.lines().find(|line| !line.trim().is_empty()).unwrap_or(input);
+    preview_for_log(fallback.trim())
+}
+
+fn extract_xml_tag_value<'a>(input: &'a str, tag: &str) -> Option<&'a str> {
+    let lower = input.to_ascii_lowercase();
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let start = lower.find(&open)? + open.len();
+    let end = start + lower[start..].find(&close)?;
+    let value = input[start..end].trim();
+    (!value.is_empty()).then_some(value)
+}
+
+fn extract_json_string_field(input: &str, field: &str) -> Option<String> {
+    let needle = format!("\"{field}\"");
+    let start = input.find(&needle)? + needle.len();
+    let rest = input[start..].trim_start();
+    let colon_idx = rest.find(':')?;
+    let mut chars = rest[colon_idx + 1..].trim_start().chars();
+    if chars.next()? != '"' {
+        return None;
+    }
+
+    let mut escaped = false;
+    let mut out = String::new();
+    for ch in chars {
+        if escaped {
+            let mapped = match ch {
+                'n' => '\n',
+                'r' => '\r',
+                't' => '\t',
+                '"' => '"',
+                '\\' => '\\',
+                _ => ch,
+            };
+            out.push(mapped);
+            escaped = false;
+            continue;
+        }
+        match ch {
+            '\\' => escaped = true,
+            '"' => return Some(out),
+            _ => out.push(ch),
+        }
+    }
+    None
 }
 
 /// Shorten absolute paths in tool titles to relative paths based on cwd.
@@ -1520,5 +1664,31 @@ mod tests {
 
         assert_eq!(app.input.cursor_row, 1);
         assert_eq!(app.viewport.scroll_target, 3);
+    }
+
+    #[test]
+    fn internal_error_detection_accepts_xml_payload() {
+        let payload =
+            "<error><code>-32603</code><message>Adapter process crashed</message></error>";
+        assert!(looks_like_internal_error(payload));
+    }
+
+    #[test]
+    fn internal_error_detection_rejects_plain_bash_failure() {
+        let payload = "bash: unknown_command: command not found";
+        assert!(!looks_like_internal_error(payload));
+    }
+
+    #[test]
+    fn summarize_internal_error_prefers_xml_message() {
+        let payload =
+            "<error><code>-32603</code><message>Adapter process crashed</message></error>";
+        assert_eq!(summarize_internal_error(payload), "Adapter process crashed");
+    }
+
+    #[test]
+    fn summarize_internal_error_reads_json_rpc_message() {
+        let payload = r#"{"jsonrpc":"2.0","error":{"code":-32603,"message":"internal rpc fault"}}"#;
+        assert_eq!(summarize_internal_error(payload), "internal rpc fault");
     }
 }

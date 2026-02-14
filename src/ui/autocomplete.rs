@@ -175,7 +175,12 @@ fn compute_text_area(input_area: Rect, has_login_hint: bool) -> Rect {
 }
 
 #[allow(clippy::cast_possible_truncation)]
-fn wrapped_visual_pos(lines: &[String], target_row: usize, target_col: usize, width: u16) -> (u16, u16) {
+fn wrapped_visual_pos(
+    lines: &[String],
+    target_row: usize,
+    target_col: usize,
+    width: u16,
+) -> (u16, u16) {
     let width = width as usize;
     if width == 0 {
         return (0, 0);
@@ -238,7 +243,8 @@ fn choose_dropdown_y(anchor_y: u16, height: u16, frame_top: u16, frame_bottom: u
 
     // Candidate with required gap above the `@` line.
     let above_y = anchor_y.saturating_sub(height.saturating_add(ANCHOR_VERTICAL_GAP));
-    let rows_above_with_gap = anchor_y.saturating_sub(frame_top.saturating_add(ANCHOR_VERTICAL_GAP));
+    let rows_above_with_gap =
+        anchor_y.saturating_sub(frame_top.saturating_add(ANCHOR_VERTICAL_GAP));
     let fits_above_with_gap = height <= rows_above_with_gap;
 
     let mut y = if fits_below_with_gap {
