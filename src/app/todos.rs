@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use super::{App, TodoItem, TodoStatus};
+use super::{App, FocusTarget, TodoItem, TodoStatus};
 use agent_client_protocol as acp;
 
 /// Parse a `TodoWrite` `raw_input` JSON value into a `Vec<TodoItem>`.
@@ -45,6 +45,8 @@ pub(super) fn set_todos(app: &mut App, todos: Vec<TodoItem>) {
         app.todos.clear();
         app.show_todo_panel = false;
         app.todo_scroll = 0;
+        app.todo_selected = 0;
+        app.release_focus_target(FocusTarget::TodoList);
         return;
     }
 
@@ -53,8 +55,16 @@ pub(super) fn set_todos(app: &mut App, todos: Vec<TodoItem>) {
         app.todos.clear();
         app.show_todo_panel = false;
         app.todo_scroll = 0;
+        app.todo_selected = 0;
+        app.release_focus_target(FocusTarget::TodoList);
     } else {
         app.todos = todos;
+        if app.todo_selected >= app.todos.len() {
+            app.todo_selected = app.todos.len().saturating_sub(1);
+        }
+        if !app.show_todo_panel {
+            app.release_focus_target(FocusTarget::TodoList);
+        }
     }
 }
 

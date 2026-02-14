@@ -14,6 +14,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use super::markdown;
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Rect};
@@ -45,27 +46,7 @@ pub fn render_markdown_with_tables(
                 if chunk.trim().is_empty() {
                     continue;
                 }
-                let rendered = tui_markdown::from_str(&chunk);
-                let lines: Vec<Line<'static>> = rendered
-                    .lines
-                    .into_iter()
-                    .map(|line| {
-                        let owned_spans: Vec<Span<'static>> = line
-                            .spans
-                            .into_iter()
-                            .map(|s| {
-                                let style = if let Some(bg_color) = bg {
-                                    s.style.bg(bg_color)
-                                } else {
-                                    s.style
-                                };
-                                Span::styled(s.content.into_owned(), style)
-                            })
-                            .collect();
-                        Line::from(owned_spans).style(line.style)
-                    })
-                    .collect();
-                out.extend(lines);
+                out.extend(markdown::render_markdown_safe(&chunk, bg));
             }
             MarkdownBlock::Table(table) => {
                 if !out.is_empty() {

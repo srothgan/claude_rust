@@ -20,6 +20,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use tokio::sync::mpsc;
 
+use super::focus::{FocusContext, FocusManager, FocusOwner, FocusTarget};
 use super::input::InputState;
 use super::mention;
 
@@ -106,6 +107,10 @@ pub struct App {
     pub show_todo_panel: bool,
     /// Scroll offset for the expanded todo panel (capped at 5 visible lines).
     pub todo_scroll: usize,
+    /// Selected todo index used for keyboard navigation in the open todo panel.
+    pub todo_selected: usize,
+    /// Focus manager for directional/navigation key ownership.
+    pub focus: FocusManager,
     /// Commands advertised by the agent via `AvailableCommandsUpdate`.
     pub available_commands: Vec<acp::AvailableCommand>,
     /// Last known frame area (for mouse selection mapping).
@@ -219,6 +224,8 @@ impl App {
             todos: Vec::new(),
             show_todo_panel: false,
             todo_scroll: 0,
+            todo_selected: 0,
+            focus: FocusManager::default(),
             available_commands: Vec::new(),
             cached_frame_area: ratatui::layout::Rect::default(),
             selection: None,
@@ -263,6 +270,40 @@ impl App {
             self.git_branch = new_branch;
             self.cached_header_line = None;
         }
+    }
+
+    /// Resolve the effective focus owner for Up/Down and other directional keys.
+    #[must_use]
+    pub fn focus_owner(&self) -> FocusOwner {
+        self.focus.owner(self.focus_context())
+    }
+
+    /// Claim key routing for a navigation target.
+    /// The latest claimant wins.
+    pub fn claim_focus_target(&mut self, target: FocusTarget) {
+        let context = self.focus_context();
+        self.focus.claim(target, context);
+    }
+
+    /// Release key routing claim for a navigation target.
+    pub fn release_focus_target(&mut self, target: FocusTarget) {
+        let context = self.focus_context();
+        self.focus.release(target, context);
+    }
+
+    /// Drop claims that are no longer valid for current state.
+    pub fn normalize_focus_stack(&mut self) {
+        let context = self.focus_context();
+        self.focus.normalize(context);
+    }
+
+    #[must_use]
+    fn focus_context(&self) -> FocusContext {
+        FocusContext::new(
+            self.show_todo_panel && !self.todos.is_empty(),
+            self.mention.is_some(),
+            !self.pending_permission_ids.is_empty(),
+        )
     }
 }
 
@@ -1300,7 +1341,7 @@ mod tests {
         let mut incr = IncrementalMarkdown::default();
         incr.append("\n\n\n\n");
         // Two \n\n boundaries: empty string before first, empty between, remaining empty tail
-        assert!(incr.paragraphs.len() >= 1);
+        assert!(!incr.paragraphs.is_empty());
     }
 
     // ChatViewport
@@ -1469,5 +1510,117 @@ mod tests {
         assert_eq!(a.width, b.width);
         assert_eq!(a.auto_scroll, b.auto_scroll);
         assert_eq!(a.message_heights.len(), b.message_heights.len());
+    }
+
+    #[test]
+    fn focus_owner_defaults_to_input() {
+        let app = make_test_app();
+        assert_eq!(app.focus_owner(), FocusOwner::Input);
+    }
+
+    #[test]
+    fn focus_owner_todo_when_panel_open_and_focused() {
+        let mut app = make_test_app();
+        app.todos.push(TodoItem {
+            content: "Task".into(),
+            status: TodoStatus::Pending,
+            active_form: String::new(),
+        });
+        app.show_todo_panel = true;
+        app.claim_focus_target(FocusTarget::TodoList);
+        assert_eq!(app.focus_owner(), FocusOwner::TodoList);
+    }
+
+    #[test]
+    fn focus_owner_permission_overrides_todo() {
+        let mut app = make_test_app();
+        app.todos.push(TodoItem {
+            content: "Task".into(),
+            status: TodoStatus::Pending,
+            active_form: String::new(),
+        });
+        app.show_todo_panel = true;
+        app.claim_focus_target(FocusTarget::TodoList);
+        app.pending_permission_ids.push("perm-1".into());
+        app.claim_focus_target(FocusTarget::Permission);
+        assert_eq!(app.focus_owner(), FocusOwner::Permission);
+    }
+
+    #[test]
+    fn focus_owner_mention_overrides_permission_and_todo() {
+        let mut app = make_test_app();
+        app.todos.push(TodoItem {
+            content: "Task".into(),
+            status: TodoStatus::Pending,
+            active_form: String::new(),
+        });
+        app.show_todo_panel = true;
+        app.claim_focus_target(FocusTarget::TodoList);
+        app.pending_permission_ids.push("perm-1".into());
+        app.claim_focus_target(FocusTarget::Permission);
+        app.mention = Some(mention::MentionState {
+            trigger_row: 0,
+            trigger_col: 0,
+            query: String::new(),
+            candidates: Vec::new(),
+            selected: 0,
+            scroll_offset: 0,
+        });
+        app.claim_focus_target(FocusTarget::Mention);
+        assert_eq!(app.focus_owner(), FocusOwner::Mention);
+    }
+
+    #[test]
+    fn focus_owner_falls_back_to_input_when_claim_is_not_available() {
+        let mut app = make_test_app();
+        app.claim_focus_target(FocusTarget::TodoList);
+        assert_eq!(app.focus_owner(), FocusOwner::Input);
+    }
+
+    #[test]
+    fn claim_and_release_focus_target() {
+        let mut app = make_test_app();
+        app.todos.push(TodoItem {
+            content: "Task".into(),
+            status: TodoStatus::Pending,
+            active_form: String::new(),
+        });
+        app.show_todo_panel = true;
+        app.claim_focus_target(FocusTarget::TodoList);
+        assert_eq!(app.focus_owner(), FocusOwner::TodoList);
+        app.release_focus_target(FocusTarget::TodoList);
+        assert_eq!(app.focus_owner(), FocusOwner::Input);
+    }
+
+    #[test]
+    fn latest_claim_wins_across_equal_targets() {
+        let mut app = make_test_app();
+        app.todos.push(TodoItem {
+            content: "Task".into(),
+            status: TodoStatus::Pending,
+            active_form: String::new(),
+        });
+        app.show_todo_panel = true;
+        app.mention = Some(mention::MentionState {
+            trigger_row: 0,
+            trigger_col: 0,
+            query: String::new(),
+            candidates: Vec::new(),
+            selected: 0,
+            scroll_offset: 0,
+        });
+        app.pending_permission_ids.push("perm-1".into());
+
+        app.claim_focus_target(FocusTarget::TodoList);
+        assert_eq!(app.focus_owner(), FocusOwner::TodoList);
+
+        app.claim_focus_target(FocusTarget::Permission);
+        assert_eq!(app.focus_owner(), FocusOwner::Permission);
+
+        app.claim_focus_target(FocusTarget::Mention);
+        assert_eq!(app.focus_owner(), FocusOwner::Mention);
+
+        app.release_focus_target(FocusTarget::Mention);
+        assert_eq!(app.focus_owner(), FocusOwner::Permission);
     }
 }

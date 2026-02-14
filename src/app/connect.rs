@@ -14,7 +14,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use super::{App, AppStatus, ChatViewport, ModeInfo, ModeState, SelectionState, TodoItem};
+use super::{
+    App, AppStatus, ChatViewport, FocusManager, ModeInfo, ModeState, SelectionState, TodoItem,
+};
 use crate::Cli;
 use crate::acp::client::{ClaudeClient, ClientEvent, TerminalMap};
 use crate::acp::connection;
@@ -75,6 +77,8 @@ pub fn create_app(cli: &Cli) -> App {
         todos: Vec::<TodoItem>::new(),
         show_todo_panel: false,
         todo_scroll: 0,
+        todo_selected: 0,
+        focus: FocusManager::default(),
         available_commands: Vec::new(),
         cached_frame_area: ratatui::layout::Rect::new(0, 0, 0, 0),
         selection: Option::<SelectionState>::None,

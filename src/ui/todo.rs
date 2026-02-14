@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use crate::app::{App, TodoStatus};
+use crate::app::{App, FocusOwner, TodoStatus};
 use crate::ui::theme;
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -105,6 +105,7 @@ fn render_closed(frame: &mut Frame, area: Rect, app: &mut App) {
 fn render_open(frame: &mut Frame, area: Rect, app: &mut App) {
     let total = app.todos.len();
     let visible = (area.height as usize).min(total);
+    let todo_has_focus = app.focus_owner() == FocusOwner::TodoList;
 
     // Clamp scroll offset
     let max_scroll = total.saturating_sub(visible);
@@ -112,25 +113,30 @@ fn render_open(frame: &mut Frame, area: Rect, app: &mut App) {
         app.todo_scroll = max_scroll;
     }
 
-    // Auto-scroll to keep the in-progress item visible
-    if let Some(ip_idx) = app.todos.iter().position(|t| t.status == TodoStatus::InProgress) {
-        if ip_idx < app.todo_scroll {
-            app.todo_scroll = ip_idx;
-        } else if ip_idx >= app.todo_scroll + visible {
-            app.todo_scroll = ip_idx.saturating_sub(visible.saturating_sub(1));
-        }
+    // Keep the active row visible:
+    // - todo focus: selected row
+    // - input focus: in-progress row
+    let active_idx = if todo_has_focus {
+        app.todo_selected.min(total.saturating_sub(1))
+    } else {
+        app.todos.iter().position(|t| t.status == TodoStatus::InProgress).unwrap_or(0)
+    };
+    if active_idx < app.todo_scroll {
+        app.todo_scroll = active_idx;
+    } else if active_idx >= app.todo_scroll + visible {
+        app.todo_scroll = active_idx.saturating_sub(visible.saturating_sub(1));
     }
 
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(visible);
 
-    for todo in app.todos.iter().skip(app.todo_scroll).take(visible) {
+    for (i, todo) in app.todos.iter().enumerate().skip(app.todo_scroll).take(visible) {
         let (icon, icon_color) = match todo.status {
             TodoStatus::Completed => ("\u{2713}", Color::Green), // ✓
             TodoStatus::InProgress => ("\u{25b8}", theme::RUST_ORANGE), // ▸
             TodoStatus::Pending => ("\u{25cb}", theme::DIM),     // ○
         };
 
-        let text_style = match todo.status {
+        let mut text_style = match todo.status {
             TodoStatus::Completed => {
                 Style::default().fg(theme::DIM).add_modifier(Modifier::CROSSED_OUT)
             }
@@ -139,6 +145,9 @@ fn render_open(frame: &mut Frame, area: Rect, app: &mut App) {
             }
             TodoStatus::Pending => Style::default().fg(Color::Gray),
         };
+        if todo_has_focus && i == app.todo_selected {
+            text_style = text_style.add_modifier(Modifier::REVERSED);
+        }
 
         let display_text = if todo.status == TodoStatus::InProgress && !todo.active_form.is_empty()
         {

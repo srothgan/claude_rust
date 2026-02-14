@@ -1,0 +1,356 @@
+// claude_rust — A native Rust terminal interface for Claude Code
+// Copyright (C) 2025  Simon Peter Rothgang
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as
+// published by the Free Software Foundation, either version 3 of the
+// License, or (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+use super::{App, AppStatus, FocusOwner, FocusTarget, MessageBlock, ModeInfo, ModeState};
+use crate::app::input::parse_paste_placeholder;
+use crate::app::mention;
+use crate::app::permissions::handle_permission_key;
+use crate::app::selection::try_copy_selection;
+use agent_client_protocol::{self as acp, Agent as _};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use std::rc::Rc;
+
+pub(super) fn dispatch_key_by_focus(app: &mut App, key: KeyEvent) {
+    if handle_global_shortcuts(app, key) {
+        return;
+    }
+
+    match app.focus_owner() {
+        FocusOwner::Mention => handle_mention_key(app, key),
+        FocusOwner::Permission => {
+            if !handle_permission_key(app, key) {
+                handle_normal_key(app, key);
+            }
+        }
+        FocusOwner::Input | FocusOwner::TodoList => handle_normal_key(app, key),
+    }
+}
+
+/// Handle shortcuts that should work regardless of current focus owner.
+fn handle_global_shortcuts(app: &mut App, key: KeyEvent) -> bool {
+    // In connecting state, only Ctrl+C should be actionable globally.
+    if app.status == AppStatus::Connecting {
+        if let (KeyCode::Char('c'), m) = (key.code, key.modifiers)
+            && m == KeyModifiers::CONTROL
+        {
+            app.should_quit = true;
+            return true;
+        }
+        return false;
+    }
+
+    match (key.code, key.modifiers) {
+        (KeyCode::Char('c'), m) if m == KeyModifiers::CONTROL => {
+            if try_copy_selection(app) {
+                return true;
+            }
+            app.should_quit = true;
+            true
+        }
+        (KeyCode::Char('t'), m) if m == KeyModifiers::CONTROL => {
+            toggle_todo_panel_focus(app);
+            true
+        }
+        (KeyCode::Char('o'), m) if m == KeyModifiers::CONTROL => {
+            toggle_all_tool_calls(app);
+            true
+        }
+        (KeyCode::Char('l'), m) if m == KeyModifiers::CONTROL => {
+            app.force_redraw = true;
+            true
+        }
+        (KeyCode::Up, m) if m == KeyModifiers::CONTROL => {
+            app.viewport.scroll_up(1);
+            true
+        }
+        (KeyCode::Down, m) if m == KeyModifiers::CONTROL => {
+            app.viewport.scroll_down(1);
+            true
+        }
+        // Permission quick shortcuts are global when permissions are pending.
+        (KeyCode::Char('y' | 'a' | 'n'), m)
+            if m == KeyModifiers::CONTROL && !app.pending_permission_ids.is_empty() =>
+        {
+            handle_permission_key(app, key)
+        }
+        _ => false,
+    }
+}
+
+#[inline]
+pub(super) fn is_printable_text_modifiers(modifiers: KeyModifiers) -> bool {
+    let ctrl_alt =
+        modifiers.contains(KeyModifiers::CONTROL) && modifiers.contains(KeyModifiers::ALT);
+    !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) || ctrl_alt
+}
+
+#[allow(clippy::too_many_lines)]
+pub(super) fn handle_normal_key(app: &mut App, key: KeyEvent) {
+    // Timing-based paste detection: if key events arrive faster than the
+    // burst interval, this is a paste (not typing). Cancel any pending submit.
+    app.drain_key_count += 1;
+    let was_paste = app.paste_burst.is_paste();
+    let in_paste = app.paste_burst.on_key_event(app.input.lines.len());
+    if in_paste && app.pending_submit {
+        app.pending_submit = false;
+    }
+    let on_placeholder_line = app
+        .input
+        .lines
+        .get(app.input.cursor_row)
+        .and_then(|line| parse_paste_placeholder(line))
+        .is_some();
+    if in_paste && on_placeholder_line {
+        // First transition into paste mode: remove the known leaked leading key
+        // pattern (`<one char line>` + `<placeholder line>`).
+        if !was_paste {
+            cleanup_leaked_char_before_placeholder(app);
+        }
+        // While burst mode is active and a placeholder already represents the paste,
+        // ignore burst key payload so no extra characters leak into the input.
+        if matches!(
+            key.code,
+            KeyCode::Char(_) | KeyCode::Enter | KeyCode::Tab | KeyCode::Backspace | KeyCode::Delete
+        ) {
+            return;
+        }
+    }
+
+    match (key.code, key.modifiers) {
+        // Esc: cancel current turn if thinking/running
+        (KeyCode::Esc, _) => {
+            if app.focus_owner() == FocusOwner::TodoList {
+                app.release_focus_target(FocusTarget::TodoList);
+                return;
+            }
+            if matches!(app.status, AppStatus::Thinking | AppStatus::Running)
+                && let Some(ref conn) = app.conn
+                && let Some(sid) = app.session_id.clone()
+            {
+                let conn = Rc::clone(conn);
+                tokio::task::spawn_local(async move {
+                    if let Err(e) = conn.cancel(acp::CancelNotification::new(sid)).await {
+                        tracing::error!("Failed to send cancel: {e}");
+                    }
+                });
+                app.status = AppStatus::Ready;
+            }
+        }
+        // Enter (no modifiers): deferred submit for paste detection.
+        // Insert a newline now; if no more keys arrive in this drain cycle
+        // the main loop strips the trailing newline and calls submit_input().
+        (KeyCode::Enter, m)
+            if app.focus_owner() != FocusOwner::TodoList
+                && !m.contains(KeyModifiers::SHIFT)
+                && !m.contains(KeyModifiers::CONTROL) =>
+        {
+            app.input.insert_newline();
+            app.pending_submit = true;
+        }
+        // Ctrl+Enter or Shift+Enter: explicit newline (never submits)
+        (KeyCode::Enter, _) if app.focus_owner() != FocusOwner::TodoList => {
+            app.pending_submit = false;
+            app.input.insert_newline();
+        }
+        // Navigation
+        (KeyCode::Left, _) if app.focus_owner() != FocusOwner::TodoList => app.input.move_left(),
+        (KeyCode::Right, _) if app.focus_owner() != FocusOwner::TodoList => app.input.move_right(),
+        (KeyCode::Up, _) if app.focus_owner() == FocusOwner::TodoList => {
+            move_todo_selection_up(app);
+        }
+        (KeyCode::Down, _) if app.focus_owner() == FocusOwner::TodoList => {
+            move_todo_selection_down(app);
+        }
+        (KeyCode::Up, _) => app.viewport.scroll_up(1),
+        (KeyCode::Down, _) => app.viewport.scroll_down(1),
+        (KeyCode::Home, _) if app.focus_owner() != FocusOwner::TodoList => app.input.move_home(),
+        (KeyCode::End, _) if app.focus_owner() != FocusOwner::TodoList => app.input.move_end(),
+        // Tab: toggle focus between input and open todo list
+        (KeyCode::Tab, m)
+            if !m.contains(KeyModifiers::SHIFT)
+                && !m.contains(KeyModifiers::CONTROL)
+                && !m.contains(KeyModifiers::ALT)
+                && app.show_todo_panel
+                && !app.todos.is_empty() =>
+        {
+            if app.focus_owner() == FocusOwner::TodoList {
+                app.release_focus_target(FocusTarget::TodoList);
+            } else {
+                app.claim_focus_target(FocusTarget::TodoList);
+            }
+        }
+        // Shift+Tab: cycle session mode
+        (KeyCode::BackTab, _) => {
+            if let Some(ref mode) = app.mode
+                && mode.available_modes.len() > 1
+            {
+                let current_idx = mode
+                    .available_modes
+                    .iter()
+                    .position(|m| m.id == mode.current_mode_id)
+                    .unwrap_or(0);
+                let next_idx = (current_idx + 1) % mode.available_modes.len();
+                let next = &mode.available_modes[next_idx];
+
+                // Fire-and-forget mode switch
+                if let Some(ref conn) = app.conn
+                    && let Some(sid) = app.session_id.clone()
+                {
+                    let mode_id = acp::SessionModeId::new(next.id.as_str());
+                    let conn = Rc::clone(conn);
+                    tokio::task::spawn_local(async move {
+                        if let Err(e) = conn
+                            .set_session_mode(acp::SetSessionModeRequest::new(sid, mode_id))
+                            .await
+                        {
+                            tracing::error!("Failed to set mode: {e}");
+                        }
+                    });
+                }
+
+                // Optimistic UI update (CurrentModeUpdate will confirm)
+                let next_id = next.id.clone();
+                let next_name = next.name.clone();
+                let modes = mode
+                    .available_modes
+                    .iter()
+                    .map(|m| ModeInfo { id: m.id.clone(), name: m.name.clone() })
+                    .collect();
+                app.mode = Some(ModeState {
+                    current_mode_id: next_id,
+                    current_mode_name: next_name,
+                    available_modes: modes,
+                });
+                app.cached_footer_line = None;
+            }
+        }
+        // Editing
+        (KeyCode::Backspace, _) if app.focus_owner() != FocusOwner::TodoList => {
+            app.input.delete_char_before();
+        }
+        (KeyCode::Delete, _) if app.focus_owner() != FocusOwner::TodoList => {
+            app.input.delete_char_after();
+        }
+        // Printable characters
+        (KeyCode::Char(c), m) if is_printable_text_modifiers(m) => {
+            if app.focus_owner() == FocusOwner::TodoList {
+                app.release_focus_target(FocusTarget::TodoList);
+            }
+            app.input.insert_char(c);
+            if c == '@' {
+                mention::activate(app);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Remove a leaked pre-placeholder character caused by key-burst + paste-event
+/// overlap. We only touch the narrow shape:
+/// line 0 = exactly one char, line 1 = placeholder (cursor on placeholder).
+pub(super) fn cleanup_leaked_char_before_placeholder(app: &mut App) {
+    if app.input.lines.len() != 2 || app.input.cursor_row != 1 {
+        return;
+    }
+    if app.input.lines[0].chars().count() != 1 {
+        return;
+    }
+    app.input.lines.remove(0);
+    app.input.cursor_row = 0;
+    app.input.cursor_col = app.input.lines[0].chars().count();
+    app.input.version += 1;
+}
+
+pub(super) fn toggle_todo_panel_focus(app: &mut App) {
+    if app.todos.is_empty() {
+        app.show_todo_panel = false;
+        app.release_focus_target(FocusTarget::TodoList);
+        app.todo_scroll = 0;
+        app.todo_selected = 0;
+        return;
+    }
+
+    app.show_todo_panel = !app.show_todo_panel;
+    if app.show_todo_panel {
+        app.claim_focus_target(FocusTarget::TodoList);
+        // Start at in-progress todo when available; fallback to first item.
+        app.todo_selected =
+            app.todos.iter().position(|t| t.status == super::TodoStatus::InProgress).unwrap_or(0);
+    } else {
+        app.release_focus_target(FocusTarget::TodoList);
+    }
+}
+
+pub(super) fn move_todo_selection_up(app: &mut App) {
+    if app.todos.is_empty() || !app.show_todo_panel {
+        app.release_focus_target(FocusTarget::TodoList);
+        return;
+    }
+    app.todo_selected = app.todo_selected.saturating_sub(1);
+}
+
+pub(super) fn move_todo_selection_down(app: &mut App) {
+    if app.todos.is_empty() || !app.show_todo_panel {
+        app.release_focus_target(FocusTarget::TodoList);
+        return;
+    }
+    let max = app.todos.len().saturating_sub(1);
+    if app.todo_selected < max {
+        app.todo_selected += 1;
+    }
+}
+
+/// Handle keystrokes while the `@` mention autocomplete dropdown is active.
+pub(super) fn handle_mention_key(app: &mut App, key: KeyEvent) {
+    match (key.code, key.modifiers) {
+        (KeyCode::Up, _) => mention::move_up(app),
+        (KeyCode::Down, _) => mention::move_down(app),
+        (KeyCode::Enter | KeyCode::Tab, _) => mention::confirm_selection(app),
+        (KeyCode::Esc, _) => mention::deactivate(app),
+        (KeyCode::Backspace, _) => {
+            app.input.delete_char_before();
+            mention::update_query(app);
+        }
+        (KeyCode::Char(c), m) if is_printable_text_modifiers(m) => {
+            app.input.insert_char(c);
+            if c.is_whitespace() {
+                mention::deactivate(app);
+            } else {
+                mention::update_query(app);
+            }
+        }
+        // Any other key: deactivate mention and forward to normal handling
+        _ => {
+            mention::deactivate(app);
+            dispatch_key_by_focus(app, key);
+        }
+    }
+}
+
+/// Toggle the session-level collapsed preference and apply to all tool calls.
+pub(super) fn toggle_all_tool_calls(app: &mut App) {
+    app.tools_collapsed = !app.tools_collapsed;
+    for msg in &mut app.messages {
+        for block in &mut msg.blocks {
+            if let MessageBlock::ToolCall(tc) = block {
+                let tc = tc.as_mut();
+                tc.collapsed = app.tools_collapsed;
+                tc.cache.invalidate();
+            }
+        }
+        // Height caches are on the viewport; invalidating the block cache is enough.
+    }
+}

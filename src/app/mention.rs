@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use super::App;
+use super::{App, FocusTarget};
 use ignore::WalkBuilder;
 use std::path::Path;
 use std::time::SystemTime;
@@ -183,6 +183,7 @@ pub fn activate(app: &mut App) {
         selected: 0,
         scroll_offset: 0,
     });
+    app.claim_focus_target(FocusTarget::Mention);
 }
 
 /// Update the query and re-filter candidates while mention is active.
@@ -219,6 +220,7 @@ pub fn confirm_selection(app: &mut App) {
     let Some(mention) = app.mention.take() else {
         return;
     };
+    app.release_focus_target(FocusTarget::Mention);
 
     let Some(candidate) = mention.candidates.get(mention.selected) else {
         return;
@@ -252,6 +254,7 @@ pub fn confirm_selection(app: &mut App) {
 /// Deactivate mention autocomplete.
 pub fn deactivate(app: &mut App) {
     app.mention = None;
+    app.release_focus_target(FocusTarget::Mention);
 }
 
 /// Move selection up in the candidate list.
