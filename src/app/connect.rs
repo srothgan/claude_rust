@@ -24,6 +24,7 @@ use agent_client_protocol::{self as acp, Agent as _};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::time::Instant;
 use tokio::sync::mpsc;
 
 /// Shorten cwd for display: use `~` for the home directory prefix.
@@ -114,7 +115,7 @@ pub fn create_app(cli: &Cli) -> App {
 /// `ClientEvent::Connected`. On auth error, sends `ClientEvent::AuthRequired`.
 /// On failure, sends `ClientEvent::ConnectionFailed`.
 #[allow(clippy::too_many_lines, clippy::items_after_statements, clippy::similar_names)]
-pub fn start_connection(app: &App, cli: &Cli, npx_path: PathBuf) {
+pub fn start_connection(app: &App, cli: &Cli, launchers: Vec<connection::AdapterLauncher>) {
     let event_tx = app.event_tx.clone();
     let terminals = Rc::clone(&app.terminals);
     let cwd_raw = app.cwd_raw.clone();
@@ -135,7 +136,7 @@ pub fn start_connection(app: &App, cli: &Cli, npx_path: PathBuf) {
             &event_tx,
             &terminals,
             &cwd,
-            &npx_path,
+            &launchers,
             yolo,
             model_override.as_deref(),
             resume_id.as_deref(),
@@ -203,7 +204,62 @@ async fn connect_impl(
     event_tx: &mpsc::UnboundedSender<ClientEvent>,
     terminals: &crate::acp::client::TerminalMap,
     cwd: &std::path::Path,
-    npx_path: &std::path::Path,
+    launchers: &[connection::AdapterLauncher],
+    yolo: bool,
+    model_override: Option<&str>,
+    resume_id: Option<&str>,
+) -> Result<
+    (
+        Rc<acp::ClientSideConnection>,
+        tokio::process::Child,
+        acp::SessionId,
+        String,
+        Option<ModeState>,
+    ),
+    ConnectError,
+> {
+    if launchers.is_empty() {
+        return Err(ConnectError::Failed("No adapter launchers configured".into()));
+    }
+
+    let mut failures = Vec::new();
+    for launcher in launchers {
+        let started = Instant::now();
+        tracing::info!("Connecting with adapter launcher: {}", launcher.describe());
+        match connect_with_launcher(
+            event_tx,
+            terminals,
+            cwd,
+            launcher,
+            yolo,
+            model_override,
+            resume_id,
+        )
+        .await
+        {
+            Ok(result) => {
+                tracing::info!("Connected via {} in {:?}", launcher.describe(), started.elapsed());
+                return Ok(result);
+            }
+            Err(auth_required @ ConnectError::AuthRequired { .. }) => {
+                return Err(auth_required);
+            }
+            Err(ConnectError::Failed(msg)) => {
+                tracing::warn!("Launcher {} failed: {}", launcher.describe(), msg);
+                failures.push(format!("{}: {msg}", launcher.describe()));
+            }
+        }
+    }
+
+    Err(ConnectError::Failed(format!("All adapter launchers failed: {}", failures.join(" | "))))
+}
+
+#[allow(clippy::too_many_lines, clippy::similar_names)]
+async fn connect_with_launcher(
+    event_tx: &mpsc::UnboundedSender<ClientEvent>,
+    terminals: &crate::acp::client::TerminalMap,
+    cwd: &std::path::Path,
+    launcher: &connection::AdapterLauncher,
     yolo: bool,
     model_override: Option<&str>,
     resume_id: Option<&str>,
@@ -224,13 +280,16 @@ async fn connect_impl(
         Rc::clone(terminals),
     );
 
-    let adapter = connection::spawn_adapter(client, npx_path, cwd)
+    let adapter_start = Instant::now();
+    let adapter = connection::spawn_adapter(client, launcher, cwd)
         .await
         .map_err(|e| ConnectError::Failed(format!("Failed to spawn adapter: {e}")))?;
+    tracing::debug!("Spawned adapter via {} in {:?}", launcher.describe(), adapter_start.elapsed());
     let child = adapter.child;
     let conn = Rc::new(adapter.connection);
 
     // Initialize handshake
+    let handshake_start = Instant::now();
     let init_response = conn
         .initialize(
             acp::InitializeRequest::new(acp::ProtocolVersion::LATEST)
@@ -245,6 +304,11 @@ async fn connect_impl(
         )
         .await
         .map_err(|e| ConnectError::Failed(format!("Handshake failed: {e}")))?;
+    tracing::debug!(
+        "Handshake via {} completed in {:?}",
+        launcher.describe(),
+        handshake_start.elapsed()
+    );
 
     tracing::info!("Connected to agent: {:?}", init_response);
 

@@ -39,4 +39,8 @@ pub struct Cli {
     /// Working directory (defaults to cwd)
     #[arg(long, short = 'C')]
     pub dir: Option<std::path::PathBuf>,
+
+    /// Path to an ACP adapter binary (highest startup priority).
+    #[arg(long)]
+    pub adapter_bin: Option<std::path::PathBuf>,
 }
