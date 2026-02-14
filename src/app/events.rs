@@ -1490,4 +1490,35 @@ mod tests {
         handle_normal_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         assert_eq!(app.viewport.scroll_target, 5);
     }
+
+    #[test]
+    fn up_down_moves_input_cursor_when_multiline() {
+        let mut app = make_test_app();
+        app.input.set_text("line1\nline2\nline3");
+        app.input.cursor_row = 1;
+        app.input.cursor_col = 3;
+        app.viewport.scroll_target = 7;
+
+        handle_normal_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(app.input.cursor_row, 0);
+        assert_eq!(app.viewport.scroll_target, 7);
+
+        handle_normal_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(app.input.cursor_row, 1);
+        assert_eq!(app.viewport.scroll_target, 7);
+    }
+
+    #[test]
+    fn down_at_input_bottom_falls_back_to_chat_scroll() {
+        let mut app = make_test_app();
+        app.input.set_text("line1\nline2");
+        app.input.cursor_row = 1;
+        app.input.cursor_col = 0;
+        app.viewport.scroll_target = 2;
+
+        handle_normal_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+
+        assert_eq!(app.input.cursor_row, 1);
+        assert_eq!(app.viewport.scroll_target, 3);
+    }
 }

@@ -108,7 +108,6 @@ fn build_help_items(app: &App) -> Vec<(String, String)> {
         ("Ctrl+o".to_owned(), "Toggle tool collapse".to_owned()),
         ("Ctrl+t".to_owned(), "Toggle todos (when available)".to_owned()),
         // Chat scrolling
-        ("Up/Down".to_owned(), "Scroll chat".to_owned()),
         ("Ctrl+Up/Down".to_owned(), "Scroll chat".to_owned()),
         ("Mouse wheel".to_owned(), "Scroll chat".to_owned()),
     ];
@@ -122,6 +121,7 @@ fn build_help_items(app: &App) -> Vec<(String, String)> {
     if focus_owner != FocusOwner::TodoList && focus_owner != FocusOwner::Mention {
         items.push(("Enter".to_owned(), "Send message".to_owned()));
         items.push(("Shift+Enter".to_owned(), "Insert newline".to_owned()));
+        items.push(("Up/Down".to_owned(), "Move cursor / scroll chat".to_owned()));
         items.push(("Left/Right".to_owned(), "Move cursor".to_owned()));
         items.push(("Home/End".to_owned(), "Line start/end".to_owned()));
         items.push(("Backspace".to_owned(), "Delete before".to_owned()));

@@ -146,8 +146,10 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     // Post-process: highlight @mentions in cyan, paste placeholders in green
     let lines = highlight_mentions(lines);
     let lines = highlight_paste_placeholders(lines);
+    let cursor_row = cursor_pos.map_or(0, |(row, _)| row);
+    let scroll_y = input_scroll_y(lines.len(), cursor_row, input_area.height);
 
-    let paragraph = Paragraph::new(lines);
+    let paragraph = Paragraph::new(lines).scroll((scroll_y, 0));
     app.rendered_input_area = input_area;
     if app.selection.is_some() {
         app.rendered_input_lines = render_lines_from_paragraph(&paragraph, input_area);
@@ -160,9 +162,11 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         frame.render_widget(SelectionOverlay { selection: sel }, input_area);
     }
 
-    if let Some((row, col)) = cursor_pos {
+    if let Some((row, col)) = cursor_pos
+        && row >= scroll_y
+    {
         let cursor_x = input_area.x + col;
-        let cursor_y = input_area.y + row;
+        let cursor_y = input_area.y + row.saturating_sub(scroll_y);
         if cursor_x < input_area.right() && cursor_y < input_area.bottom() {
             frame.set_cursor_position((cursor_x, cursor_y));
         }
@@ -212,6 +216,19 @@ fn render_lines_from_paragraph(paragraph: &Paragraph, area: Rect) -> Vec<String>
         lines.push(line.trim_end().to_owned());
     }
     lines
+}
+
+#[allow(clippy::cast_possible_truncation)]
+fn input_scroll_y(total_wrapped_lines: usize, cursor_row: u16, viewport_height: u16) -> u16 {
+    if viewport_height == 0 {
+        return 0;
+    }
+    let total = u16::try_from(total_wrapped_lines).unwrap_or(u16::MAX);
+    if total <= viewport_height {
+        return 0;
+    }
+    let max_scroll = total.saturating_sub(viewport_height);
+    cursor_row.saturating_add(1).saturating_sub(viewport_height).min(max_scroll)
 }
 
 /// Compute (or return cached) wrap result for the input field.
@@ -396,4 +413,26 @@ fn highlight_mentions(lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
             Line::from(styled_spans)
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::input_scroll_y;
+
+    #[test]
+    fn input_scroll_zero_when_content_fits() {
+        assert_eq!(input_scroll_y(5, 3, 12), 0);
+    }
+
+    #[test]
+    fn input_scroll_follows_cursor_beyond_viewport() {
+        assert_eq!(input_scroll_y(20, 13, 12), 2);
+        assert_eq!(input_scroll_y(20, 19, 12), 8);
+    }
+
+    #[test]
+    fn input_scroll_clamps_to_max() {
+        // Max scroll = total - viewport = 3
+        assert_eq!(input_scroll_y(15, 14, 12), 3);
+    }
 }

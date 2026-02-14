@@ -100,6 +100,8 @@ pub(super) fn is_printable_text_modifiers(modifiers: KeyModifiers) -> bool {
 
 #[allow(clippy::too_many_lines)]
 pub(super) fn handle_normal_key(app: &mut App, key: KeyEvent) {
+    let input_version_before = app.input.version;
+
     // Timing-based paste detection: if key events arrive faster than the
     // burst interval, this is a paste (not typing). Cancel any pending submit.
     app.drain_key_count += 1;
@@ -178,8 +180,16 @@ pub(super) fn handle_normal_key(app: &mut App, key: KeyEvent) {
         (KeyCode::Down, _) if app.focus_owner() == FocusOwner::TodoList => {
             move_todo_selection_down(app);
         }
-        (KeyCode::Up, _) => app.viewport.scroll_up(1),
-        (KeyCode::Down, _) => app.viewport.scroll_down(1),
+        (KeyCode::Up, _) => {
+            if !try_move_input_cursor_up(app) {
+                app.viewport.scroll_up(1);
+            }
+        }
+        (KeyCode::Down, _) => {
+            if !try_move_input_cursor_down(app) {
+                app.viewport.scroll_down(1);
+            }
+        }
         (KeyCode::Home, _) if app.focus_owner() != FocusOwner::TodoList => app.input.move_home(),
         (KeyCode::End, _) if app.focus_owner() != FocusOwner::TodoList => app.input.move_end(),
         // Tab: toggle focus between input and open todo list
@@ -261,9 +271,21 @@ pub(super) fn handle_normal_key(app: &mut App, key: KeyEvent) {
         _ => {}
     }
 
-    if should_sync_mention_after_key(app, key) {
+    if app.input.version != input_version_before && should_sync_mention_after_key(app, key) {
         mention::sync_with_cursor(app);
     }
+}
+
+fn try_move_input_cursor_up(app: &mut App) -> bool {
+    let before = (app.input.cursor_row, app.input.cursor_col);
+    app.input.move_up();
+    (app.input.cursor_row, app.input.cursor_col) != before
+}
+
+fn try_move_input_cursor_down(app: &mut App) -> bool {
+    let before = (app.input.cursor_row, app.input.cursor_col);
+    app.input.move_down();
+    (app.input.cursor_row, app.input.cursor_col) != before
 }
 
 fn should_sync_mention_after_key(app: &App, key: KeyEvent) -> bool {
@@ -272,7 +294,7 @@ fn should_sync_mention_after_key(app: &App, key: KeyEvent) -> bool {
     }
 
     match (key.code, key.modifiers) {
-        (KeyCode::Left | KeyCode::Right | KeyCode::Home | KeyCode::End, _) => true,
+        (KeyCode::Up | KeyCode::Down | KeyCode::Left | KeyCode::Right | KeyCode::Home | KeyCode::End, _) => true,
         (KeyCode::Backspace | KeyCode::Delete | KeyCode::Enter, _) => true,
         (KeyCode::Char(_), m) if is_printable_text_modifiers(m) => true,
         _ => false,
