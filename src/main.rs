@@ -16,6 +16,7 @@
 
 use clap::Parser;
 use claude_rust::Cli;
+use std::time::Instant;
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
@@ -32,8 +33,18 @@ fn main() -> anyhow::Result<()> {
             .init();
     }
 
-    let npx_path = which::which("npx")
-        .map_err(|_| anyhow::anyhow!("Node.js/npx not found in PATH. Install Node.js first."))?;
+    let resolve_started = Instant::now();
+    let launchers =
+        claude_rust::acp::connection::resolve_adapter_launchers(cli.adapter_bin.as_deref())?;
+    tracing::info!(
+        "Resolved {} adapter launcher(s) in {:?}: {:?}",
+        launchers.len(),
+        resolve_started.elapsed(),
+        launchers
+            .iter()
+            .map(claude_rust::acp::connection::AdapterLauncher::describe)
+            .collect::<Vec<_>>()
+    );
 
     let rt = tokio::runtime::Runtime::new()?;
     let local_set = tokio::task::LocalSet::new();
@@ -43,7 +54,7 @@ fn main() -> anyhow::Result<()> {
         let mut app = claude_rust::app::create_app(&cli);
 
         // Phase 2: start background connection + TUI in parallel
-        claude_rust::app::start_connection(&app, &cli, npx_path);
+        claude_rust::app::start_connection(&app, &cli, launchers);
         let result = claude_rust::app::run_tui(&mut app).await;
 
         // Kill any spawned terminal child processes before exiting
