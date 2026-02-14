@@ -129,10 +129,33 @@ pub fn render_message(
                 )));
             }
         }
+        MessageRole::System => {
+            out.push(Line::from(Span::styled(
+                "System",
+                Style::default().fg(theme::STATUS_ERROR).add_modifier(Modifier::BOLD),
+            )));
+
+            for block in &mut msg.blocks {
+                if let MessageBlock::Text(text, cache, incr) = block {
+                    let mut lines = Vec::new();
+                    render_text_cached(text, cache, incr, width, None, false, &mut lines);
+                    tint_lines(&mut lines, theme::STATUS_ERROR);
+                    out.extend(lines);
+                }
+            }
+        }
     }
 
     // Blank separator between messages
     out.push(Line::default());
+}
+
+fn tint_lines(lines: &mut [Line<'static>], color: Color) {
+    for line in lines {
+        for span in &mut line.spans {
+            span.style = span.style.fg(color);
+        }
+    }
 }
 
 /// Preprocess markdown that `tui_markdown` doesn't handle well.

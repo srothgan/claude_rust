@@ -41,6 +41,8 @@ pub enum ClientEvent {
     },
     /// A prompt turn completed successfully.
     TurnComplete,
+    /// `cancel` notification was accepted by the adapter.
+    TurnCancelled,
     /// A prompt turn failed with an error.
     TurnError(String),
     /// Background connection completed successfully.

@@ -67,6 +67,7 @@ pub fn create_app(cli: &Cli) -> App {
         mode: None,
         login_hint: None,
         pending_permission_ids: Vec::new(),
+        cancelled_turn_pending_hint: false,
         event_tx,
         event_rx,
         spinner_frame: 0,

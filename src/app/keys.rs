@@ -15,6 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use super::{App, AppStatus, FocusOwner, FocusTarget, MessageBlock, ModeInfo, ModeState};
+use crate::acp::client::ClientEvent;
 use crate::app::input::parse_paste_placeholder;
 use crate::app::mention;
 use crate::app::permissions::handle_permission_key;
@@ -141,9 +142,12 @@ pub(super) fn handle_normal_key(app: &mut App, key: KeyEvent) {
                 && let Some(sid) = app.session_id.clone()
             {
                 let conn = Rc::clone(conn);
+                let tx = app.event_tx.clone();
                 tokio::task::spawn_local(async move {
                     if let Err(e) = conn.cancel(acp::CancelNotification::new(sid)).await {
                         tracing::error!("Failed to send cancel: {e}");
+                    } else {
+                        let _ = tx.send(ClientEvent::TurnCancelled);
                     }
                 });
                 app.status = AppStatus::Ready;

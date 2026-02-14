@@ -28,12 +28,16 @@ pub(super) fn submit_input(app: &mut App) {
     app.mention = None;
 
     // No connection yet — can't submit
-    let Some(ref conn) = app.conn else { return };
-
     let text = app.input.text();
     if text.trim().is_empty() {
         return;
     }
+
+    // New turn started by user input: force-stop stale tool calls from older turns
+    // so their spinners don't continue during this turn.
+    let _ = app.finalize_in_progress_tool_calls(acp::ToolCallStatus::Failed);
+
+    let Some(ref conn) = app.conn else { return };
 
     // Build content blocks: text segments + embedded file resources for @mentions
     let content_blocks = build_content_blocks(&text, &app.cwd_raw);

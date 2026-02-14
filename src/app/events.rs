@@ -26,6 +26,8 @@ use agent_client_protocol::{self as acp};
 use crossterm::event::KeyEvent;
 use crossterm::event::{Event, KeyEventKind, MouseEvent, MouseEventKind};
 
+const CONVERSATION_INTERRUPTED_HINT: &str = "Conversation interrupted. Tell the model how to proceed.";
+
 pub fn handle_terminal_event(app: &mut App, event: Event) {
     app.needs_redraw = true;
     match event {
@@ -209,13 +211,30 @@ pub fn handle_acp_event(app: &mut App, event: ClientEvent) {
                 }
             }
         }
+        ClientEvent::TurnCancelled => {
+            app.cancelled_turn_pending_hint = true;
+            let _ = app.finalize_in_progress_tool_calls(acp::ToolCallStatus::Failed);
+        }
         ClientEvent::TurnComplete => {
+            let show_interrupted_hint = app.cancelled_turn_pending_hint;
+            app.cancelled_turn_pending_hint = false;
+            if show_interrupted_hint {
+                let _ = app.finalize_in_progress_tool_calls(acp::ToolCallStatus::Failed);
+            } else {
+                let _ = app.finalize_in_progress_tool_calls(acp::ToolCallStatus::Completed);
+            }
             app.status = AppStatus::Ready;
             app.files_accessed = 0;
+            app.active_task_ids.clear();
             app.refresh_git_branch();
+            if show_interrupted_hint {
+                push_interrupted_hint(app);
+            }
         }
         ClientEvent::TurnError(msg) => {
             tracing::error!("Turn error: {msg}");
+            app.cancelled_turn_pending_hint = false;
+            let _ = app.finalize_in_progress_tool_calls(acp::ToolCallStatus::Failed);
             app.status = AppStatus::Error;
         }
         ClientEvent::Connected { session_id, model_name, mode } => {
@@ -229,6 +248,7 @@ pub fn handle_acp_event(app: &mut App, event: ClientEvent) {
             app.mode = mode;
             app.status = AppStatus::Ready;
             app.login_hint = None;
+            app.cancelled_turn_pending_hint = false;
             app.cached_header_line = None;
             app.cached_footer_line = None;
             app.cached_welcome_lines = None;
@@ -238,9 +258,11 @@ pub fn handle_acp_event(app: &mut App, event: ClientEvent) {
             // adapter recognises as a slash command to start the auth flow.
             app.status = AppStatus::Ready;
             app.login_hint = Some(LoginHint { method_name, method_description });
+            app.cancelled_turn_pending_hint = false;
             app.input.set_text("/login");
         }
         ClientEvent::ConnectionFailed(msg) => {
+            app.cancelled_turn_pending_hint = false;
             app.status = AppStatus::Error;
             app.messages.push(ChatMessage {
                 role: MessageRole::Assistant,
@@ -252,6 +274,18 @@ pub fn handle_acp_event(app: &mut App, event: ClientEvent) {
             });
         }
     }
+}
+
+fn push_interrupted_hint(app: &mut App) {
+    app.messages.push(ChatMessage {
+        role: MessageRole::System,
+        blocks: vec![MessageBlock::Text(
+            CONVERSATION_INTERRUPTED_HINT.to_owned(),
+            BlockCache::default(),
+            IncrementalMarkdown::from_complete(CONVERSATION_INTERRUPTED_HINT),
+        )],
+    });
+    app.viewport.engage_auto_scroll();
 }
 
 fn handle_tool_call(app: &mut App, tc: acp::ToolCall) {
@@ -1012,9 +1046,91 @@ mod tests {
         assert!(!app.show_todo_panel);
         assert!(app.selection.is_none());
         assert!(app.mention.is_none());
+        assert!(!app.cancelled_turn_pending_hint);
         assert!(app.rendered_chat_lines.is_empty());
         assert!(app.rendered_input_lines.is_empty());
         assert!(matches!(app.status, AppStatus::Ready));
+    }
+
+    #[test]
+    fn turn_complete_after_cancel_renders_interrupted_hint() {
+        let mut app = make_test_app();
+
+        handle_acp_event(&mut app, ClientEvent::TurnCancelled);
+        assert!(app.cancelled_turn_pending_hint);
+
+        handle_acp_event(&mut app, ClientEvent::TurnComplete);
+
+        assert!(!app.cancelled_turn_pending_hint);
+        let last = app.messages.last().expect("expected interruption hint message");
+        assert!(matches!(last.role, MessageRole::System));
+        let Some(MessageBlock::Text(text, _, _)) = last.blocks.first() else {
+            panic!("expected text block");
+        };
+        assert_eq!(text, CONVERSATION_INTERRUPTED_HINT);
+    }
+
+    #[test]
+    fn turn_complete_without_cancel_does_not_render_interrupted_hint() {
+        let mut app = make_test_app();
+        handle_acp_event(&mut app, ClientEvent::TurnComplete);
+        assert!(app.messages.is_empty());
+    }
+
+    #[test]
+    fn turn_cancel_marks_active_tools_failed() {
+        let mut app = make_test_app();
+        app.messages.push(assistant_msg(vec![
+            MessageBlock::ToolCall(Box::new(tool_call("tc1", acp::ToolCallStatus::InProgress))),
+            MessageBlock::ToolCall(Box::new(tool_call("tc2", acp::ToolCallStatus::Pending))),
+            MessageBlock::ToolCall(Box::new(tool_call("tc3", acp::ToolCallStatus::Completed))),
+        ]));
+
+        handle_acp_event(&mut app, ClientEvent::TurnCancelled);
+
+        let Some(last) = app.messages.last() else {
+            panic!("missing assistant message");
+        };
+        let statuses: Vec<acp::ToolCallStatus> = last
+            .blocks
+            .iter()
+            .filter_map(|b| match b {
+                MessageBlock::ToolCall(tc) => Some(tc.status),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            statuses,
+            vec![
+                acp::ToolCallStatus::Failed,
+                acp::ToolCallStatus::Failed,
+                acp::ToolCallStatus::Completed
+            ]
+        );
+    }
+
+    #[test]
+    fn turn_complete_marks_lingering_tools_completed() {
+        let mut app = make_test_app();
+        app.messages.push(assistant_msg(vec![
+            MessageBlock::ToolCall(Box::new(tool_call("tc1", acp::ToolCallStatus::InProgress))),
+            MessageBlock::ToolCall(Box::new(tool_call("tc2", acp::ToolCallStatus::Pending))),
+        ]));
+
+        handle_acp_event(&mut app, ClientEvent::TurnComplete);
+
+        let Some(last) = app.messages.last() else {
+            panic!("missing assistant message");
+        };
+        let statuses: Vec<acp::ToolCallStatus> = last
+            .blocks
+            .iter()
+            .filter_map(|b| match b {
+                MessageBlock::ToolCall(tc) => Some(tc.status),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(statuses, vec![acp::ToolCallStatus::Completed, acp::ToolCallStatus::Completed]);
     }
 
     #[test]

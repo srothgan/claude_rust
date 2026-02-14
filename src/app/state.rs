@@ -84,6 +84,9 @@ pub struct App {
     /// The first entry is the "focused" permission that receives keyboard input.
     /// Up / Down arrow keys cycle focus through the list.
     pub pending_permission_ids: Vec<String>,
+    /// Set when a cancel notification succeeds; consumed on `TurnComplete`
+    /// to render a red interruption hint in chat.
+    pub cancelled_turn_pending_hint: bool,
     pub event_tx: mpsc::UnboundedSender<ClientEvent>,
     pub event_rx: mpsc::UnboundedReceiver<ClientEvent>,
     pub spinner_frame: usize,
@@ -191,6 +194,39 @@ impl App {
         self.tool_call_index.insert(id, (msg_idx, block_idx));
     }
 
+    /// Force-finish any lingering in-progress tool calls.
+    /// Returns the number of tool calls that were transitioned.
+    pub fn finalize_in_progress_tool_calls(&mut self, new_status: acp::ToolCallStatus) -> usize {
+        let mut changed = 0usize;
+        let mut cleared_permission = false;
+
+        for msg in &mut self.messages {
+            for block in &mut msg.blocks {
+                if let MessageBlock::ToolCall(tc) = block {
+                    let tc = tc.as_mut();
+                    if matches!(
+                        tc.status,
+                        acp::ToolCallStatus::InProgress | acp::ToolCallStatus::Pending
+                    ) {
+                        tc.status = new_status;
+                        tc.cache.invalidate();
+                        if tc.pending_permission.take().is_some() {
+                            cleared_permission = true;
+                        }
+                        changed += 1;
+                    }
+                }
+            }
+        }
+
+        if changed > 0 || cleared_permission {
+            self.pending_permission_ids.clear();
+            self.release_focus_target(FocusTarget::Permission);
+        }
+
+        changed
+    }
+
     /// Build a minimal `App` for unit/integration tests.
     /// All fields get sensible defaults; the `mpsc` channel is wired up internally.
     #[doc(hidden)]
@@ -213,6 +249,7 @@ impl App {
             mode: None,
             login_hint: None,
             pending_permission_ids: Vec::new(),
+            cancelled_turn_pending_hint: false,
             event_tx: tx,
             event_rx: rx,
             spinner_frame: 0,
@@ -744,6 +781,7 @@ pub enum MessageBlock {
 pub enum MessageRole {
     User,
     Assistant,
+    System,
 }
 
 pub struct ToolCallInfo {
