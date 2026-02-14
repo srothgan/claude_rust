@@ -166,7 +166,6 @@ pub fn activate(app: &mut App) {
     let Some((trigger_row, trigger_col, query)) = detection else {
         return;
     };
-
     // Scan files if cache is empty
     if app.file_cache.is_none() {
         app.file_cache = Some(scan_files(&app.cwd_raw));
@@ -195,7 +194,6 @@ pub fn update_query(app: &mut App) {
         deactivate(app);
         return;
     };
-
     let candidates =
         app.file_cache.as_ref().map(|cache| filter_candidates(cache, &query)).unwrap_or_default();
 
@@ -215,6 +213,21 @@ pub fn update_query(app: &mut App) {
     }
 }
 
+/// Keep mention state in sync with the current cursor location.
+/// - If cursor is inside a valid `@mention` token, activate/update autocomplete.
+/// - Otherwise, deactivate mention autocomplete.
+pub fn sync_with_cursor(app: &mut App) {
+    let in_mention =
+        detect_mention_at_cursor(&app.input.lines, app.input.cursor_row, app.input.cursor_col)
+            .is_some();
+    match (in_mention, app.mention.is_some()) {
+        (true, true) => update_query(app),
+        (true, false) => activate(app),
+        (false, true) => deactivate(app),
+        (false, false) => {}
+    }
+}
+
 /// Confirm the selected candidate: replace `@query` in input with `@rel_path`.
 pub fn confirm_selection(app: &mut App) {
     let Some(mention) = app.mention.take() else {
@@ -230,18 +243,27 @@ pub fn confirm_selection(app: &mut App) {
     let trigger_row = mention.trigger_row;
     let trigger_col = mention.trigger_col;
 
-    // The `@` is at trigger_col, the query extends to cursor position.
-    // Replace from trigger_col (the `@`) through the current query with `@rel_path `.
+    // Replace the full mention token (from `@` to the next whitespace),
+    // so editing in the middle of an existing mention correctly rewrites
+    // the entire path instead of only the prefix before the cursor.
     let line = &mut app.input.lines[trigger_row];
     let chars: Vec<char> = line.chars().collect();
+    if trigger_col >= chars.len() || chars[trigger_col] != '@' {
+        return;
+    }
 
-    // Calculate current end of the mention (trigger_col + 1 for `@` + query length)
-    let mention_end = trigger_col + 1 + mention.query.chars().count();
+    // Find token end: first whitespace after `@...`
+    let mention_end =
+        (trigger_col + 1..chars.len()).find(|&i| chars[i].is_whitespace()).unwrap_or(chars.len());
 
-    // Rebuild the line: before_@ + @rel_path + space + after_query
+    // Rebuild the line: before_@ + @rel_path + optional trailing space + after_token
     let before: String = chars[..trigger_col].iter().collect();
     let after: String = chars[mention_end..].iter().collect();
-    let replacement = format!("@{rel_path} ");
+    let replacement = if after.is_empty() {
+        format!("@{rel_path} ")
+    } else {
+        format!("@{rel_path}")
+    };
 
     let new_line = format!("{before}{replacement}{after}");
     let new_cursor_col = trigger_col + replacement.chars().count();
@@ -322,4 +344,121 @@ pub fn find_mention_spans(text: &str) -> Vec<(usize, usize, String)> {
     }
 
     spans
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::App;
+
+    #[test]
+    fn sync_with_cursor_activates_inside_existing_mention() {
+        let mut app = App::test_default();
+        app.input.set_text("open @src/main.rs now");
+        app.input.cursor_row = 0;
+        app.input.cursor_col = "open @src".chars().count();
+        app.file_cache = Some(vec![
+            FileCandidate {
+                rel_path: "src/main.rs".into(),
+                depth: 1,
+                modified: SystemTime::UNIX_EPOCH,
+                is_dir: false,
+            },
+            FileCandidate {
+                rel_path: "tests/integration.rs".into(),
+                depth: 1,
+                modified: SystemTime::UNIX_EPOCH,
+                is_dir: false,
+            },
+        ]);
+
+        sync_with_cursor(&mut app);
+
+        let mention = app.mention.as_ref().expect("mention should be active");
+        assert_eq!(mention.query, "src");
+        assert!(!mention.candidates.is_empty());
+    }
+
+    #[test]
+    fn confirm_selection_replaces_full_existing_token_without_double_space() {
+        let mut app = App::test_default();
+        app.input.set_text("open @src/main.rs now");
+        app.input.cursor_row = 0;
+        app.input.cursor_col = "open @src".chars().count();
+        app.file_cache = Some(vec![FileCandidate {
+            rel_path: "src/lib.rs".into(),
+            depth: 1,
+            modified: SystemTime::UNIX_EPOCH,
+            is_dir: false,
+        }]);
+
+        activate(&mut app);
+        confirm_selection(&mut app);
+
+        assert_eq!(app.input.lines[0], "open @src/lib.rs now");
+        assert!(app.mention.is_none());
+    }
+
+    #[test]
+    fn confirm_selection_at_end_keeps_trailing_space() {
+        let mut app = App::test_default();
+        app.input.set_text("@src/mai");
+        app.input.cursor_row = 0;
+        app.input.cursor_col = app.input.lines[0].chars().count();
+        app.file_cache = Some(vec![FileCandidate {
+            rel_path: "src/main.rs".into(),
+            depth: 1,
+            modified: SystemTime::UNIX_EPOCH,
+            is_dir: false,
+        }]);
+
+        activate(&mut app);
+        confirm_selection(&mut app);
+
+        assert_eq!(app.input.lines[0], "@src/main.rs ");
+    }
+
+    #[test]
+    fn activate_with_empty_query_shows_all_candidates() {
+        let mut app = App::test_default();
+        app.input.set_text("@");
+        app.input.cursor_row = 0;
+        app.input.cursor_col = 1;
+        app.file_cache = Some(vec![FileCandidate {
+            rel_path: "src/main.rs".into(),
+            depth: 1,
+            modified: SystemTime::UNIX_EPOCH,
+            is_dir: false,
+        }]);
+
+        activate(&mut app);
+
+        let mention = app.mention.as_ref().expect("mention should be active");
+        assert_eq!(mention.query, "");
+        assert_eq!(mention.candidates.len(), 1);
+    }
+
+    #[test]
+    fn update_query_keeps_active_when_query_becomes_empty() {
+        let mut app = App::test_default();
+        app.input.set_text("@src");
+        app.input.cursor_row = 0;
+        app.input.cursor_col = app.input.lines[0].chars().count();
+        app.file_cache = Some(vec![FileCandidate {
+            rel_path: "src/main.rs".into(),
+            depth: 1,
+            modified: SystemTime::UNIX_EPOCH,
+            is_dir: false,
+        }]);
+        activate(&mut app);
+        assert!(app.mention.is_some());
+
+        // Cursor directly after '@' means empty mention query.
+        app.input.cursor_col = 1;
+        update_query(&mut app);
+
+        let mention = app.mention.as_ref().expect("mention should stay active");
+        assert_eq!(mention.query, "");
+        assert_eq!(mention.candidates.len(), 1);
+    }
 }
