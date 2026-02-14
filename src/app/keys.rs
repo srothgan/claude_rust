@@ -260,6 +260,23 @@ pub(super) fn handle_normal_key(app: &mut App, key: KeyEvent) {
         }
         _ => {}
     }
+
+    if should_sync_mention_after_key(app, key) {
+        mention::sync_with_cursor(app);
+    }
+}
+
+fn should_sync_mention_after_key(app: &App, key: KeyEvent) -> bool {
+    if app.focus_owner() == FocusOwner::TodoList {
+        return false;
+    }
+
+    match (key.code, key.modifiers) {
+        (KeyCode::Left | KeyCode::Right | KeyCode::Home | KeyCode::End, _) => true,
+        (KeyCode::Backspace | KeyCode::Delete | KeyCode::Enter, _) => true,
+        (KeyCode::Char(_), m) if is_printable_text_modifiers(m) => true,
+        _ => false,
+    }
 }
 
 /// Remove a leaked pre-placeholder character caused by key-burst + paste-event
