@@ -128,7 +128,7 @@ mod tests {
         let mut d = PasteBurstDetector::new();
         d.on_key_event(1);
         // Simulate slow typing by advancing time
-        d.last_key_time = Some(Instant::now() - Duration::from_millis(200));
+        d.last_key_time = Instant::now().checked_sub(Duration::from_millis(200));
         assert!(!d.on_key_event(1));
     }
 
@@ -173,7 +173,8 @@ mod tests {
         for _ in 0..MIN_BURST_LEN {
             d.on_key_event(1);
         }
-        d.last_key_time = Some(Instant::now() - BURST_INTERVAL - Duration::from_millis(1));
+        let idle_gap = BURST_INTERVAL + Duration::from_millis(1);
+        d.last_key_time = Instant::now().checked_sub(idle_gap);
         assert!(d.is_settled());
     }
 }

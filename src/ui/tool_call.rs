@@ -16,6 +16,7 @@
 
 use crate::app::{InlinePermission, ToolCallInfo};
 use crate::ui::diff::{is_markdown_file, lang_from_title, render_diff, strip_outer_code_fence};
+use crate::ui::markdown;
 use crate::ui::theme;
 use agent_client_protocol::{self as acp, PermissionOptionKind};
 use ansi_to_tui::IntoText as _;
@@ -142,8 +143,7 @@ fn render_tool_call_title(tc: &ToolCallInfo, _width: u16, spinner_frame: usize) 
         ),
     ];
 
-    let rendered = tui_markdown::from_str(&tc.title);
-    if let Some(first_line) = rendered.lines.into_iter().next() {
+    if let Some(first_line) = markdown::render_markdown_safe(&tc.title, None).into_iter().next() {
         for span in first_line.spans {
             title_spans.push(Span::styled(span.content.into_owned(), span.style));
         }
@@ -321,7 +321,7 @@ fn render_execute_with_borders(
 }
 
 /// Render inline permission options on a single compact line.
-/// Format: `▸ ✓ Allow once (y)  ·  ✓ Allow always (a)  ·  ✗ Reject (n)`
+/// Format: `▸ ✓ Allow once (Ctrl+y)  ·  ✓ Allow always (Ctrl+a)  ·  ✗ Reject (Ctrl+n)`
 /// Unfocused permissions are dimmed to indicate they don't have keyboard input.
 fn render_permission_lines(perm: &InlinePermission) -> Vec<Line<'static>> {
     // Unfocused permissions: show a dimmed "waiting for focus" line
@@ -372,10 +372,9 @@ fn render_permission_lines(perm: &InlinePermission) -> Vec<Line<'static>> {
         spans.push(Span::styled(opt.name.clone(), name_style));
 
         let shortcut = match opt.kind {
-            PermissionOptionKind::AllowOnce => " (y)",
-            PermissionOptionKind::AllowAlways => " (a)",
-            PermissionOptionKind::RejectOnce => " (n)",
-            PermissionOptionKind::RejectAlways => " (N)",
+            PermissionOptionKind::AllowOnce => " (Ctrl+y)",
+            PermissionOptionKind::AllowAlways => " (Ctrl+a)",
+            PermissionOptionKind::RejectOnce => " (Ctrl+n)",
             _ => "",
         };
         spans.push(Span::styled(shortcut, Style::default().fg(theme::DIM)));
@@ -482,8 +481,7 @@ fn render_tool_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
                         let lang = lang_from_title(&tc.title);
                         format!("```{lang}\n{stripped}\n```")
                     };
-                    let rendered = tui_markdown::from_str(&md_source);
-                    for line in rendered.lines {
+                    for line in markdown::render_markdown_safe(&md_source, None) {
                         let owned: Vec<Span<'static>> = line
                             .spans
                             .into_iter()

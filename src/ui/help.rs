@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use crate::app::App;
+use crate::app::{App, FocusOwner};
 use crate::ui::theme;
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -102,39 +102,54 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
 fn build_help_items(app: &App) -> Vec<(String, String)> {
     let mut items: Vec<(String, String)> = vec![
         // Global
-        ("Ctrl+C".to_owned(), "Quit".to_owned()),
-        ("Ctrl+L".to_owned(), "Redraw screen".to_owned()),
+        ("Ctrl+c".to_owned(), "Quit".to_owned()),
+        ("Ctrl+l".to_owned(), "Redraw screen".to_owned()),
         ("Shift+Tab".to_owned(), "Cycle mode".to_owned()),
-        ("Ctrl+O".to_owned(), "Toggle tool collapse".to_owned()),
-        ("Ctrl+T".to_owned(), "Toggle todos (when available)".to_owned()),
-        // Input + navigation
-        ("Enter".to_owned(), "Send message".to_owned()),
-        ("Shift+Enter".to_owned(), "Insert newline".to_owned()),
-        ("Left/Right".to_owned(), "Move cursor".to_owned()),
-        ("Up/Down".to_owned(), "Move line".to_owned()),
-        ("Home/End".to_owned(), "Line start/end".to_owned()),
-        ("Backspace".to_owned(), "Delete before".to_owned()),
-        ("Delete".to_owned(), "Delete after".to_owned()),
-        ("Paste".to_owned(), "Insert text".to_owned()),
+        ("Ctrl+o".to_owned(), "Toggle tool collapse".to_owned()),
+        ("Ctrl+t".to_owned(), "Toggle todos (when available)".to_owned()),
         // Chat scrolling
+        ("Up/Down".to_owned(), "Scroll chat".to_owned()),
         ("Ctrl+Up/Down".to_owned(), "Scroll chat".to_owned()),
         ("Mouse wheel".to_owned(), "Scroll chat".to_owned()),
     ];
+    let focus_owner = app.focus_owner();
+
+    if app.show_todo_panel && !app.todos.is_empty() {
+        items.push(("Tab".to_owned(), "Toggle todo focus".to_owned()));
+    }
+
+    // Input + navigation (active outside todo-list and mention focus)
+    if focus_owner != FocusOwner::TodoList && focus_owner != FocusOwner::Mention {
+        items.push(("Enter".to_owned(), "Send message".to_owned()));
+        items.push(("Shift+Enter".to_owned(), "Insert newline".to_owned()));
+        items.push(("Left/Right".to_owned(), "Move cursor".to_owned()));
+        items.push(("Home/End".to_owned(), "Line start/end".to_owned()));
+        items.push(("Backspace".to_owned(), "Delete before".to_owned()));
+        items.push(("Delete".to_owned(), "Delete after".to_owned()));
+        items.push(("Paste".to_owned(), "Insert text".to_owned()));
+    }
 
     // Turn control
     if matches!(app.status, crate::app::AppStatus::Thinking | crate::app::AppStatus::Running) {
         items.push(("Esc".to_owned(), "Cancel current turn".to_owned()));
+    } else if focus_owner == FocusOwner::TodoList {
+        items.push(("Esc".to_owned(), "Exit todo focus".to_owned()));
     } else {
         items.push(("Esc".to_owned(), "No-op (idle)".to_owned()));
     }
 
     // Permissions (when prompts are active)
-    if !app.pending_permission_ids.is_empty() {
-        items.push(("Up/Down".to_owned(), "Switch prompt focus".to_owned()));
+    if !app.pending_permission_ids.is_empty() && focus_owner == FocusOwner::Permission {
+        if app.pending_permission_ids.len() > 1 {
+            items.push(("Up/Down".to_owned(), "Switch prompt focus".to_owned()));
+        }
         items.push(("Left/Right".to_owned(), "Select option".to_owned()));
         items.push(("Enter".to_owned(), "Confirm option".to_owned()));
-        items.push(("Y/A/N".to_owned(), "Quick select".to_owned()));
+        items.push(("Ctrl+y/a/n".to_owned(), "Quick select".to_owned()));
         items.push(("Esc".to_owned(), "Reject".to_owned()));
+    }
+    if focus_owner == FocusOwner::TodoList {
+        items.push(("Up/Down".to_owned(), "Select todo (todo focus)".to_owned()));
     }
 
     items
@@ -180,4 +195,46 @@ fn truncate_to_width(text: &str, width: usize) -> String {
         used += w;
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_help_items;
+    use crate::app::{App, FocusTarget, TodoItem, TodoStatus};
+
+    fn has_item(items: &[(String, String)], key: &str, desc: &str) -> bool {
+        items.iter().any(|(k, d)| k == key && d == desc)
+    }
+
+    #[test]
+    fn tab_toggle_only_shown_when_todos_available() {
+        let mut app = App::test_default();
+        let items = build_help_items(&app);
+        assert!(!has_item(&items, "Tab", "Toggle todo focus"));
+
+        app.show_todo_panel = true;
+        app.todos.push(TodoItem {
+            content: "Task".into(),
+            status: TodoStatus::Pending,
+            active_form: String::new(),
+        });
+        let items = build_help_items(&app);
+        assert!(has_item(&items, "Tab", "Toggle todo focus"));
+    }
+
+    #[test]
+    fn permission_navigation_only_shown_when_permission_has_focus() {
+        let mut app = App::test_default();
+        app.pending_permission_ids = vec!["perm-1".into(), "perm-2".into()];
+
+        // Without permission focus claim, do not show permission-only arrows.
+        let items = build_help_items(&app);
+        assert!(!has_item(&items, "Left/Right", "Select option"));
+        assert!(!has_item(&items, "Up/Down", "Switch prompt focus"));
+
+        app.claim_focus_target(FocusTarget::Permission);
+        let items = build_help_items(&app);
+        assert!(has_item(&items, "Left/Right", "Select option"));
+        assert!(has_item(&items, "Up/Down", "Switch prompt focus"));
+    }
 }

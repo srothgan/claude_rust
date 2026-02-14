@@ -16,32 +16,21 @@
 
 use super::connect::take_connection_slot;
 use super::{
-    App, AppStatus, BlockCache, ChatMessage, IncrementalMarkdown, InlinePermission, LoginHint,
-    MessageBlock, MessageRole, ModeInfo, ModeState, SelectionKind, SelectionPoint, ToolCallInfo,
+    App, AppStatus, BlockCache, ChatMessage, FocusTarget, IncrementalMarkdown, InlinePermission,
+    LoginHint, MessageBlock, MessageRole, SelectionKind, SelectionPoint, ToolCallInfo,
 };
 use crate::acp::client::ClientEvent;
-use crate::app::input::parse_paste_placeholder;
-use crate::app::mention;
-use crate::app::permissions::handle_permission_key;
-use crate::app::selection::try_copy_selection;
 use crate::app::todos::{apply_plan_todos, parse_todos, set_todos};
-use agent_client_protocol::{self as acp, Agent as _};
-use crossterm::event::{
-    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
-};
-use std::rc::Rc;
+use agent_client_protocol::{self as acp};
+#[cfg(test)]
+use crossterm::event::KeyEvent;
+use crossterm::event::{Event, KeyEventKind, MouseEvent, MouseEventKind};
 
 pub fn handle_terminal_event(app: &mut App, event: Event) {
     app.needs_redraw = true;
     match event {
         Event::Key(key) if key.kind == KeyEventKind::Press => {
-            if app.mention.is_some() {
-                handle_mention_key(app, key);
-            } else if app.pending_permission_ids.is_empty() {
-                handle_normal_key(app, key);
-            } else {
-                handle_permission_key(app, key);
-            }
+            super::keys::dispatch_key_by_focus(app, key);
         }
         Event::Mouse(mouse) => {
             handle_mouse_event(app, mouse);
@@ -142,227 +131,19 @@ fn mouse_point_to_selection(app: &App, mouse: MouseEvent) -> Option<MouseSelecti
     None
 }
 
-#[allow(clippy::too_many_lines)]
+#[cfg(test)]
 fn handle_normal_key(app: &mut App, key: KeyEvent) {
-    // During Connecting state, only allow Ctrl+C to quit
-    if app.status == AppStatus::Connecting {
-        if let (KeyCode::Char('c'), m) = (key.code, key.modifiers)
-            && m.contains(KeyModifiers::CONTROL)
-        {
-            app.should_quit = true;
-        }
-        return;
-    }
-
-    // Timing-based paste detection: if key events arrive faster than the
-    // burst interval, this is a paste (not typing). Cancel any pending submit.
-    app.drain_key_count += 1;
-    let was_paste = app.paste_burst.is_paste();
-    let in_paste = app.paste_burst.on_key_event(app.input.lines.len());
-    if in_paste && app.pending_submit {
-        app.pending_submit = false;
-    }
-    let on_placeholder_line = app
-        .input
-        .lines
-        .get(app.input.cursor_row)
-        .and_then(|line| parse_paste_placeholder(line))
-        .is_some();
-    if in_paste && on_placeholder_line {
-        // First transition into paste mode: remove the known leaked leading key
-        // pattern (`<one char line>` + `<placeholder line>`).
-        if !was_paste {
-            cleanup_leaked_char_before_placeholder(app);
-        }
-        // While burst mode is active and a placeholder already represents the paste,
-        // ignore burst key payload so no extra characters leak into the input.
-        if matches!(
-            key.code,
-            KeyCode::Char(_) | KeyCode::Enter | KeyCode::Tab | KeyCode::Backspace | KeyCode::Delete
-        ) {
-            return;
-        }
-    }
-
-    match (key.code, key.modifiers) {
-        // Ctrl+C: quit (graceful shutdown handles cancel + cleanup)
-        (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL) => {
-            if try_copy_selection(app) {
-                return;
-            }
-            app.should_quit = true;
-        }
-        // Esc: cancel current turn if thinking/running
-        (KeyCode::Esc, _) => {
-            if matches!(app.status, AppStatus::Thinking | AppStatus::Running)
-                && let Some(ref conn) = app.conn
-                && let Some(sid) = app.session_id.clone()
-            {
-                let conn = Rc::clone(conn);
-                tokio::task::spawn_local(async move {
-                    if let Err(e) = conn.cancel(acp::CancelNotification::new(sid)).await {
-                        tracing::error!("Failed to send cancel: {e}");
-                    }
-                });
-                app.status = AppStatus::Ready;
-            }
-        }
-        // Enter (no modifiers): deferred submit for paste detection.
-        // Insert a newline now; if no more keys arrive in this drain cycle
-        // the main loop strips the trailing newline and calls submit_input().
-        (KeyCode::Enter, m)
-            if !m.contains(KeyModifiers::SHIFT) && !m.contains(KeyModifiers::CONTROL) =>
-        {
-            app.input.insert_newline();
-            app.pending_submit = true;
-        }
-        // Ctrl+Enter or Shift+Enter: explicit newline (never submits)
-        (KeyCode::Enter, _) => {
-            app.pending_submit = false;
-            app.input.insert_newline();
-        }
-        // Navigation
-        (KeyCode::Left, _) => app.input.move_left(),
-        (KeyCode::Right, _) => app.input.move_right(),
-        (KeyCode::Up, m) if m.contains(KeyModifiers::CONTROL) => {
-            // Ctrl+Up: scroll chat up
-            app.viewport.scroll_up(1);
-        }
-        (KeyCode::Down, m) if m.contains(KeyModifiers::CONTROL) => {
-            // Ctrl+Down: scroll chat down (clamped in chat::render)
-            app.viewport.scroll_down(1);
-        }
-        (KeyCode::Up, _) => app.input.move_up(),
-        (KeyCode::Down, _) => app.input.move_down(),
-        (KeyCode::Home, _) => app.input.move_home(),
-        (KeyCode::End, _) => app.input.move_end(),
-        // Ctrl+T: toggle todo panel open/closed
-        (KeyCode::Char('t'), m) if m.contains(KeyModifiers::CONTROL) => {
-            app.show_todo_panel = !app.show_todo_panel;
-        }
-        // Ctrl+O: toggle expand/collapse on all tool calls
-        (KeyCode::Char('o'), m) if m.contains(KeyModifiers::CONTROL) => {
-            toggle_all_tool_calls(app);
-        }
-        // Ctrl+L: force full terminal redraw
-        (KeyCode::Char('l'), m) if m.contains(KeyModifiers::CONTROL) => {
-            app.force_redraw = true;
-        }
-        // Shift+Tab: cycle session mode
-        (KeyCode::BackTab, _) => {
-            if let Some(ref mode) = app.mode
-                && mode.available_modes.len() > 1
-            {
-                let current_idx = mode
-                    .available_modes
-                    .iter()
-                    .position(|m| m.id == mode.current_mode_id)
-                    .unwrap_or(0);
-                let next_idx = (current_idx + 1) % mode.available_modes.len();
-                let next = &mode.available_modes[next_idx];
-
-                // Fire-and-forget mode switch
-                if let Some(ref conn) = app.conn
-                    && let Some(sid) = app.session_id.clone()
-                {
-                    let mode_id = acp::SessionModeId::new(next.id.as_str());
-                    let conn = Rc::clone(conn);
-                    tokio::task::spawn_local(async move {
-                        if let Err(e) = conn
-                            .set_session_mode(acp::SetSessionModeRequest::new(sid, mode_id))
-                            .await
-                        {
-                            tracing::error!("Failed to set mode: {e}");
-                        }
-                    });
-                }
-
-                // Optimistic UI update (CurrentModeUpdate will confirm)
-                let next_id = next.id.clone();
-                let next_name = next.name.clone();
-                let modes = mode
-                    .available_modes
-                    .iter()
-                    .map(|m| ModeInfo { id: m.id.clone(), name: m.name.clone() })
-                    .collect();
-                app.mode = Some(ModeState {
-                    current_mode_id: next_id,
-                    current_mode_name: next_name,
-                    available_modes: modes,
-                });
-                app.cached_footer_line = None;
-            }
-        }
-        // Editing
-        (KeyCode::Backspace, _) => app.input.delete_char_before(),
-        (KeyCode::Delete, _) => app.input.delete_char_after(),
-        // Printable characters
-        (KeyCode::Char(c), m) if !m.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
-            app.input.insert_char(c);
-            if c == '@' {
-                mention::activate(app);
-            }
-        }
-        _ => {}
-    }
+    super::keys::handle_normal_key(app, key);
 }
 
-/// Remove a leaked pre-placeholder character caused by key-burst + paste-event
-/// overlap. We only touch the narrow shape:
-/// line 0 = exactly one char, line 1 = placeholder (cursor on placeholder).
+#[cfg(test)]
 fn cleanup_leaked_char_before_placeholder(app: &mut App) {
-    if app.input.lines.len() != 2 || app.input.cursor_row != 1 {
-        return;
-    }
-    if app.input.lines[0].chars().count() != 1 {
-        return;
-    }
-    app.input.lines.remove(0);
-    app.input.cursor_row = 0;
-    app.input.cursor_col = app.input.lines[0].chars().count();
-    app.input.version += 1;
+    super::keys::cleanup_leaked_char_before_placeholder(app);
 }
 
-/// Handle keystrokes while the `@` mention autocomplete dropdown is active.
+#[cfg(test)]
 fn handle_mention_key(app: &mut App, key: KeyEvent) {
-    match (key.code, key.modifiers) {
-        (KeyCode::Up, _) => mention::move_up(app),
-        (KeyCode::Down, _) => mention::move_down(app),
-        (KeyCode::Enter | KeyCode::Tab, _) => mention::confirm_selection(app),
-        (KeyCode::Esc, _) => mention::deactivate(app),
-        (KeyCode::Backspace, _) => {
-            app.input.delete_char_before();
-            mention::update_query(app);
-        }
-        (KeyCode::Char(c), m) if !m.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
-            app.input.insert_char(c);
-            if c.is_whitespace() {
-                mention::deactivate(app);
-            } else {
-                mention::update_query(app);
-            }
-        }
-        // Any other key: deactivate mention and forward to normal handling
-        _ => {
-            mention::deactivate(app);
-            handle_normal_key(app, key);
-        }
-    }
-}
-
-/// Toggle the session-level collapsed preference and apply to all tool calls.
-fn toggle_all_tool_calls(app: &mut App) {
-    app.tools_collapsed = !app.tools_collapsed;
-    for msg in &mut app.messages {
-        for block in &mut msg.blocks {
-            if let MessageBlock::ToolCall(tc) = block {
-                let tc = tc.as_mut();
-                tc.collapsed = app.tools_collapsed;
-                tc.cache.invalidate();
-            }
-        }
-        // Height caches are on the viewport; invalidating the block cache is enough.
-    }
+    super::keys::handle_mention_key(app, key);
 }
 
 pub fn handle_acp_event(app: &mut App, event: ClientEvent) {
@@ -372,6 +153,21 @@ pub fn handle_acp_event(app: &mut App, event: ClientEvent) {
         ClientEvent::PermissionRequest { request, response_tx } => {
             let tool_id = request.tool_call.tool_call_id.to_string();
             if let Some((mi, bi)) = app.lookup_tool_call(&tool_id) {
+                if app.pending_permission_ids.iter().any(|id| id == &tool_id) {
+                    tracing::warn!(
+                        "Duplicate permission request for tool call: {tool_id}; auto-rejecting duplicate"
+                    );
+                    // Keep the original pending prompt and reject duplicate request.
+                    if let Some(last_opt) = request.options.last() {
+                        let _ = response_tx.send(acp::RequestPermissionResponse::new(
+                            acp::RequestPermissionOutcome::Selected(
+                                acp::SelectedPermissionOutcome::new(last_opt.option_id.clone()),
+                            ),
+                        ));
+                    }
+                    return;
+                }
+
                 if let Some(MessageBlock::ToolCall(tc)) =
                     app.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
                 {
@@ -385,7 +181,19 @@ pub fn handle_acp_event(app: &mut App, event: ClientEvent) {
                     });
                     tc.cache.invalidate();
                     app.pending_permission_ids.push(tool_id);
+                    app.claim_focus_target(FocusTarget::Permission);
                     app.viewport.engage_auto_scroll();
+                } else {
+                    tracing::warn!(
+                        "Permission request for non-tool block index: {tool_id}; auto-rejecting"
+                    );
+                    if let Some(last_opt) = request.options.last() {
+                        let _ = response_tx.send(acp::RequestPermissionResponse::new(
+                            acp::RequestPermissionOutcome::Selected(
+                                acp::SelectedPermissionOutcome::new(last_opt.option_id.clone()),
+                            ),
+                        ));
+                    }
                 }
             } else {
                 tracing::warn!(
@@ -793,7 +601,10 @@ mod tests {
     // =====
 
     use super::*;
+    use crate::app::{FocusOwner, FocusTarget, TodoItem, TodoStatus, mention};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use pretty_assertions::assert_eq;
+    use tokio::sync::oneshot;
 
     // Helper: build a minimal ToolCallInfo with given id + status
 
@@ -1232,5 +1043,335 @@ mod tests {
         assert_eq!(app.input.lines, vec!["[Pasted Text 1 - 11 lines]"]);
         assert_eq!(app.input.cursor_row, 0);
         assert_eq!(app.input.cursor_col, "[Pasted Text 1 - 11 lines]".chars().count());
+    }
+
+    #[test]
+    fn altgr_at_inserts_char_and_activates_mention() {
+        let mut app = make_test_app();
+        handle_normal_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('@'), KeyModifiers::CONTROL | KeyModifiers::ALT),
+        );
+
+        assert_eq!(app.input.text(), "@");
+        assert!(app.mention.is_some());
+    }
+
+    #[test]
+    fn tab_toggles_todo_focus_target_for_open_todos() {
+        let mut app = make_test_app();
+        app.todos.push(TodoItem {
+            content: "Task".into(),
+            status: TodoStatus::Pending,
+            active_form: String::new(),
+        });
+        app.show_todo_panel = true;
+
+        handle_normal_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(app.focus_owner(), FocusOwner::TodoList);
+
+        handle_normal_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(app.focus_owner(), FocusOwner::Input);
+    }
+
+    #[test]
+    fn up_down_in_todo_focus_changes_todo_selection() {
+        let mut app = make_test_app();
+        app.todos = vec![
+            TodoItem {
+                content: "Task 1".into(),
+                status: TodoStatus::Pending,
+                active_form: String::new(),
+            },
+            TodoItem {
+                content: "Task 2".into(),
+                status: TodoStatus::InProgress,
+                active_form: String::new(),
+            },
+            TodoItem {
+                content: "Task 3".into(),
+                status: TodoStatus::Pending,
+                active_form: String::new(),
+            },
+        ];
+        app.show_todo_panel = true;
+        app.claim_focus_target(FocusTarget::TodoList);
+        app.todo_selected = 1;
+
+        let before_cursor_row = app.input.cursor_row;
+        let before_cursor_col = app.input.cursor_col;
+        handle_normal_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(app.todo_selected, 2);
+        assert_eq!(app.input.cursor_row, before_cursor_row);
+        assert_eq!(app.input.cursor_col, before_cursor_col);
+
+        handle_normal_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(app.todo_selected, 1);
+    }
+
+    #[test]
+    fn permission_owner_overrides_todo_focus_for_up_down() {
+        let mut app = make_test_app();
+        app.todos.push(TodoItem {
+            content: "Task".into(),
+            status: TodoStatus::Pending,
+            active_form: String::new(),
+        });
+        app.show_todo_panel = true;
+        app.claim_focus_target(FocusTarget::TodoList);
+        app.todo_selected = 0;
+        let _rx_a = attach_pending_permission(
+            &mut app,
+            "perm-a",
+            vec![
+                acp::PermissionOption::new("allow", "Allow", acp::PermissionOptionKind::AllowOnce),
+                acp::PermissionOption::new("deny", "Deny", acp::PermissionOptionKind::RejectOnce),
+            ],
+            true,
+        );
+        let _rx_b = attach_pending_permission(
+            &mut app,
+            "perm-b",
+            vec![
+                acp::PermissionOption::new("allow", "Allow", acp::PermissionOptionKind::AllowOnce),
+                acp::PermissionOption::new("deny", "Deny", acp::PermissionOptionKind::RejectOnce),
+            ],
+            false,
+        );
+        app.claim_focus_target(FocusTarget::Permission);
+
+        handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
+        );
+
+        assert_eq!(app.pending_permission_ids, vec!["perm-b", "perm-a"]);
+        assert_eq!(app.todo_selected, 0);
+    }
+
+    #[test]
+    fn permission_focus_allows_typing_for_non_permission_keys() {
+        let mut app = make_test_app();
+        app.pending_permission_ids.push("perm-1".into());
+        app.claim_focus_target(FocusTarget::Permission);
+
+        handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE)),
+        );
+
+        assert_eq!(app.input.text(), "h");
+    }
+
+    #[test]
+    fn permission_focus_allows_ctrl_t_toggle_todos() {
+        let mut app = make_test_app();
+        app.pending_permission_ids.push("perm-1".into());
+        app.claim_focus_target(FocusTarget::Permission);
+        app.todos.push(TodoItem {
+            content: "Task".into(),
+            status: TodoStatus::Pending,
+            active_form: String::new(),
+        });
+
+        assert!(!app.show_todo_panel);
+        handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL)),
+        );
+        assert!(app.show_todo_panel);
+    }
+
+    fn attach_pending_permission(
+        app: &mut App,
+        tool_id: &str,
+        options: Vec<acp::PermissionOption>,
+        focused: bool,
+    ) -> oneshot::Receiver<acp::RequestPermissionResponse> {
+        let (response_tx, response_rx) = oneshot::channel();
+        let mut tc = tool_call(tool_id, acp::ToolCallStatus::InProgress);
+        tc.pending_permission =
+            Some(InlinePermission { options, response_tx, selected_index: 0, focused });
+        app.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tc))]));
+        let msg_idx = app.messages.len().saturating_sub(1);
+        app.index_tool_call(tool_id.into(), msg_idx, 0);
+        app.pending_permission_ids.push(tool_id.into());
+        app.claim_focus_target(FocusTarget::Permission);
+        response_rx
+    }
+
+    fn push_todo_and_focus(app: &mut App) {
+        app.todos.push(TodoItem {
+            content: "Task".into(),
+            status: TodoStatus::Pending,
+            active_form: String::new(),
+        });
+        app.show_todo_panel = true;
+        app.claim_focus_target(FocusTarget::TodoList);
+        assert_eq!(app.focus_owner(), FocusOwner::TodoList);
+    }
+
+    #[test]
+    fn permission_ctrl_y_works_even_when_todo_focus_owns_navigation() {
+        let mut app = make_test_app();
+        let mut response_rx = attach_pending_permission(
+            &mut app,
+            "perm-1",
+            vec![
+                acp::PermissionOption::new("allow", "Allow", acp::PermissionOptionKind::AllowOnce),
+                acp::PermissionOption::new("deny", "Deny", acp::PermissionOptionKind::RejectOnce),
+            ],
+            true,
+        );
+
+        // Override focus owner to todo to prove the quick shortcut is global.
+        push_todo_and_focus(&mut app);
+
+        handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL)),
+        );
+
+        let resp = response_rx.try_recv().expect("ctrl+y should resolve pending permission");
+        let acp::RequestPermissionOutcome::Selected(selected) = resp.outcome else {
+            panic!("expected selected permission response");
+        };
+        assert_eq!(selected.option_id.to_string(), "allow");
+        assert!(app.pending_permission_ids.is_empty());
+    }
+
+    #[test]
+    fn permission_ctrl_a_works_even_when_todo_focus_owns_navigation() {
+        let mut app = make_test_app();
+        let mut response_rx = attach_pending_permission(
+            &mut app,
+            "perm-1",
+            vec![
+                acp::PermissionOption::new(
+                    "allow-once",
+                    "Allow once",
+                    acp::PermissionOptionKind::AllowOnce,
+                ),
+                acp::PermissionOption::new(
+                    "allow-always",
+                    "Allow always",
+                    acp::PermissionOptionKind::AllowAlways,
+                ),
+                acp::PermissionOption::new("deny", "Deny", acp::PermissionOptionKind::RejectOnce),
+            ],
+            true,
+        );
+        push_todo_and_focus(&mut app);
+
+        handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL)),
+        );
+
+        let resp = response_rx.try_recv().expect("ctrl+a should resolve pending permission");
+        let acp::RequestPermissionOutcome::Selected(selected) = resp.outcome else {
+            panic!("expected selected permission response");
+        };
+        assert_eq!(selected.option_id.to_string(), "allow-always");
+        assert!(app.pending_permission_ids.is_empty());
+    }
+
+    #[test]
+    fn permission_ctrl_n_works_even_when_mention_focus_owns_navigation() {
+        let mut app = make_test_app();
+        let mut response_rx = attach_pending_permission(
+            &mut app,
+            "perm-1",
+            vec![
+                acp::PermissionOption::new("allow", "Allow", acp::PermissionOptionKind::AllowOnce),
+                acp::PermissionOption::new("deny", "Deny", acp::PermissionOptionKind::RejectOnce),
+            ],
+            true,
+        );
+
+        app.mention = Some(mention::MentionState {
+            trigger_row: 0,
+            trigger_col: 0,
+            query: String::new(),
+            candidates: Vec::new(),
+            selected: 0,
+            scroll_offset: 0,
+        });
+        app.claim_focus_target(FocusTarget::Mention);
+        assert_eq!(app.focus_owner(), FocusOwner::Mention);
+
+        handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL)),
+        );
+
+        let resp = response_rx.try_recv().expect("ctrl+n should resolve pending permission");
+        let acp::RequestPermissionOutcome::Selected(selected) = resp.outcome else {
+            panic!("expected selected permission response");
+        };
+        assert_eq!(selected.option_id.to_string(), "deny");
+        assert!(app.pending_permission_ids.is_empty());
+    }
+
+    #[test]
+    fn connecting_state_ctrl_c_quits_without_selection_copy_path() {
+        let mut app = make_test_app();
+        app.status = AppStatus::Connecting;
+        app.selection = Some(crate::app::SelectionState {
+            kind: crate::app::SelectionKind::Input,
+            start: crate::app::SelectionPoint { row: 0, col: 0 },
+            end: crate::app::SelectionPoint { row: 0, col: 0 },
+            dragging: false,
+        });
+
+        handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+        );
+
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn mention_owner_overrides_todo_focus_then_releases_back() {
+        let mut app = make_test_app();
+        app.todos.push(TodoItem {
+            content: "Task".into(),
+            status: TodoStatus::Pending,
+            active_form: String::new(),
+        });
+        app.show_todo_panel = true;
+        app.claim_focus_target(FocusTarget::TodoList);
+        app.mention = Some(mention::MentionState {
+            trigger_row: 0,
+            trigger_col: 0,
+            query: String::new(),
+            candidates: Vec::new(),
+            selected: 0,
+            scroll_offset: 0,
+        });
+        app.claim_focus_target(FocusTarget::Mention);
+
+        handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+        );
+
+        assert!(app.mention.is_none());
+        assert_eq!(app.focus_owner(), FocusOwner::TodoList);
+    }
+
+    #[test]
+    fn up_down_without_focus_scrolls_chat() {
+        let mut app = make_test_app();
+        app.viewport.scroll_target = 5;
+        app.viewport.auto_scroll = true;
+
+        handle_normal_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(app.viewport.scroll_target, 4);
+        assert!(!app.viewport.auto_scroll);
+
+        handle_normal_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(app.viewport.scroll_target, 5);
     }
 }

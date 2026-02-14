@@ -21,6 +21,7 @@ mod header;
 mod help;
 mod input;
 mod layout;
+mod markdown;
 mod message;
 mod tables;
 pub mod theme;
@@ -57,13 +58,13 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     // Body: chat (includes welcome text when no messages yet)
     chat::render(frame, areas.body, app);
 
-    // Todo panel (between chat and input)
+    // Input separator (above)
+    render_separator(frame, areas.input_sep);
+
+    // Todo panel (below input top separator, above input)
     if areas.todo.height > 0 {
         todo::render(frame, areas.todo, app);
     }
-
-    // Input separator (above)
-    render_separator(frame, areas.input_sep);
 
     // Input
     input::render(frame, areas.input, app);

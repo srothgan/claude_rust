@@ -119,6 +119,27 @@ async fn multiple_permissions_queue_in_order() {
     }
 }
 
+#[tokio::test]
+async fn duplicate_permission_request_is_rejected_without_duplicate_queue_entry() {
+    let mut app = test_app();
+    let mut first_rx = setup_permission(&mut app, "tc-dup", allow_deny_options());
+
+    let (response_tx, mut duplicate_rx) = oneshot::channel();
+    let tool_call_update = acp::ToolCallUpdate::new("tc-dup", acp::ToolCallUpdateFields::new());
+    let request =
+        acp::RequestPermissionRequest::new("test-session", tool_call_update, allow_deny_options());
+    send_acp_event(&mut app, ClientEvent::PermissionRequest { request, response_tx });
+
+    assert_eq!(app.pending_permission_ids, vec!["tc-dup"]);
+    assert!(matches!(first_rx.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
+
+    let resp = duplicate_rx.try_recv().expect("duplicate permission should be auto-rejected");
+    let acp::RequestPermissionOutcome::Selected(selected) = resp.outcome else {
+        panic!("expected Selected outcome from duplicate auto-reject");
+    };
+    assert_eq!(selected.option_id.to_string(), "deny");
+}
+
 // --- Scroll interaction during streaming ---
 
 #[tokio::test]

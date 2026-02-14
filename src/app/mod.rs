@@ -16,8 +16,10 @@
 
 mod connect;
 mod events;
+mod focus;
 pub(crate) mod input;
 mod input_submit;
+mod keys;
 pub(crate) mod mention;
 pub(crate) mod paste_burst;
 mod permissions;
@@ -29,6 +31,7 @@ mod todos;
 // Re-export all public types so `crate::app::App`, `crate::app::BlockCache`, etc. still work.
 pub use connect::{create_app, start_connection};
 pub use events::{handle_acp_event, handle_terminal_event};
+pub use focus::{FocusManager, FocusOwner, FocusTarget};
 pub use input::InputState;
 pub(crate) use selection::normalize_selection;
 pub use state::{
