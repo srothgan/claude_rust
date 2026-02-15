@@ -16,21 +16,16 @@
 
 use clap::Parser;
 use claude_rust::Cli;
+use std::fs::OpenOptions;
 use std::time::Instant;
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    init_tracing(&cli)?;
 
-    // Write tracing logs to debug.log file so they don't corrupt the TUI.
-    // Activate by setting RUST_LOG env var (e.g. RUST_LOG=debug).
-    if std::env::var("RUST_LOG").is_ok()
-        && let Ok(log_file) = std::fs::File::create("debug.log")
-    {
-        tracing_subscriber::fmt()
-            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-            .with_writer(log_file)
-            .with_ansi(false)
-            .init();
+    #[cfg(not(feature = "perf"))]
+    if cli.perf_log.is_some() {
+        return Err(anyhow::anyhow!("`--perf-log` requires a binary built with `--features perf`"));
     }
 
     let resolve_started = Instant::now();
@@ -62,4 +57,56 @@ fn main() -> anyhow::Result<()> {
 
         result
     }))
+}
+
+fn init_tracing(cli: &Cli) -> anyhow::Result<()> {
+    let Some(path) = cli.log_file.as_ref() else {
+        if std::env::var_os("RUST_LOG").is_some() {
+            eprintln!(
+                "RUST_LOG is set, but tracing is disabled without --log-file <PATH>. \
+Use --log-file to enable diagnostics."
+            );
+        }
+        return Ok(());
+    };
+
+    let directives = cli
+        .log_filter
+        .clone()
+        .or_else(|| std::env::var("RUST_LOG").ok())
+        .unwrap_or_else(|| "info".to_owned());
+    let filter = tracing_subscriber::EnvFilter::try_new(directives.as_str())
+        .map_err(|e| anyhow::anyhow!("invalid tracing filter `{}`: {e}", directives))?;
+
+    let mut options = OpenOptions::new();
+    options.create(true).write(true);
+    if cli.log_append {
+        options.append(true);
+    } else {
+        options.truncate(true);
+    }
+    let file = options
+        .open(path)
+        .map_err(|e| anyhow::anyhow!("failed to open log file {}: {e}", path.display()))?;
+
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(file)
+        .with_ansi(false)
+        .with_file(true)
+        .with_line_number(true)
+        .with_target(true)
+        .try_init()
+        .map_err(|e| anyhow::anyhow!("failed to initialize tracing subscriber: {e}"))?;
+
+    tracing::info!(
+        target: "diagnostics",
+        version = env!("CARGO_PKG_VERSION"),
+        log_file = %path.display(),
+        log_filter = %directives,
+        log_append = cli.log_append,
+        "tracing enabled"
+    );
+
+    Ok(())
 }

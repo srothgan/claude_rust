@@ -37,40 +37,60 @@ use ratatui::widgets::Paragraph;
 
 pub fn render(frame: &mut Frame, app: &mut App) {
     let _t = app.perf.as_ref().map(|p| p.start("ui::render"));
-    app.cached_frame_area = frame.area();
-    let todo_height = todo::compute_height(app);
-    let help_height = help::compute_height(app, frame.area().width);
-    let areas = layout::compute(
-        frame.area(),
-        input::visual_line_count(app, frame.area().width),
-        true,
-        todo_height,
-        help_height,
-    );
+    let frame_area = frame.area();
+    app.cached_frame_area = frame_area;
+    crate::perf::mark_with("ui::frame_width", "cols", usize::from(frame_area.width));
+    crate::perf::mark_with("ui::frame_height", "rows", usize::from(frame_area.height));
+
+    let todo_height = {
+        let _t = app.perf.as_ref().map(|p| p.start("ui::todo_height"));
+        todo::compute_height(app)
+    };
+    let help_height = {
+        let _t = app.perf.as_ref().map(|p| p.start("ui::help_height"));
+        help::compute_height(app, frame_area.width)
+    };
+    let input_visual_lines = {
+        let _t = app.perf.as_ref().map(|p| p.start("ui::input_visual_lines"));
+        input::visual_line_count(app, frame_area.width)
+    };
+    let areas = {
+        let _t = app.perf.as_ref().map(|p| p.start("ui::layout"));
+        layout::compute(frame_area, input_visual_lines, true, todo_height, help_height)
+    };
 
     // Header bar (always visible)
     if areas.header.height > 0 {
+        let _t = app.perf.as_ref().map(|p| p.start("ui::header"));
         render_separator(frame, areas.header_top_sep);
         header::render(frame, areas.header, app);
         render_separator(frame, areas.header_bot_sep);
     }
 
     // Body: chat (includes welcome text when no messages yet)
-    chat::render(frame, areas.body, app);
+    {
+        let _t = app.perf.as_ref().map(|p| p.start("ui::chat"));
+        chat::render(frame, areas.body, app);
+    }
 
     // Input separator (above)
     render_separator(frame, areas.input_sep);
 
     // Todo panel (below input top separator, above input)
     if areas.todo.height > 0 {
+        let _t = app.perf.as_ref().map(|p| p.start("ui::todo"));
         todo::render(frame, areas.todo, app);
     }
 
     // Input
-    input::render(frame, areas.input, app);
+    {
+        let _t = app.perf.as_ref().map(|p| p.start("ui::input"));
+        input::render(frame, areas.input, app);
+    }
 
     // Autocomplete dropdown (floating overlay above input)
     if autocomplete::is_active(app) {
+        let _t = app.perf.as_ref().map(|p| p.start("ui::autocomplete"));
         autocomplete::render(frame, areas.input, app);
     }
 
@@ -79,13 +99,18 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     // Help overlay (below input separator)
     if areas.help.height > 0 {
+        let _t = app.perf.as_ref().map(|p| p.start("ui::help"));
         help::render(frame, areas.help, app);
     }
 
     // Footer: mode pill left, command hints right
     if let Some(footer_area) = areas.footer {
+        let _t = app.perf.as_ref().map(|p| p.start("ui::footer"));
         render_footer(frame, footer_area, app);
     }
+
+    let fps_y = if areas.header.height > 0 { areas.header.y } else { frame_area.y };
+    render_perf_fps_overlay(frame, frame_area, fps_y, app);
 }
 
 const FOOTER_PAD: u16 = 2;
@@ -142,3 +167,33 @@ fn render_separator(frame: &mut Frame, area: Rect) {
     let line = Line::from(Span::styled(sep_str, Style::default().fg(theme::DIM)));
     frame.render_widget(Paragraph::new(line), area);
 }
+
+#[cfg(feature = "perf")]
+fn render_perf_fps_overlay(frame: &mut Frame, frame_area: Rect, y: u16, app: &App) {
+    if app.perf.is_none() || frame_area.height == 0 || y >= frame_area.y + frame_area.height {
+        return;
+    }
+    let Some(fps) = app.frame_fps() else {
+        return;
+    };
+
+    let color = if fps >= 55.0 {
+        Color::Green
+    } else if fps >= 45.0 {
+        Color::Yellow
+    } else {
+        Color::Red
+    };
+    let text = format!("[{fps:>5.1} FPS]");
+    let width = u16::try_from(text.len()).unwrap_or(frame_area.width).min(frame_area.width);
+    let x = frame_area.x + frame_area.width.saturating_sub(width);
+    let area = Rect { x, y, width, height: 1 };
+    let line = Line::from(Span::styled(
+        text,
+        Style::default().fg(color).add_modifier(ratatui::style::Modifier::BOLD),
+    ));
+    frame.render_widget(Paragraph::new(line), area);
+}
+
+#[cfg(not(feature = "perf"))]
+fn render_perf_fps_overlay(_frame: &mut Frame, _frame_area: Rect, _y: u16, _app: &App) {}

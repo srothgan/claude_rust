@@ -102,7 +102,12 @@ pub fn create_app(cli: &Cli) -> App {
         cached_footer_line: None,
         terminal_tool_calls: Vec::new(),
         needs_redraw: true,
-        perf: crate::perf::PerfLogger::open(std::path::Path::new("performance.log")),
+        perf: cli
+            .perf_log
+            .as_deref()
+            .and_then(|path| crate::perf::PerfLogger::open(path, cli.perf_append)),
+        fps_ema: None,
+        last_frame_at: None,
     };
 
     app.refresh_git_branch();

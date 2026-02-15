@@ -161,10 +161,15 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
             if let Some(ref mut perf) = app.perf {
                 perf.next_frame();
             }
+            if app.perf.is_some() {
+                app.mark_frame_presented(Instant::now());
+            }
             #[allow(clippy::drop_non_drop)]
             {
                 let timer = app.perf.as_ref().map(|p| p.start("frame_total"));
+                let draw_timer = app.perf.as_ref().map(|p| p.start("frame::terminal_draw"));
                 terminal.draw(|f| crate::ui::render(f, app))?;
+                drop(draw_timer);
                 drop(timer);
             }
             app.needs_redraw = false;
