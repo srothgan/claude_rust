@@ -150,6 +150,331 @@ pub fn render_message(
     out.push(Line::default());
 }
 
+/// Measure message height from block caches + width-aware wrapped heights.
+/// Returns `(visual_height_rows, lines_wrapped_for_height_updates)`.
+///
+/// Accuracy is preserved because each block height is computed with
+/// `Paragraph::line_count(width)` on the exact rendered `Vec<Line>`.
+pub fn measure_message_height_cached(
+    msg: &mut ChatMessage,
+    spinner: &SpinnerState,
+    width: u16,
+) -> (usize, usize) {
+    let mut height = 1usize; // role label
+    let mut wrapped_lines = 0usize;
+
+    match msg.role {
+        MessageRole::User => {
+            for block in &mut msg.blocks {
+                if let MessageBlock::Text(text, cache, incr) = block {
+                    let (h, lines) = text_block_height_cached(
+                        text,
+                        cache,
+                        incr,
+                        width,
+                        Some(theme::USER_MSG_BG),
+                        true,
+                    );
+                    height += h;
+                    wrapped_lines += lines;
+                }
+            }
+        }
+        MessageRole::Assistant => {
+            if msg.blocks.is_empty() && spinner.is_active && spinner.is_last_message {
+                // "Thinking..." line + trailing message separator
+                return (height + 2, wrapped_lines);
+            }
+
+            let mut prev_was_tool = false;
+            let mut lines_after_label = 0usize;
+            for block in &mut msg.blocks {
+                match block {
+                    MessageBlock::Text(text, cache, incr) => {
+                        if prev_was_tool {
+                            height += 1;
+                            lines_after_label += 1;
+                        }
+                        let (h, lines) =
+                            text_block_height_cached(text, cache, incr, width, None, false);
+                        height += h;
+                        lines_after_label += h;
+                        wrapped_lines += lines;
+                        prev_was_tool = false;
+                    }
+                    MessageBlock::ToolCall(tc) => {
+                        let tc = tc.as_mut();
+                        if tc.hidden {
+                            continue;
+                        }
+                        if !prev_was_tool && lines_after_label > 0 {
+                            height += 1;
+                            lines_after_label += 1;
+                        }
+                        let (h, lines) =
+                            tool_call::measure_tool_call_height_cached(tc, width, spinner.frame);
+                        height += h;
+                        lines_after_label += h;
+                        wrapped_lines += lines;
+                        prev_was_tool = true;
+                    }
+                }
+            }
+
+            if spinner.is_thinking_mid_turn {
+                // Blank line + "Thinking..."
+                height += 2;
+            }
+        }
+        MessageRole::System => {
+            for block in &mut msg.blocks {
+                if let MessageBlock::Text(text, cache, incr) = block {
+                    let (h, lines) =
+                        text_block_height_cached(text, cache, incr, width, None, false);
+                    height += h;
+                    wrapped_lines += lines;
+                }
+            }
+        }
+    }
+
+    // Blank separator between messages
+    (height + 1, wrapped_lines)
+}
+
+/// Render a message while consuming as many whole leading rows as possible.
+///
+/// `skip_rows` is measured in wrapped visual rows. We skip entire structural parts
+/// (label/separators/full blocks) without rendering them. If skipping lands inside
+/// a block, that block is rendered in full and the remaining skip is returned so
+/// the caller can apply `Paragraph::scroll()` for exact intra-block offset.
+pub fn render_message_from_offset(
+    msg: &mut ChatMessage,
+    spinner: &SpinnerState,
+    width: u16,
+    skip_rows: usize,
+    out: &mut Vec<Line<'static>>,
+) -> usize {
+    let mut remaining_skip = skip_rows;
+    let mut can_consume_skip = true;
+
+    emit_line_with_skip(role_label_line(&msg.role), out, &mut remaining_skip, can_consume_skip);
+
+    match msg.role {
+        MessageRole::User => {
+            for block in &mut msg.blocks {
+                if let MessageBlock::Text(text, cache, incr) = block {
+                    let (h, _) = text_block_height_cached(
+                        text,
+                        cache,
+                        incr,
+                        width,
+                        Some(theme::USER_MSG_BG),
+                        true,
+                    );
+                    let mut render = |dst: &mut Vec<Line<'static>>| {
+                        render_text_cached(
+                            text,
+                            cache,
+                            incr,
+                            width,
+                            Some(theme::USER_MSG_BG),
+                            true,
+                            dst,
+                        );
+                    };
+                    if should_skip_whole_block(h, &mut remaining_skip, &mut can_consume_skip) {
+                        continue;
+                    }
+                    render(out);
+                }
+            }
+        }
+        MessageRole::Assistant => {
+            if msg.blocks.is_empty() && spinner.is_active && spinner.is_last_message {
+                emit_line_with_skip(
+                    thinking_line(spinner.frame),
+                    out,
+                    &mut remaining_skip,
+                    can_consume_skip,
+                );
+                emit_line_with_skip(Line::default(), out, &mut remaining_skip, can_consume_skip);
+                return remaining_skip;
+            }
+
+            let mut prev_was_tool = false;
+            let mut lines_after_label = 0usize;
+            for block in &mut msg.blocks {
+                match block {
+                    MessageBlock::Text(text, cache, incr) => {
+                        if prev_was_tool {
+                            emit_line_with_skip(
+                                Line::default(),
+                                out,
+                                &mut remaining_skip,
+                                can_consume_skip,
+                            );
+                            lines_after_label += 1;
+                        }
+                        let (h, _) =
+                            text_block_height_cached(text, cache, incr, width, None, false);
+                        let mut render = |dst: &mut Vec<Line<'static>>| {
+                            render_text_cached(text, cache, incr, width, None, false, dst);
+                        };
+                        if !should_skip_whole_block(h, &mut remaining_skip, &mut can_consume_skip) {
+                            render(out);
+                        }
+                        lines_after_label += h;
+                        prev_was_tool = false;
+                    }
+                    MessageBlock::ToolCall(tc) => {
+                        let tc = tc.as_mut();
+                        if tc.hidden {
+                            continue;
+                        }
+                        if !prev_was_tool && lines_after_label > 0 {
+                            emit_line_with_skip(
+                                Line::default(),
+                                out,
+                                &mut remaining_skip,
+                                can_consume_skip,
+                            );
+                            lines_after_label += 1;
+                        }
+                        let (h, _) =
+                            tool_call::measure_tool_call_height_cached(tc, width, spinner.frame);
+                        let mut render = |dst: &mut Vec<Line<'static>>| {
+                            tool_call::render_tool_call_cached(tc, width, spinner.frame, dst);
+                        };
+                        if !should_skip_whole_block(h, &mut remaining_skip, &mut can_consume_skip) {
+                            render(out);
+                        }
+                        lines_after_label += h;
+                        prev_was_tool = true;
+                    }
+                }
+            }
+
+            if spinner.is_thinking_mid_turn {
+                emit_line_with_skip(Line::default(), out, &mut remaining_skip, can_consume_skip);
+                emit_line_with_skip(
+                    thinking_line(spinner.frame),
+                    out,
+                    &mut remaining_skip,
+                    can_consume_skip,
+                );
+            }
+        }
+        MessageRole::System => {
+            for block in &mut msg.blocks {
+                if let MessageBlock::Text(text, cache, incr) = block {
+                    let (h, _) = text_block_height_cached(text, cache, incr, width, None, false);
+                    let mut render = |dst: &mut Vec<Line<'static>>| {
+                        let mut lines = Vec::new();
+                        render_text_cached(text, cache, incr, width, None, false, &mut lines);
+                        tint_lines(&mut lines, theme::STATUS_ERROR);
+                        dst.extend(lines);
+                    };
+                    if !should_skip_whole_block(h, &mut remaining_skip, &mut can_consume_skip) {
+                        render(out);
+                    }
+                }
+            }
+        }
+    }
+
+    emit_line_with_skip(Line::default(), out, &mut remaining_skip, can_consume_skip);
+    remaining_skip
+}
+
+fn emit_line_with_skip(
+    line: Line<'static>,
+    out: &mut Vec<Line<'static>>,
+    remaining_skip: &mut usize,
+    can_consume_skip: bool,
+) {
+    if can_consume_skip && *remaining_skip > 0 {
+        *remaining_skip -= 1;
+    } else {
+        out.push(line);
+    }
+}
+
+fn should_skip_whole_block(
+    block_h: usize,
+    remaining_skip: &mut usize,
+    can_consume_skip: &mut bool,
+) -> bool {
+    if !*can_consume_skip {
+        return false;
+    }
+    if *remaining_skip >= block_h {
+        *remaining_skip -= block_h;
+        return true;
+    }
+    if *remaining_skip > 0 {
+        // We have to render this block, but keep the remaining intra-block skip
+        // for Paragraph::scroll().
+        *can_consume_skip = false;
+    }
+    false
+}
+
+fn role_label_line(role: &MessageRole) -> Line<'static> {
+    match role {
+        MessageRole::User => Line::from(Span::styled(
+            "User",
+            Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
+        )),
+        MessageRole::Assistant => Line::from(Span::styled(
+            "Claude",
+            Style::default().fg(theme::ROLE_ASSISTANT).add_modifier(Modifier::BOLD),
+        )),
+        MessageRole::System => Line::from(Span::styled(
+            "System",
+            Style::default().fg(theme::STATUS_ERROR).add_modifier(Modifier::BOLD),
+        )),
+    }
+}
+
+fn thinking_line(frame: usize) -> Line<'static> {
+    let ch = SPINNER_FRAMES[frame % SPINNER_FRAMES.len()];
+    Line::from(Span::styled(format!("{ch} Thinking..."), Style::default().fg(theme::DIM)))
+}
+
+fn text_block_height_cached(
+    text: &str,
+    cache: &mut BlockCache,
+    incr: &mut IncrementalMarkdown,
+    width: u16,
+    bg: Option<Color>,
+    preserve_newlines: bool,
+) -> (usize, usize) {
+    if let Some(h) = cache.height_at(width) {
+        return (h, 0);
+    }
+
+    if let Some(cached_lines) = cache.get().cloned() {
+        let h = Paragraph::new(Text::from(cached_lines.clone()))
+            .wrap(Wrap { trim: false })
+            .line_count(width);
+        cache.set_height(h, width);
+        return (h, cached_lines.len());
+    }
+
+    let mut scratch = Vec::new();
+    render_text_cached(text, cache, incr, width, bg, preserve_newlines, &mut scratch);
+
+    if let Some(h) = cache.height_at(width) {
+        return (h, scratch.len());
+    }
+
+    let h =
+        Paragraph::new(Text::from(scratch.clone())).wrap(Wrap { trim: false }).line_count(width);
+    cache.set_height(h, width);
+    (h, scratch.len())
+}
+
 fn tint_lines(lines: &mut [Line<'static>], color: Color) {
     for line in lines {
         for span in &mut line.spans {
@@ -208,9 +533,11 @@ pub(super) fn render_text_cached(
 ) {
     // Fast path: full block cache is valid (completed message, no changes)
     if let Some(cached_lines) = cache.get() {
+        crate::perf::mark_with("msg::cache_hit", "lines", cached_lines.len());
         out.extend_from_slice(cached_lines);
         return;
     }
+    crate::perf::mark("msg::cache_miss");
 
     let _t = crate::perf::start("msg::render_text");
 
@@ -232,7 +559,10 @@ pub(super) fn render_text_cached(
     // Store in the full block cache with wrapped height.
     // For streaming messages this will be invalidated on the next chunk,
     // but for completed messages it persists.
-    let h = Paragraph::new(Text::from(fresh.clone())).wrap(Wrap { trim: false }).line_count(width);
+    let h = {
+        let _t = crate::perf::start_with("msg::wrap_height", "lines", fresh.len());
+        Paragraph::new(Text::from(fresh.clone())).wrap(Wrap { trim: false }).line_count(width)
+    };
     cache.store(fresh);
     cache.set_height(h, width);
     if let Some(stored) = cache.get() {
@@ -262,7 +592,9 @@ fn force_markdown_line_breaks(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::{ChatMessage, IncrementalMarkdown, MessageBlock};
     use pretty_assertions::assert_eq;
+    use ratatui::widgets::{Paragraph, Wrap};
 
     // preprocess_markdown
 
@@ -495,5 +827,86 @@ mod tests {
         let result = force_markdown_line_breaks("\n");
         // One empty line, should stay empty with trailing newline
         assert_eq!(result, "\n");
+    }
+
+    fn make_text_message(role: MessageRole, text: &str) -> ChatMessage {
+        ChatMessage {
+            role,
+            blocks: vec![MessageBlock::Text(
+                text.to_owned(),
+                BlockCache::default(),
+                IncrementalMarkdown::from_complete(text),
+            )],
+        }
+    }
+
+    fn ground_truth_height(msg: &mut ChatMessage, spinner: &SpinnerState, width: u16) -> usize {
+        let mut lines = Vec::new();
+        render_message(msg, spinner, width, &mut lines);
+        Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }).line_count(width)
+    }
+
+    #[test]
+    fn measure_height_matches_ground_truth_for_long_soft_wrap() {
+        let text = "A".repeat(500);
+        let spinner = SpinnerState {
+            frame: 0,
+            is_active: false,
+            is_last_message: false,
+            is_thinking_mid_turn: false,
+        };
+
+        let mut measured_msg = make_text_message(MessageRole::User, &text);
+        let mut truth_msg = make_text_message(MessageRole::User, &text);
+
+        let (h, _) = measure_message_height_cached(&mut measured_msg, &spinner, 32);
+        let truth = ground_truth_height(&mut truth_msg, &spinner, 32);
+
+        assert_eq!(h, truth);
+    }
+
+    #[test]
+    fn measure_height_matches_ground_truth_after_resize() {
+        let text =
+            "This is a single very long line without explicit line breaks to stress soft wrapping."
+                .repeat(20);
+        let spinner = SpinnerState {
+            frame: 0,
+            is_active: false,
+            is_last_message: false,
+            is_thinking_mid_turn: false,
+        };
+
+        let mut measured_msg = make_text_message(MessageRole::Assistant, &text);
+        let mut truth_wide = make_text_message(MessageRole::Assistant, &text);
+        let mut truth_narrow = make_text_message(MessageRole::Assistant, &text);
+
+        let (h_wide, _) = measure_message_height_cached(&mut measured_msg, &spinner, 100);
+        let wide_truth = ground_truth_height(&mut truth_wide, &spinner, 100);
+        assert_eq!(h_wide, wide_truth);
+
+        // Reuse the same message to hit width-mismatch cache path.
+        let (h_narrow, _) = measure_message_height_cached(&mut measured_msg, &spinner, 28);
+        let narrow_truth = ground_truth_height(&mut truth_narrow, &spinner, 28);
+        assert_eq!(h_narrow, narrow_truth);
+    }
+
+    #[test]
+    fn render_from_offset_can_skip_entire_message() {
+        let spinner = SpinnerState {
+            frame: 0,
+            is_active: false,
+            is_last_message: false,
+            is_thinking_mid_turn: false,
+        };
+        let mut msg = make_text_message(MessageRole::User, "hello\nworld");
+        let mut truth_msg = make_text_message(MessageRole::User, "hello\nworld");
+        let total = ground_truth_height(&mut truth_msg, &spinner, 120);
+
+        let mut out = Vec::new();
+        let rem = render_message_from_offset(&mut msg, &spinner, 120, total + 3, &mut out);
+
+        assert!(out.is_empty());
+        assert_eq!(rem, 3);
     }
 }

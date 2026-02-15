@@ -69,19 +69,23 @@ pub fn render_tool_call_cached(
     if is_execute {
         // Ensure content is cached
         if tc.cache.get().is_none() {
+            crate::perf::mark("tc::cache_miss_execute");
             let _t = crate::perf::start("tc::render_exec");
             let content = render_execute_content(tc);
             tc.cache.store(content);
-        }
-        // Get content length for height, set height, then re-borrow for border rendering
-        if let Some(content) = tc.cache.get() {
-            let content_len = content.len();
-            // Height = content_lines + 2 (top border + bottom border)
-            tc.cache.set_height(content_len + 2, width);
+        } else {
+            crate::perf::mark("tc::cache_hit_execute");
         }
         // Apply borders at render time with current width
         if let Some(content) = tc.cache.get() {
             let bordered = render_execute_with_borders(tc, content, width, spinner_frame);
+            let h = {
+                let _t = crate::perf::start_with("tc::wrap_height_exec", "lines", bordered.len());
+                Paragraph::new(Text::from(bordered.clone()))
+                    .wrap(Wrap { trim: false })
+                    .line_count(width)
+            };
+            tc.cache.set_height(h, width);
             out.extend(bordered);
         }
         return;
@@ -94,13 +98,17 @@ pub fn render_tool_call_cached(
     // Completed/failed: full cache (title + body together)
     if !is_in_progress {
         if let Some(cached_lines) = tc.cache.get() {
+            crate::perf::mark_with("tc::cache_hit", "lines", cached_lines.len());
             out.extend_from_slice(cached_lines);
             return;
         }
+        crate::perf::mark("tc::cache_miss");
         let _t = crate::perf::start("tc::render");
         let fresh = render_tool_call(tc, width, spinner_frame);
-        let h =
-            Paragraph::new(Text::from(fresh.clone())).wrap(Wrap { trim: false }).line_count(width);
+        let h = {
+            let _t = crate::perf::start_with("tc::wrap_height", "lines", fresh.len());
+            Paragraph::new(Text::from(fresh.clone())).wrap(Wrap { trim: false }).line_count(width)
+        };
         tc.cache.store(fresh);
         tc.cache.set_height(h, width);
         if let Some(stored) = tc.cache.get() {
@@ -115,18 +123,92 @@ pub fn render_tool_call_cached(
 
     // Body: use cache if valid, otherwise render and cache.
     if let Some(cached_body) = tc.cache.get() {
+        crate::perf::mark_with("tc::cache_hit_body", "lines", cached_body.len());
         out.extend_from_slice(cached_body);
     } else {
+        crate::perf::mark("tc::cache_miss_body");
         let _t = crate::perf::start("tc::render_body");
         let body = render_tool_call_body(tc);
-        let h =
-            Paragraph::new(Text::from(body.clone())).wrap(Wrap { trim: false }).line_count(width);
+        let h = {
+            let _t = crate::perf::start_with("tc::wrap_height_body", "lines", body.len());
+            Paragraph::new(Text::from(body.clone())).wrap(Wrap { trim: false }).line_count(width)
+        };
         tc.cache.store(body);
         tc.cache.set_height(h, width);
         if let Some(stored) = tc.cache.get() {
             out.extend_from_slice(stored);
         }
     }
+}
+
+/// Ensure tool call caches are up-to-date and return visual wrapped height at `width`.
+/// Returns `(height, lines_wrapped_for_measurement)`.
+pub fn measure_tool_call_height_cached(
+    tc: &mut ToolCallInfo,
+    width: u16,
+    spinner_frame: usize,
+) -> (usize, usize) {
+    let is_execute = matches!(tc.kind, acp::ToolKind::Execute);
+    if is_execute {
+        if tc.cache.get().is_none() {
+            let content = render_execute_content(tc);
+            tc.cache.store(content);
+        }
+        if let Some(content) = tc.cache.get() {
+            let bordered = render_execute_with_borders(tc, content, width, spinner_frame);
+            let h = Paragraph::new(Text::from(bordered.clone()))
+                .wrap(Wrap { trim: false })
+                .line_count(width);
+            tc.cache.set_height(h, width);
+            return (h, bordered.len());
+        }
+        return (0, 0);
+    }
+
+    let is_in_progress =
+        matches!(tc.status, acp::ToolCallStatus::InProgress | acp::ToolCallStatus::Pending);
+
+    if !is_in_progress {
+        if let Some(h) = tc.cache.height_at(width) {
+            return (h, 0);
+        }
+        if let Some(cached_lines) = tc.cache.get().cloned() {
+            let h = Paragraph::new(Text::from(cached_lines.clone()))
+                .wrap(Wrap { trim: false })
+                .line_count(width);
+            tc.cache.set_height(h, width);
+            return (h, cached_lines.len());
+        }
+        let fresh = render_tool_call(tc, width, spinner_frame);
+        let h =
+            Paragraph::new(Text::from(fresh.clone())).wrap(Wrap { trim: false }).line_count(width);
+        tc.cache.store(fresh);
+        tc.cache.set_height(h, width);
+        return (h, tc.cache.get().map_or(0, Vec::len));
+    }
+
+    // In-progress non-execute: title is dynamic, body is cached separately.
+    let title = render_tool_call_title(tc, width, spinner_frame);
+    let title_h =
+        Paragraph::new(Text::from(vec![title])).wrap(Wrap { trim: false }).line_count(width);
+
+    if let Some(body_h) = tc.cache.height_at(width) {
+        return (title_h + body_h, 1);
+    }
+    if let Some(cached_body) = tc.cache.get().cloned() {
+        let body_h = Paragraph::new(Text::from(cached_body.clone()))
+            .wrap(Wrap { trim: false })
+            .line_count(width);
+        tc.cache.set_height(body_h, width);
+        return (title_h + body_h, cached_body.len() + 1);
+    }
+
+    let body = render_tool_call_body(tc);
+    let body_h =
+        Paragraph::new(Text::from(body.clone())).wrap(Wrap { trim: false }).line_count(width);
+    tc.cache.store(body);
+    tc.cache.set_height(body_h, width);
+    (title_h + body_h, tc.cache.get().map_or(1, |b| b.len() + 1))
 }
 
 /// Render just the title line for a non-Execute tool call (the line containing the spinner icon).

@@ -18,6 +18,7 @@ use crate::acp::client::ClientEvent;
 use agent_client_protocol as acp;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
+use std::time::Instant;
 use tokio::sync::mpsc;
 
 use super::focus::{FocusContext, FocusManager, FocusOwner, FocusTarget};
@@ -170,9 +171,34 @@ pub struct App {
     /// Taken out (`Option::take`) during render, used, then put back to avoid
     /// borrow conflicts with `&mut App`.
     pub perf: Option<crate::perf::PerfLogger>,
+    /// Smoothed frames-per-second (EMA of presented frame cadence).
+    pub fps_ema: Option<f32>,
+    /// Timestamp of the previous presented frame.
+    pub last_frame_at: Option<Instant>,
 }
 
 impl App {
+    /// Mark one presented frame at `now`, updating smoothed FPS.
+    pub fn mark_frame_presented(&mut self, now: Instant) {
+        let Some(prev) = self.last_frame_at.replace(now) else {
+            return;
+        };
+        let dt = now.saturating_duration_since(prev).as_secs_f32();
+        if dt <= f32::EPSILON {
+            return;
+        }
+        let fps = (1.0 / dt).clamp(0.0, 240.0);
+        self.fps_ema = Some(match self.fps_ema {
+            Some(current) => current * 0.9 + fps * 0.1,
+            None => fps,
+        });
+    }
+
+    #[must_use]
+    pub fn frame_fps(&self) -> Option<f32> {
+        self.fps_ema
+    }
+
     /// Track a Task tool call as active (in-progress subagent).
     pub fn insert_active_task(&mut self, id: String) {
         self.active_task_ids.insert(id);
@@ -285,6 +311,8 @@ impl App {
             terminal_tool_calls: Vec::new(),
             needs_redraw: true,
             perf: None,
+            fps_ema: None,
+            last_frame_at: None,
         }
     }
 
