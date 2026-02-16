@@ -76,7 +76,7 @@ Use --log-file to enable diagnostics."
         .or_else(|| std::env::var("RUST_LOG").ok())
         .unwrap_or_else(|| "info".to_owned());
     let filter = tracing_subscriber::EnvFilter::try_new(directives.as_str())
-        .map_err(|e| anyhow::anyhow!("invalid tracing filter `{}`: {e}", directives))?;
+        .map_err(|e| anyhow::anyhow!("invalid tracing filter `{directives}`: {e}"))?;
 
     let mut options = OpenOptions::new();
     options.create(true).write(true);

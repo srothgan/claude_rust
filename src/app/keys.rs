@@ -300,10 +300,12 @@ fn should_sync_mention_after_key(app: &App, key: KeyEvent) -> bool {
             | KeyCode::Left
             | KeyCode::Right
             | KeyCode::Home
-            | KeyCode::End,
+            | KeyCode::End
+            | KeyCode::Backspace
+            | KeyCode::Delete
+            | KeyCode::Enter,
             _,
         ) => true,
-        (KeyCode::Backspace | KeyCode::Delete | KeyCode::Enter, _) => true,
         (KeyCode::Char(_), m) if is_printable_text_modifiers(m) => true,
         _ => false,
     }

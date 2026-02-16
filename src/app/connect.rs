@@ -50,9 +50,10 @@ pub fn create_app(cli: &Cli) -> App {
     let terminals: TerminalMap = Rc::new(std::cell::RefCell::new(HashMap::new()));
 
     let cwd_display = shorten_cwd(&cwd);
+    let initial_model_name = "Connecting...".to_owned();
 
     let mut app = App {
-        messages: Vec::new(),
+        messages: vec![super::ChatMessage::welcome(&initial_model_name, &cwd_display)],
         viewport: ChatViewport::new(),
         input: super::InputState::new(),
         status: AppStatus::Connecting,
@@ -60,7 +61,7 @@ pub fn create_app(cli: &Cli) -> App {
         session_id: None,
         conn: None,
         adapter_child: None,
-        model_name: "Connecting...".into(),
+        model_name: initial_model_name,
         cwd_raw: cwd.to_string_lossy().to_string(),
         cwd: cwd_display,
         files_accessed: 0,
@@ -94,7 +95,6 @@ pub fn create_app(cli: &Cli) -> App {
         paste_burst: crate::app::paste_burst::PasteBurstDetector::new(),
         pending_paste_text: String::new(),
         file_cache: None,
-        cached_welcome_lines: None,
         input_wrap_cache: None,
         cached_todo_compact: None,
         git_branch: None,

@@ -1,4 +1,4 @@
-// claude_rust — A native Rust terminal interface for Claude Code
+﻿// claude_rust — A native Rust terminal interface for Claude Code
 // Copyright (C) 2025  Simon Peter Rothgang
 //
 // This program is free software: you can redistribute it and/or modify
@@ -14,7 +14,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use crate::app::{BlockCache, ChatMessage, IncrementalMarkdown, MessageBlock, MessageRole};
+use crate::app::{
+    BlockCache, ChatMessage, IncrementalMarkdown, MessageBlock, MessageRole, WelcomeBlock,
+};
 use crate::ui::tables;
 use crate::ui::theme;
 use crate::ui::tool_call;
@@ -25,6 +27,18 @@ use ratatui::widgets::{Paragraph, Wrap};
 const SPINNER_FRAMES: &[char] = &[
     '\u{280B}', '\u{2819}', '\u{2839}', '\u{2838}', '\u{283C}', '\u{2834}', '\u{2826}', '\u{2827}',
     '\u{2807}', '\u{280F}',
+];
+
+const FERRIS_SAYS: &[&str] = &[
+    r" --------------------------------- ",
+    r"< Welcome back to Claude, in Rust! >",
+    r" --------------------------------- ",
+    r"        \             ",
+    r"         \            ",
+    r"            _~^~^~_  ",
+    r"        \) /  o o  \ (/",
+    r"          '_   -   _' ",
+    r"          / '-----' \ ",
 ];
 
 /// Snapshot of the app state needed by the spinner -- extracted before
@@ -51,6 +65,14 @@ pub fn render_message(
     out: &mut Vec<Line<'static>>,
 ) {
     match msg.role {
+        MessageRole::Welcome => {
+            out.push(role_label_line(&msg.role));
+            for block in &mut msg.blocks {
+                if let MessageBlock::Welcome(welcome) = block {
+                    render_welcome_cached(welcome, width, out);
+                }
+            }
+        }
         MessageRole::User => {
             // "User" label in gray bold
             out.push(Line::from(Span::styled(
@@ -116,6 +138,7 @@ pub fn render_message(
                         tool_call::render_tool_call_cached(tc, width, spinner.frame, out);
                         prev_was_tool = true;
                     }
+                    MessageBlock::Welcome(_) => {}
                 }
             }
 
@@ -180,6 +203,15 @@ pub fn measure_message_height_cached(
                 }
             }
         }
+        MessageRole::Welcome => {
+            for block in &mut msg.blocks {
+                if let MessageBlock::Welcome(welcome) = block {
+                    let (h, lines) = welcome_block_height_cached(welcome, width);
+                    height += h;
+                    wrapped_lines += lines;
+                }
+            }
+        }
         MessageRole::Assistant => {
             if msg.blocks.is_empty() && spinner.is_active && spinner.is_last_message {
                 // "Thinking..." line + trailing message separator
@@ -218,6 +250,7 @@ pub fn measure_message_height_cached(
                         wrapped_lines += lines;
                         prev_was_tool = true;
                     }
+                    MessageBlock::Welcome(_) => {}
                 }
             }
 
@@ -248,6 +281,7 @@ pub fn measure_message_height_cached(
 /// (label/separators/full blocks) without rendering them. If skipping lands inside
 /// a block, that block is rendered in full and the remaining skip is returned so
 /// the caller can apply `Paragraph::scroll()` for exact intra-block offset.
+#[allow(clippy::too_many_lines)]
 pub fn render_message_from_offset(
     msg: &mut ChatMessage,
     spinner: &SpinnerState,
@@ -261,6 +295,20 @@ pub fn render_message_from_offset(
     emit_line_with_skip(role_label_line(&msg.role), out, &mut remaining_skip, can_consume_skip);
 
     match msg.role {
+        MessageRole::Welcome => {
+            for block in &mut msg.blocks {
+                if let MessageBlock::Welcome(welcome) = block {
+                    let (h, _) = welcome_block_height_cached(welcome, width);
+                    let mut render = |dst: &mut Vec<Line<'static>>| {
+                        render_welcome_cached(welcome, width, dst);
+                    };
+                    if should_skip_whole_block(h, &mut remaining_skip, &mut can_consume_skip) {
+                        continue;
+                    }
+                    render(out);
+                }
+            }
+        }
         MessageRole::User => {
             for block in &mut msg.blocks {
                 if let MessageBlock::Text(text, cache, incr) = block {
@@ -352,6 +400,7 @@ pub fn render_message_from_offset(
                         lines_after_label += h;
                         prev_was_tool = true;
                     }
+                    MessageBlock::Welcome(_) => {}
                 }
             }
 
@@ -422,6 +471,10 @@ fn should_skip_whole_block(
 
 fn role_label_line(role: &MessageRole) -> Line<'static> {
     match role {
+        MessageRole::Welcome => Line::from(Span::styled(
+            "Overview",
+            Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
+        )),
         MessageRole::User => Line::from(Span::styled(
             "User",
             Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
@@ -440,6 +493,81 @@ fn role_label_line(role: &MessageRole) -> Line<'static> {
 fn thinking_line(frame: usize) -> Line<'static> {
     let ch = SPINNER_FRAMES[frame % SPINNER_FRAMES.len()];
     Line::from(Span::styled(format!("{ch} Thinking..."), Style::default().fg(theme::DIM)))
+}
+
+fn welcome_lines(block: &WelcomeBlock) -> Vec<Line<'static>> {
+    let pad = "  ";
+    let mut lines = Vec::new();
+
+    for art_line in FERRIS_SAYS {
+        lines.push(Line::from(Span::styled(
+            format!("{pad}{art_line}"),
+            Style::default().fg(theme::RUST_ORANGE),
+        )));
+    }
+
+    lines.push(Line::default());
+    lines.push(Line::default());
+
+    lines.push(Line::from(vec![
+        Span::styled(format!("{pad}Model: "), Style::default().fg(theme::DIM)),
+        Span::styled(
+            block.model_name.clone(),
+            Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
+        ),
+    ]));
+    lines.push(Line::from(Span::styled(
+        format!("{pad}cwd:   {}", block.cwd),
+        Style::default().fg(theme::DIM),
+    )));
+
+    lines.push(Line::default());
+    lines.push(Line::from(Span::styled(
+        format!("{pad}Tips: Enter to send, Shift+Enter for newline, Ctrl+C to quit"),
+        Style::default().fg(theme::DIM),
+    )));
+    lines.push(Line::default());
+
+    lines
+}
+
+fn render_welcome_cached(block: &mut WelcomeBlock, width: u16, out: &mut Vec<Line<'static>>) {
+    if let Some(cached_lines) = block.cache.get() {
+        out.extend_from_slice(cached_lines);
+        return;
+    }
+
+    let fresh = welcome_lines(block);
+    let h = {
+        let _t = crate::perf::start_with("msg::wrap_height", "lines", fresh.len());
+        Paragraph::new(Text::from(fresh.clone())).wrap(Wrap { trim: false }).line_count(width)
+    };
+    block.cache.store(fresh);
+    block.cache.set_height(h, width);
+    if let Some(stored) = block.cache.get() {
+        out.extend_from_slice(stored);
+    }
+}
+
+fn welcome_block_height_cached(block: &mut WelcomeBlock, width: u16) -> (usize, usize) {
+    if let Some(h) = block.cache.height_at(width) {
+        return (h, 0);
+    }
+
+    if let Some(cached_lines) = block.cache.get().cloned() {
+        let h = Paragraph::new(Text::from(cached_lines.clone()))
+            .wrap(Wrap { trim: false })
+            .line_count(width);
+        block.cache.set_height(h, width);
+        return (h, cached_lines.len());
+    }
+
+    let fresh = welcome_lines(block);
+    let lines = fresh.len();
+    let h = Paragraph::new(Text::from(fresh.clone())).wrap(Wrap { trim: false }).line_count(width);
+    block.cache.store(fresh);
+    block.cache.set_height(h, width);
+    (h, lines)
 }
 
 fn text_block_height_cached(
@@ -840,6 +968,10 @@ mod tests {
         }
     }
 
+    fn make_welcome_message(model_name: &str, cwd: &str) -> ChatMessage {
+        ChatMessage::welcome(model_name, cwd)
+    }
+
     fn ground_truth_height(msg: &mut ChatMessage, spinner: &SpinnerState, width: u16) -> usize {
         let mut lines = Vec::new();
         render_message(msg, spinner, width, &mut lines);
@@ -908,5 +1040,21 @@ mod tests {
 
         assert!(out.is_empty());
         assert_eq!(rem, 3);
+    }
+
+    #[test]
+    fn welcome_height_matches_ground_truth() {
+        let spinner = SpinnerState {
+            frame: 0,
+            is_active: false,
+            is_last_message: false,
+            is_thinking_mid_turn: false,
+        };
+        let mut measured_msg = make_welcome_message("claude-sonnet-4-5", "~/project");
+        let mut truth_msg = make_welcome_message("claude-sonnet-4-5", "~/project");
+
+        let (h, _) = measure_message_height_cached(&mut measured_msg, &spinner, 52);
+        let truth = ground_truth_height(&mut truth_msg, &spinner, 52);
+        assert_eq!(h, truth);
     }
 }

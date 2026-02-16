@@ -149,8 +149,6 @@ pub struct App {
     pub pending_paste_text: String,
     /// Cached file list from cwd (scanned on first `@` trigger).
     pub file_cache: Option<Vec<mention::FileCandidate>>,
-    /// Cached welcome text lines (populated once, never changes after init).
-    pub cached_welcome_lines: Option<Vec<ratatui::text::Line<'static>>>,
     /// Cached input wrap result (keyed by input version + width).
     pub input_wrap_cache: Option<InputWrapCache>,
     /// Cached todo compact line (invalidated on `set_todos()`).
@@ -197,6 +195,36 @@ impl App {
     #[must_use]
     pub fn frame_fps(&self) -> Option<f32> {
         self.fps_ema
+    }
+
+    /// Ensure the synthetic welcome message exists at index 0.
+    pub fn ensure_welcome_message(&mut self) {
+        if self.messages.first().is_some_and(|m| matches!(m.role, MessageRole::Welcome)) {
+            return;
+        }
+        self.messages.insert(0, ChatMessage::welcome(&self.model_name, &self.cwd));
+        self.viewport.message_heights_width = 0;
+        self.viewport.prefix_sums_width = 0;
+    }
+
+    /// Update the welcome message's model name, but only before chat starts.
+    pub fn update_welcome_model_if_pristine(&mut self) {
+        if self.messages.len() != 1 {
+            return;
+        }
+        let Some(first) = self.messages.first_mut() else {
+            return;
+        };
+        if !matches!(first.role, MessageRole::Welcome) {
+            return;
+        }
+        let Some(MessageBlock::Welcome(welcome)) = first.blocks.first_mut() else {
+            return;
+        };
+        welcome.model_name.clone_from(&self.model_name);
+        welcome.cache.invalidate();
+        self.viewport.message_heights_width = 0;
+        self.viewport.prefix_sums_width = 0;
     }
 
     /// Track a Task tool call as active (in-progress subagent).
@@ -302,7 +330,6 @@ impl App {
             paste_burst: super::paste_burst::PasteBurstDetector::new(),
             pending_paste_text: String::new(),
             file_cache: None,
-            cached_welcome_lines: None,
             input_wrap_cache: None,
             cached_todo_compact: None,
             git_branch: None,
@@ -395,8 +422,6 @@ pub struct ChatViewport {
     // --- Layout ---
     /// Current terminal width. Set by `on_frame()` each render cycle.
     pub width: u16,
-    /// Cached welcome text height: recomputed on resize.
-    pub cached_welcome_height: Option<usize>,
 
     // --- Per-message heights ---
     /// Visual height (in terminal rows) of each message, indexed by message position.
@@ -423,7 +448,6 @@ impl ChatViewport {
             scroll_pos: 0.0,
             auto_scroll: true,
             width: 0,
-            cached_welcome_height: None,
             message_heights: Vec::new(),
             message_heights_width: 0,
             height_prefix_sums: Vec::new(),
@@ -456,7 +480,6 @@ impl ChatViewport {
     fn handle_resize(&mut self) {
         self.message_heights_width = 0;
         self.prefix_sums_width = 0;
-        self.cached_welcome_height = None;
     }
 
     // --- Per-message height ---
@@ -520,15 +543,13 @@ impl ChatViewport {
     }
 
     /// Binary search for the first message whose cumulative range overlaps `scroll_offset`.
-    /// `welcome_height` is added as an offset before messages.
     #[must_use]
-    pub fn find_first_visible(&self, scroll_offset: usize, welcome_height: usize) -> usize {
+    pub fn find_first_visible(&self, scroll_offset: usize) -> usize {
         if self.height_prefix_sums.is_empty() {
             return 0;
         }
-        let target = scroll_offset.saturating_sub(welcome_height);
         self.height_prefix_sums
-            .partition_point(|&h| h <= target)
+            .partition_point(|&h| h <= scroll_offset)
             .min(self.message_heights.len().saturating_sub(1))
     }
 
@@ -590,6 +611,20 @@ pub struct SelectionState {
 pub struct ChatMessage {
     pub role: MessageRole,
     pub blocks: Vec<MessageBlock>,
+}
+
+impl ChatMessage {
+    #[must_use]
+    pub fn welcome(model_name: &str, cwd: &str) -> Self {
+        Self {
+            role: MessageRole::Welcome,
+            blocks: vec![MessageBlock::Welcome(WelcomeBlock {
+                model_name: model_name.to_owned(),
+                cwd: cwd.to_owned(),
+                cache: BlockCache::default(),
+            })],
+        }
+    }
 }
 
 /// Cached result of `wrap_lines_and_cursor()` for the input field.
@@ -803,6 +838,7 @@ impl IncrementalMarkdown {
 pub enum MessageBlock {
     Text(String, BlockCache, IncrementalMarkdown),
     ToolCall(Box<ToolCallInfo>),
+    Welcome(WelcomeBlock),
 }
 
 #[derive(Debug)]
@@ -810,6 +846,13 @@ pub enum MessageRole {
     User,
     Assistant,
     System,
+    Welcome,
+}
+
+pub struct WelcomeBlock {
+    pub model_name: String,
+    pub cwd: String,
+    pub cache: BlockCache,
 }
 
 pub struct ToolCallInfo {
@@ -1436,7 +1479,6 @@ mod tests {
         vp.on_frame(80);
         vp.set_message_height(0, 10);
         vp.set_message_height(1, 20);
-        vp.cached_welcome_height = Some(5);
         vp.rebuild_prefix_sums();
 
         // Resize: old heights are kept as approximations,
@@ -1444,7 +1486,6 @@ mod tests {
         vp.on_frame(120);
         assert_eq!(vp.message_height(0), 10); // kept, not zeroed
         assert_eq!(vp.message_height(1), 20); // kept, not zeroed
-        assert!(vp.cached_welcome_height.is_none());
         assert_eq!(vp.message_heights_width, 0); // forces re-measure
         assert_eq!(vp.prefix_sums_width, 0); // forces rebuild
     }
@@ -1518,24 +1559,23 @@ mod tests {
         vp.set_message_height(2, 10);
         vp.rebuild_prefix_sums();
 
-        assert_eq!(vp.find_first_visible(0, 0), 0);
-        assert_eq!(vp.find_first_visible(10, 0), 1);
-        assert_eq!(vp.find_first_visible(15, 0), 1);
-        assert_eq!(vp.find_first_visible(20, 0), 2);
+        assert_eq!(vp.find_first_visible(0), 0);
+        assert_eq!(vp.find_first_visible(10), 1);
+        assert_eq!(vp.find_first_visible(15), 1);
+        assert_eq!(vp.find_first_visible(20), 2);
     }
 
     #[test]
-    fn viewport_find_first_visible_with_welcome() {
+    fn viewport_find_first_visible_handles_offsets_before_first_boundary() {
         let mut vp = ChatViewport::new();
         vp.on_frame(80);
         vp.set_message_height(0, 10);
         vp.set_message_height(1, 10);
         vp.rebuild_prefix_sums();
 
-        // welcome_height = 5, so messages start at offset 5
-        assert_eq!(vp.find_first_visible(0, 5), 0);
-        assert_eq!(vp.find_first_visible(5, 5), 0); // still in welcome area
-        assert_eq!(vp.find_first_visible(15, 5), 1);
+        assert_eq!(vp.find_first_visible(0), 0);
+        assert_eq!(vp.find_first_visible(5), 0);
+        assert_eq!(vp.find_first_visible(15), 1);
     }
 
     #[test]

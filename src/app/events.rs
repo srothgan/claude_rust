@@ -149,6 +149,7 @@ fn handle_mention_key(app: &mut App, key: KeyEvent) {
     super::keys::handle_mention_key(app, key);
 }
 
+#[allow(clippy::too_many_lines)]
 pub fn handle_acp_event(app: &mut App, event: ClientEvent) {
     app.needs_redraw = true;
     match event {
@@ -258,7 +259,7 @@ pub fn handle_acp_event(app: &mut App, event: ClientEvent) {
             app.cancelled_turn_pending_hint = false;
             app.cached_header_line = None;
             app.cached_footer_line = None;
-            app.cached_welcome_lines = None;
+            app.update_welcome_model_if_pristine();
         }
         ClientEvent::AuthRequired { method_name, method_description } => {
             // Allow typing so the user can submit /login, which the ACP
@@ -989,6 +990,14 @@ mod tests {
         App::test_default()
     }
 
+    fn connected_event(model_name: &str) -> ClientEvent {
+        ClientEvent::Connected {
+            session_id: acp::SessionId::new("test-session"),
+            model_name: model_name.to_owned(),
+            mode: None,
+        }
+    }
+
     #[test]
     fn has_in_progress_empty_messages() {
         let app = make_test_app();
@@ -1212,6 +1221,39 @@ mod tests {
             panic!("expected text block");
         };
         assert_eq!(text, CONVERSATION_INTERRUPTED_HINT);
+    }
+
+    #[test]
+    fn connected_updates_welcome_model_while_pristine() {
+        let mut app = make_test_app();
+        app.messages.push(ChatMessage::welcome("Connecting...", "/test"));
+
+        handle_acp_event(&mut app, connected_event("claude-updated"));
+
+        let Some(first) = app.messages.first() else {
+            panic!("missing welcome message");
+        };
+        let Some(MessageBlock::Welcome(welcome)) = first.blocks.first() else {
+            panic!("expected welcome block");
+        };
+        assert_eq!(welcome.model_name, "claude-updated");
+    }
+
+    #[test]
+    fn connected_does_not_update_welcome_after_chat_started() {
+        let mut app = make_test_app();
+        app.messages.push(ChatMessage::welcome("Connecting...", "/test"));
+        app.messages.push(user_msg("hello"));
+
+        handle_acp_event(&mut app, connected_event("claude-updated"));
+
+        let Some(first) = app.messages.first() else {
+            panic!("missing first message");
+        };
+        let Some(MessageBlock::Welcome(welcome)) = first.blocks.first() else {
+            panic!("expected welcome block");
+        };
+        assert_eq!(welcome.model_name, "Connecting...");
     }
 
     #[test]

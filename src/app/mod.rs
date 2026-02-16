@@ -37,7 +37,7 @@ pub(crate) use selection::normalize_selection;
 pub use state::{
     App, AppStatus, BlockCache, ChatMessage, ChatViewport, IncrementalMarkdown, InlinePermission,
     InputWrapCache, LoginHint, MessageBlock, MessageRole, ModeInfo, ModeState, SelectionKind,
-    SelectionPoint, SelectionState, TodoItem, TodoStatus, ToolCallInfo,
+    SelectionPoint, SelectionState, TodoItem, TodoStatus, ToolCallInfo, WelcomeBlock,
 };
 
 use agent_client_protocol::{self as acp, Agent as _};
