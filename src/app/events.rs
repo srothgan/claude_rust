@@ -149,6 +149,11 @@ fn handle_mention_key(app: &mut App, key: KeyEvent) {
     super::keys::handle_mention_key(app, key);
 }
 
+#[cfg(test)]
+fn dispatch_key_by_focus(app: &mut App, key: KeyEvent) {
+    super::keys::dispatch_key_by_focus(app, key);
+}
+
 #[allow(clippy::too_many_lines)]
 pub fn handle_acp_event(app: &mut App, event: ClientEvent) {
     app.needs_redraw = true;
@@ -214,10 +219,13 @@ pub fn handle_acp_event(app: &mut App, event: ClientEvent) {
             }
         }
         ClientEvent::TurnCancelled => {
+            app.pending_compact_clear = false;
             app.cancelled_turn_pending_hint = true;
             let _ = app.finalize_in_progress_tool_calls(acp::ToolCallStatus::Failed);
         }
         ClientEvent::TurnComplete => {
+            let should_compact_clear = app.pending_compact_clear;
+            app.pending_compact_clear = false;
             let show_interrupted_hint = app.cancelled_turn_pending_hint;
             app.cancelled_turn_pending_hint = false;
             if show_interrupted_hint {
@@ -232,8 +240,13 @@ pub fn handle_acp_event(app: &mut App, event: ClientEvent) {
             if show_interrupted_hint {
                 push_interrupted_hint(app);
             }
+            if should_compact_clear {
+                super::slash::clear_conversation_history(app);
+            }
         }
         ClientEvent::TurnError(msg) => {
+            let should_compact_clear = app.pending_compact_clear;
+            app.pending_compact_clear = false;
             tracing::error!("Turn error: {msg}");
             if looks_like_internal_error(&msg) {
                 tracing::debug!(
@@ -244,6 +257,9 @@ pub fn handle_acp_event(app: &mut App, event: ClientEvent) {
             app.cancelled_turn_pending_hint = false;
             let _ = app.finalize_in_progress_tool_calls(acp::ToolCallStatus::Failed);
             app.status = AppStatus::Error;
+            if should_compact_clear {
+                super::slash::clear_conversation_history(app);
+            }
         }
         ClientEvent::Connected { session_id, model_name, mode } => {
             // Grab connection + child from the shared slot
@@ -256,20 +272,22 @@ pub fn handle_acp_event(app: &mut App, event: ClientEvent) {
             app.mode = mode;
             app.status = AppStatus::Ready;
             app.login_hint = None;
+            app.pending_compact_clear = false;
             app.cancelled_turn_pending_hint = false;
             app.cached_header_line = None;
             app.cached_footer_line = None;
             app.update_welcome_model_if_pristine();
         }
         ClientEvent::AuthRequired { method_name, method_description } => {
-            // Allow typing so the user can submit /login, which the ACP
-            // adapter recognises as a slash command to start the auth flow.
+            // Show auth context without pre-filling /login. Slash login/logout
+            // discoverability is intentionally deferred for now.
             app.status = AppStatus::Ready;
             app.login_hint = Some(LoginHint { method_name, method_description });
+            app.pending_compact_clear = false;
             app.cancelled_turn_pending_hint = false;
-            app.input.set_text("/login");
         }
         ClientEvent::ConnectionFailed(msg) => {
+            app.pending_compact_clear = false;
             app.cancelled_turn_pending_hint = false;
             app.status = AppStatus::Error;
             app.messages.push(ChatMessage {
@@ -280,6 +298,22 @@ pub fn handle_acp_event(app: &mut App, event: ClientEvent) {
                     IncrementalMarkdown::default(),
                 )],
             });
+        }
+        ClientEvent::SlashCommandError(msg) => {
+            app.messages.push(ChatMessage {
+                role: MessageRole::System,
+                blocks: vec![MessageBlock::Text(
+                    msg.clone(),
+                    BlockCache::default(),
+                    IncrementalMarkdown::from_complete(&msg),
+                )],
+            });
+            app.viewport.engage_auto_scroll();
+            app.status = AppStatus::Ready;
+        }
+        ClientEvent::SessionReplaced { session_id, model_name, mode } => {
+            app.pending_compact_clear = false;
+            reset_for_new_session(app, session_id, model_name, mode);
         }
     }
 }
@@ -294,6 +328,64 @@ fn push_interrupted_hint(app: &mut App) {
         )],
     });
     app.viewport.engage_auto_scroll();
+}
+
+#[allow(clippy::too_many_lines)]
+fn reset_for_new_session(
+    app: &mut App,
+    session_id: acp::SessionId,
+    model_name: String,
+    mode: Option<super::ModeState>,
+) {
+    crate::acp::client::kill_all_terminals(&app.terminals);
+
+    app.session_id = Some(session_id);
+    app.model_name = model_name;
+    app.mode = mode;
+    app.status = AppStatus::Ready;
+    app.login_hint = None;
+    app.pending_compact_clear = false;
+    app.should_quit = false;
+    app.files_accessed = 0;
+    app.cancelled_turn_pending_hint = false;
+
+    app.messages.clear();
+    app.messages.push(ChatMessage::welcome(&app.model_name, &app.cwd));
+    app.viewport = super::ChatViewport::new();
+
+    app.input.clear();
+    app.pending_submit = false;
+    app.drain_key_count = 0;
+    app.paste_burst.reset();
+    app.pending_paste_text.clear();
+    app.input_wrap_cache = None;
+
+    app.pending_permission_ids.clear();
+    app.active_task_ids.clear();
+    app.tool_call_index.clear();
+    app.todos.clear();
+    app.show_todo_panel = false;
+    app.todo_scroll = 0;
+    app.todo_selected = 0;
+    app.focus = super::FocusManager::default();
+    app.available_commands.clear();
+
+    app.selection = None;
+    app.rendered_chat_lines.clear();
+    app.rendered_chat_area = ratatui::layout::Rect::default();
+    app.rendered_input_lines.clear();
+    app.rendered_input_area = ratatui::layout::Rect::default();
+    app.mention = None;
+    app.slash = None;
+    app.file_cache = None;
+
+    app.cached_todo_compact = None;
+    app.cached_header_line = None;
+    app.cached_footer_line = None;
+    app.terminal_tool_calls.clear();
+    app.force_redraw = true;
+    app.needs_redraw = true;
+    app.refresh_git_branch();
 }
 
 fn handle_tool_call(app: &mut App, tc: acp::ToolCall) {
@@ -558,6 +650,9 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
         acp::SessionUpdate::AvailableCommandsUpdate(cmds) => {
             tracing::debug!("Available commands: {} commands", cmds.available_commands.len());
             app.available_commands = cmds.available_commands;
+            if app.slash.is_some() {
+                super::slash::update_query(app);
+            }
         }
         acp::SessionUpdate::CurrentModeUpdate(update) => {
             if let Some(ref mut mode) = app.mode {
@@ -780,7 +875,7 @@ mod tests {
     // =====
 
     use super::*;
-    use crate::app::{FocusOwner, FocusTarget, TodoItem, TodoStatus, mention};
+    use crate::app::{FocusOwner, FocusTarget, HelpView, TodoItem, TodoStatus, mention};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use pretty_assertions::assert_eq;
     use tokio::sync::oneshot;
@@ -1257,10 +1352,117 @@ mod tests {
     }
 
     #[test]
+    fn auth_required_sets_hint_without_prefilling_login_command() {
+        let mut app = make_test_app();
+        app.input.set_text("keep me");
+
+        handle_acp_event(
+            &mut app,
+            ClientEvent::AuthRequired {
+                method_name: "oauth".into(),
+                method_description: "Open browser".into(),
+            },
+        );
+
+        assert!(matches!(app.status, AppStatus::Ready));
+        assert_eq!(app.input.text(), "keep me");
+        let Some(hint) = &app.login_hint else {
+            panic!("expected login hint");
+        };
+        assert_eq!(hint.method_name, "oauth");
+        assert_eq!(hint.method_description, "Open browser");
+    }
+
+    #[test]
+    fn session_replaced_resets_chat_and_transient_state() {
+        let mut app = make_test_app();
+        app.messages.push(user_msg("hello"));
+        app.messages.push(assistant_msg(vec![MessageBlock::Text(
+            "world".into(),
+            BlockCache::default(),
+            IncrementalMarkdown::from_complete("world"),
+        )]));
+        app.status = AppStatus::Running;
+        app.files_accessed = 9;
+        app.pending_permission_ids.push("perm-1".into());
+        app.todo_selected = 2;
+        app.show_todo_panel = true;
+        app.todos.push(TodoItem {
+            content: "Task".into(),
+            status: TodoStatus::InProgress,
+            active_form: String::new(),
+        });
+        app.mention = Some(mention::MentionState {
+            trigger_row: 0,
+            trigger_col: 0,
+            query: String::new(),
+            candidates: Vec::new(),
+            dialog: super::super::dialog::DialogState::default(),
+        });
+
+        handle_acp_event(
+            &mut app,
+            ClientEvent::SessionReplaced {
+                session_id: acp::SessionId::new("replacement"),
+                model_name: "new-model".into(),
+                mode: None,
+            },
+        );
+
+        assert!(matches!(app.status, AppStatus::Ready));
+        assert_eq!(
+            app.session_id.as_ref().map(ToString::to_string).as_deref(),
+            Some("replacement")
+        );
+        assert_eq!(app.model_name, "new-model");
+        assert_eq!(app.messages.len(), 1);
+        assert!(matches!(app.messages[0].role, MessageRole::Welcome));
+        assert_eq!(app.files_accessed, 0);
+        assert!(app.pending_permission_ids.is_empty());
+        assert!(app.todos.is_empty());
+        assert!(!app.show_todo_panel);
+        assert!(app.mention.is_none());
+    }
+
+    #[test]
     fn turn_complete_without_cancel_does_not_render_interrupted_hint() {
         let mut app = make_test_app();
         handle_acp_event(&mut app, ClientEvent::TurnComplete);
         assert!(app.messages.is_empty());
+    }
+
+    #[test]
+    fn turn_complete_clears_history_when_compact_pending() {
+        let mut app = make_test_app();
+        app.session_id = Some(acp::SessionId::new("session-x"));
+        app.pending_compact_clear = true;
+        app.messages.push(user_msg("/compact"));
+        app.messages.push(assistant_msg(vec![MessageBlock::Text(
+            "compacted".into(),
+            BlockCache::default(),
+            IncrementalMarkdown::from_complete("compacted"),
+        )]));
+
+        handle_acp_event(&mut app, ClientEvent::TurnComplete);
+
+        assert!(!app.pending_compact_clear);
+        assert_eq!(app.messages.len(), 1);
+        assert!(matches!(app.messages[0].role, MessageRole::Welcome));
+        assert_eq!(app.session_id.as_ref().map(ToString::to_string).as_deref(), Some("session-x"));
+    }
+
+    #[test]
+    fn turn_error_also_clears_history_when_compact_pending() {
+        let mut app = make_test_app();
+        app.pending_compact_clear = true;
+        app.messages.push(user_msg("/compact"));
+
+        handle_acp_event(&mut app, ClientEvent::TurnError("adapter failed".into()));
+
+        assert!(!app.pending_compact_clear);
+        assert!(matches!(app.status, AppStatus::Ready));
+        assert_eq!(app.messages.len(), 1);
+        assert!(matches!(app.messages[0].role, MessageRole::Welcome));
     }
 
     #[test]
@@ -1357,6 +1559,19 @@ mod tests {
 
         assert_eq!(app.input.text(), "@");
         assert!(app.mention.is_some());
+    }
+
+    #[test]
+    fn help_overlay_left_right_switches_help_view_tab() {
+        let mut app = make_test_app();
+        app.input.set_text("?");
+        app.help_view = HelpView::Keys;
+
+        dispatch_key_by_focus(&mut app, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        assert_eq!(app.help_view, HelpView::SlashCommands);
+
+        dispatch_key_by_focus(&mut app, KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        assert_eq!(app.help_view, HelpView::Keys);
     }
 
     #[test]
@@ -1596,8 +1811,7 @@ mod tests {
             trigger_col: 0,
             query: String::new(),
             candidates: Vec::new(),
-            selected: 0,
-            scroll_offset: 0,
+            dialog: super::super::dialog::DialogState::default(),
         });
         app.claim_focus_target(FocusTarget::Mention);
         assert_eq!(app.focus_owner(), FocusOwner::Mention);
@@ -1649,8 +1863,7 @@ mod tests {
             trigger_col: 0,
             query: String::new(),
             candidates: Vec::new(),
-            selected: 0,
-            scroll_offset: 0,
+            dialog: super::super::dialog::DialogState::default(),
         });
         app.claim_focus_target(FocusTarget::Mention);
 

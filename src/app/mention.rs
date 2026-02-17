@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use super::{App, FocusTarget};
+use super::{App, FocusTarget, dialog::DialogState};
 use ignore::WalkBuilder;
 use std::path::Path;
 use std::time::SystemTime;
@@ -33,10 +33,8 @@ pub struct MentionState {
     pub query: String,
     /// Filtered + sorted candidates.
     pub candidates: Vec<FileCandidate>,
-    /// Index into `candidates` of the highlighted item.
-    pub selected: usize,
-    /// Scroll offset for the dropdown (when candidates > max visible).
-    pub scroll_offset: usize,
+    /// Shared autocomplete dialog navigation state.
+    pub dialog: DialogState,
 }
 
 #[derive(Clone)]
@@ -179,9 +177,9 @@ pub fn activate(app: &mut App) {
         trigger_col,
         query,
         candidates,
-        selected: 0,
-        scroll_offset: 0,
+        dialog: DialogState::default(),
     });
+    app.slash = None;
     app.claim_focus_target(FocusTarget::Mention);
 }
 
@@ -202,14 +200,7 @@ pub fn update_query(app: &mut App) {
         mention.trigger_col = trigger_col;
         mention.query = query;
         mention.candidates = candidates;
-        // Clamp selection to new candidate count
-        if mention.candidates.is_empty() {
-            mention.selected = 0;
-            mention.scroll_offset = 0;
-        } else {
-            mention.selected = mention.selected.min(mention.candidates.len() - 1);
-            clamp_scroll(mention);
-        }
+        mention.dialog.clamp(mention.candidates.len(), MAX_VISIBLE);
     }
 }
 
@@ -235,7 +226,7 @@ pub fn confirm_selection(app: &mut App) {
     };
     app.release_focus_target(FocusTarget::Mention);
 
-    let Some(candidate) = mention.candidates.get(mention.selected) else {
+    let Some(candidate) = mention.candidates.get(mention.dialog.selected) else {
         return;
     };
 
@@ -273,41 +264,22 @@ pub fn confirm_selection(app: &mut App) {
 /// Deactivate mention autocomplete.
 pub fn deactivate(app: &mut App) {
     app.mention = None;
-    app.release_focus_target(FocusTarget::Mention);
+    if app.slash.is_none() {
+        app.release_focus_target(FocusTarget::Mention);
+    }
 }
 
 /// Move selection up in the candidate list.
 pub fn move_up(app: &mut App) {
     if let Some(ref mut mention) = app.mention {
-        if mention.candidates.is_empty() {
-            return;
-        }
-        if mention.selected == 0 {
-            mention.selected = mention.candidates.len() - 1;
-        } else {
-            mention.selected -= 1;
-        }
-        clamp_scroll(mention);
+        mention.dialog.move_up(mention.candidates.len(), MAX_VISIBLE);
     }
 }
 
 /// Move selection down in the candidate list.
 pub fn move_down(app: &mut App) {
     if let Some(ref mut mention) = app.mention {
-        if mention.candidates.is_empty() {
-            return;
-        }
-        mention.selected = (mention.selected + 1) % mention.candidates.len();
-        clamp_scroll(mention);
-    }
-}
-
-/// Ensure `scroll_offset` keeps `selected` visible within the `MAX_VISIBLE` window.
-fn clamp_scroll(mention: &mut MentionState) {
-    if mention.selected < mention.scroll_offset {
-        mention.scroll_offset = mention.selected;
-    } else if mention.selected >= mention.scroll_offset + MAX_VISIBLE {
-        mention.scroll_offset = mention.selected + 1 - MAX_VISIBLE;
+        mention.dialog.move_down(mention.candidates.len(), MAX_VISIBLE);
     }
 }
 

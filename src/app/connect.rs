@@ -15,7 +15,8 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use super::{
-    App, AppStatus, ChatViewport, FocusManager, ModeInfo, ModeState, SelectionState, TodoItem,
+    App, AppStatus, ChatViewport, FocusManager, HelpView, ModeInfo, ModeState, SelectionState,
+    TodoItem,
 };
 use crate::Cli;
 use crate::acp::client::{ClaudeClient, ClientEvent, TerminalMap};
@@ -67,6 +68,8 @@ pub fn create_app(cli: &Cli) -> App {
         files_accessed: 0,
         mode: None,
         login_hint: None,
+        pending_compact_clear: false,
+        help_view: HelpView::Keys,
         pending_permission_ids: Vec::new(),
         cancelled_turn_pending_hint: false,
         event_tx,
@@ -90,6 +93,7 @@ pub fn create_app(cli: &Cli) -> App {
         rendered_input_lines: Vec::new(),
         rendered_input_area: ratatui::layout::Rect::new(0, 0, 0, 0),
         mention: None,
+        slash: None,
         pending_submit: false,
         drain_key_count: 0,
         paste_burst: crate::app::paste_burst::PasteBurstDetector::new(),

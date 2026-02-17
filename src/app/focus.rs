@@ -20,6 +20,7 @@ pub enum FocusTarget {
     TodoList,
     Mention,
     Permission,
+    Help,
 }
 
 /// Effective owner of directional/navigation keys.
@@ -29,6 +30,7 @@ pub enum FocusOwner {
     TodoList,
     Mention,
     Permission,
+    Help,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -36,6 +38,7 @@ pub struct FocusContext {
     pub todo_focus_available: bool,
     pub mention_active: bool,
     pub permission_active: bool,
+    pub help_active: bool,
 }
 
 impl FocusContext {
@@ -45,7 +48,17 @@ impl FocusContext {
         mention_active: bool,
         permission_active: bool,
     ) -> Self {
-        Self { todo_focus_available, mention_active, permission_active }
+        Self { todo_focus_available, mention_active, permission_active, help_active: false }
+    }
+
+    #[must_use]
+    pub const fn with_help(
+        todo_focus_available: bool,
+        mention_active: bool,
+        permission_active: bool,
+        help_active: bool,
+    ) -> Self {
+        Self { todo_focus_available, mention_active, permission_active, help_active }
     }
 
     #[must_use]
@@ -54,6 +67,7 @@ impl FocusContext {
             FocusTarget::TodoList => self.todo_focus_available,
             FocusTarget::Mention => self.mention_active,
             FocusTarget::Permission => self.permission_active,
+            FocusTarget::Help => self.help_active,
         }
     }
 }
@@ -64,6 +78,7 @@ impl From<FocusTarget> for FocusOwner {
             FocusTarget::TodoList => Self::TodoList,
             FocusTarget::Mention => Self::Mention,
             FocusTarget::Permission => Self::Permission,
+            FocusTarget::Help => Self::Help,
         }
     }
 }
@@ -138,5 +153,13 @@ mod tests {
         assert_eq!(mgr.owner(valid_ctx), FocusOwner::TodoList);
         mgr.normalize(invalid_ctx);
         assert_eq!(mgr.owner(invalid_ctx), FocusOwner::Input);
+    }
+
+    #[test]
+    fn help_focus_target_works_when_enabled() {
+        let mut mgr = FocusManager::default();
+        let ctx = FocusContext::with_help(false, false, false, true);
+        mgr.claim(FocusTarget::Help, ctx);
+        assert_eq!(mgr.owner(ctx), FocusOwner::Help);
     }
 }

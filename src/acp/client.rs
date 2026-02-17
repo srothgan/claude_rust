@@ -55,6 +55,14 @@ pub enum ClientEvent {
     ConnectionFailed(String),
     /// Authentication is required before a session can be created.
     AuthRequired { method_name: String, method_description: String },
+    /// Slash-command execution failed with a user-facing error.
+    SlashCommandError(String),
+    /// Custom slash command replaced the active ACP session.
+    SessionReplaced {
+        session_id: acp::SessionId,
+        model_name: String,
+        mode: Option<crate::app::ModeState>,
+    },
 }
 
 /// Shared handle to all spawned terminal processes.

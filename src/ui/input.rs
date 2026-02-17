@@ -84,7 +84,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
                 Style::default().fg(Color::Yellow),
             )),
             Line::from(Span::styled(
-                "Type /login and press Enter to authenticate",
+                "Authentication command discoverability is not enabled in this build yet",
                 Style::default().fg(theme::DIM),
             )),
         ];
@@ -143,7 +143,8 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         None => return,
     };
 
-    // Post-process: highlight @mentions in cyan, paste placeholders in green
+    // Post-process: highlight slash command token, @mentions, and paste placeholders.
+    let lines = highlight_slash_command(lines);
     let lines = highlight_mentions(lines);
     let lines = highlight_paste_placeholders(lines);
     let cursor_row = cursor_pos.map_or(0, |(row, _)| row);
@@ -377,6 +378,42 @@ fn highlight_paste_placeholders(lines: Vec<Line<'static>>) -> Vec<Line<'static>>
         .collect()
 }
 
+/// Post-process wrapped lines to highlight leading `/command` in light magenta.
+fn highlight_slash_command(lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
+    let slash_style = Style::default().fg(theme::SLASH_COMMAND);
+
+    lines
+        .into_iter()
+        .map(|line| {
+            let raw: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+            let start = raw.find(|c: char| !c.is_whitespace());
+            let Some(start) = start else {
+                return line;
+            };
+            if raw.as_bytes().get(start).copied() != Some(b'/') {
+                return line;
+            }
+            let rel_end = raw[start..]
+                .find(char::is_whitespace)
+                .unwrap_or_else(|| raw.len().saturating_sub(start));
+            let end = start + rel_end;
+            if end <= start + 1 {
+                return line;
+            }
+
+            let mut spans: Vec<Span<'static>> = Vec::new();
+            if start > 0 {
+                spans.push(Span::raw(raw[..start].to_owned()));
+            }
+            spans.push(Span::styled(raw[start..end].to_owned(), slash_style));
+            if end < raw.len() {
+                spans.push(Span::raw(raw[end..].to_owned()));
+            }
+            Line::from(spans)
+        })
+        .collect()
+}
+
 /// Post-process wrapped lines to highlight `@path` mentions in cyan.
 fn highlight_mentions(lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
     let mention_style = Style::default().fg(Color::Cyan);
@@ -417,7 +454,8 @@ fn highlight_mentions(lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
 
 #[cfg(test)]
 mod tests {
-    use super::input_scroll_y;
+    use super::{highlight_slash_command, input_scroll_y};
+    use ratatui::text::{Line, Span};
 
     #[test]
     fn input_scroll_zero_when_content_fits() {
@@ -434,5 +472,21 @@ mod tests {
     fn input_scroll_clamps_to_max() {
         // Max scroll = total - viewport = 3
         assert_eq!(input_scroll_y(15, 14, 12), 3);
+    }
+
+    #[test]
+    fn slash_highlight_styles_leading_command_token_only() {
+        let lines = vec![Line::from("/mode plan")];
+        let out = highlight_slash_command(lines);
+        assert_eq!(out[0].spans.len(), 2);
+        assert_eq!(out[0].spans[0].content, "/mode");
+        assert_eq!(out[0].spans[1].content, " plan");
+    }
+
+    #[test]
+    fn slash_highlight_ignores_non_command_lines() {
+        let lines = vec![Line::from(Span::raw("hello /mode"))];
+        let out = highlight_slash_command(lines.clone());
+        assert_eq!(out[0].spans[0].content, lines[0].spans[0].content);
     }
 }
