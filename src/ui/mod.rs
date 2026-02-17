@@ -132,12 +132,12 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &mut App) {
                 Span::styled("]", Style::default().fg(color)),
                 Span::raw("  "),
                 Span::styled("?", Style::default().fg(Color::White)),
-                Span::styled(" : help", Style::default().fg(theme::DIM)),
+                Span::styled(" : Shortcuts + Commands", Style::default().fg(theme::DIM)),
             ])
         } else {
             Line::from(vec![
                 Span::styled("?", Style::default().fg(Color::White)),
-                Span::styled(" : help", Style::default().fg(theme::DIM)),
+                Span::styled(" : Shortcuts + Commands", Style::default().fg(theme::DIM)),
             ])
         };
         app.cached_footer_line = Some(line);

@@ -15,6 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 mod connect;
+mod dialog;
 mod events;
 mod focus;
 pub(crate) mod input;
@@ -24,6 +25,7 @@ pub(crate) mod mention;
 pub(crate) mod paste_burst;
 mod permissions;
 mod selection;
+pub(crate) mod slash;
 mod state;
 mod terminal;
 mod todos;
@@ -35,9 +37,10 @@ pub use focus::{FocusManager, FocusOwner, FocusTarget};
 pub use input::InputState;
 pub(crate) use selection::normalize_selection;
 pub use state::{
-    App, AppStatus, BlockCache, ChatMessage, ChatViewport, IncrementalMarkdown, InlinePermission,
-    InputWrapCache, LoginHint, MessageBlock, MessageRole, ModeInfo, ModeState, SelectionKind,
-    SelectionPoint, SelectionState, TodoItem, TodoStatus, ToolCallInfo, WelcomeBlock,
+    App, AppStatus, BlockCache, ChatMessage, ChatViewport, HelpView, IncrementalMarkdown,
+    InlinePermission, InputWrapCache, LoginHint, MessageBlock, MessageRole, ModeInfo, ModeState,
+    SelectionKind, SelectionPoint, SelectionState, TodoItem, TodoStatus, ToolCallInfo,
+    WelcomeBlock,
 };
 
 use agent_client_protocol::{self as acp, Agent as _};

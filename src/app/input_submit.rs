@@ -18,7 +18,7 @@ use super::{
     App, AppStatus, BlockCache, ChatMessage, IncrementalMarkdown, MessageBlock, MessageRole,
 };
 use crate::acp::client::ClientEvent;
-use crate::app::mention;
+use crate::app::{mention, slash};
 use agent_client_protocol::{self as acp, Agent as _};
 use std::path::Path;
 use std::rc::Rc;
@@ -26,10 +26,15 @@ use std::rc::Rc;
 pub(super) fn submit_input(app: &mut App) {
     // Dismiss any open mention dropdown
     app.mention = None;
+    app.slash = None;
 
     // No connection yet — can't submit
     let text = app.input.text();
     if text.trim().is_empty() {
+        return;
+    }
+
+    if slash::try_handle_submit(app, &text) {
         return;
     }
 

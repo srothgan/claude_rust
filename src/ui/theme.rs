@@ -36,6 +36,7 @@ pub const ICON_FAILED: &str = "\u{2717}"; // ✗
 
 // Status colors
 pub const STATUS_ERROR: Color = Color::Red;
+pub const SLASH_COMMAND: Color = Color::LightMagenta;
 
 /// Tool kind icon + label pair. Monochrome Unicode symbols.
 /// If `claude_tool_name` is provided, override icon/label for specific tools.

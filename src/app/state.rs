@@ -24,6 +24,7 @@ use tokio::sync::mpsc;
 use super::focus::{FocusContext, FocusManager, FocusOwner, FocusTarget};
 use super::input::InputState;
 use super::mention;
+use super::slash;
 
 #[derive(Debug)]
 pub struct ModeInfo {
@@ -36,6 +37,13 @@ pub struct ModeState {
     pub current_mode_id: String,
     pub current_mode_name: String,
     pub available_modes: Vec<ModeInfo>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum HelpView {
+    #[default]
+    Keys,
+    SlashCommands,
 }
 
 /// Login hint displayed when authentication is required during connection.
@@ -81,6 +89,11 @@ pub struct App {
     pub mode: Option<ModeState>,
     /// Login hint shown when authentication is required. Rendered above the input field.
     pub login_hint: Option<LoginHint>,
+    /// When true, the current/next turn completion should clear local conversation history.
+    /// Set by `/compact` once the command is accepted for ACP forwarding.
+    pub pending_compact_clear: bool,
+    /// Active help overlay view when `?` help is open.
+    pub help_view: HelpView,
     /// Tool call IDs with pending permission prompts, ordered by arrival.
     /// The first entry is the "focused" permission that receives keyboard input.
     /// Up / Down arrow keys cycle focus through the list.
@@ -131,6 +144,8 @@ pub struct App {
     pub rendered_input_area: ratatui::layout::Rect,
     /// Active `@` file mention autocomplete state.
     pub mention: Option<mention::MentionState>,
+    /// Active slash-command autocomplete state.
+    pub slash: Option<slash::SlashState>,
     /// Deferred submit: set `true` when Enter is pressed. If another key event
     /// arrives during the same drain cycle (paste), this is cleared and the Enter
     /// becomes a newline. After the drain, the main loop checks: if still `true`,
@@ -302,6 +317,8 @@ impl App {
             files_accessed: 0,
             mode: None,
             login_hint: None,
+            pending_compact_clear: false,
+            help_view: HelpView::Keys,
             pending_permission_ids: Vec::new(),
             cancelled_turn_pending_hint: false,
             event_tx: tx,
@@ -325,6 +342,7 @@ impl App {
             rendered_input_lines: Vec::new(),
             rendered_input_area: ratatui::layout::Rect::default(),
             mention: None,
+            slash: None,
             pending_submit: false,
             drain_key_count: 0,
             paste_burst: super::paste_burst::PasteBurstDetector::new(),
@@ -370,6 +388,11 @@ impl App {
         self.focus.owner(self.focus_context())
     }
 
+    #[must_use]
+    pub fn is_help_active(&self) -> bool {
+        self.input.text().trim() == "?"
+    }
+
     /// Claim key routing for a navigation target.
     /// The latest claimant wins.
     pub fn claim_focus_target(&mut self, target: FocusTarget) {
@@ -391,10 +414,11 @@ impl App {
 
     #[must_use]
     fn focus_context(&self) -> FocusContext {
-        FocusContext::new(
+        FocusContext::with_help(
             self.show_todo_panel && !self.todos.is_empty(),
-            self.mention.is_some(),
+            self.mention.is_some() || self.slash.is_some(),
             !self.pending_permission_ids.is_empty(),
+            self.is_help_active(),
         )
     }
 }
@@ -1669,8 +1693,7 @@ mod tests {
             trigger_col: 0,
             query: String::new(),
             candidates: Vec::new(),
-            selected: 0,
-            scroll_offset: 0,
+            dialog: super::super::dialog::DialogState::default(),
         });
         app.claim_focus_target(FocusTarget::Mention);
         assert_eq!(app.focus_owner(), FocusOwner::Mention);
@@ -1712,8 +1735,7 @@ mod tests {
             trigger_col: 0,
             query: String::new(),
             candidates: Vec::new(),
-            selected: 0,
-            scroll_offset: 0,
+            dialog: super::super::dialog::DialogState::default(),
         });
         app.pending_permission_ids.push("perm-1".into());
 

@@ -14,23 +14,29 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use super::{App, AppStatus, FocusOwner, FocusTarget, MessageBlock, ModeInfo, ModeState};
+use super::{App, AppStatus, FocusOwner, FocusTarget, HelpView, MessageBlock, ModeInfo, ModeState};
 use crate::acp::client::ClientEvent;
 use crate::app::input::parse_paste_placeholder;
-use crate::app::mention;
 use crate::app::permissions::handle_permission_key;
 use crate::app::selection::try_copy_selection;
+use crate::app::{mention, slash};
 use agent_client_protocol::{self as acp, Agent as _};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::rc::Rc;
 
+const HELP_TAB_PREV_KEY: KeyCode = KeyCode::Left;
+const HELP_TAB_NEXT_KEY: KeyCode = KeyCode::Right;
+
 pub(super) fn dispatch_key_by_focus(app: &mut App, key: KeyEvent) {
+    sync_help_focus(app);
+
     if handle_global_shortcuts(app, key) {
         return;
     }
 
     match app.focus_owner() {
-        FocusOwner::Mention => handle_mention_key(app, key),
+        FocusOwner::Mention => handle_autocomplete_key(app, key),
+        FocusOwner::Help => handle_help_key(app, key),
         FocusOwner::Permission => {
             if !handle_permission_key(app, key) {
                 handle_normal_key(app, key);
@@ -100,6 +106,7 @@ pub(super) fn is_printable_text_modifiers(modifiers: KeyModifiers) -> bool {
 
 #[allow(clippy::too_many_lines)]
 pub(super) fn handle_normal_key(app: &mut App, key: KeyEvent) {
+    sync_help_focus(app);
     let input_version_before = app.input.version;
 
     // Timing-based paste detection: if key events arrive faster than the
@@ -266,14 +273,19 @@ pub(super) fn handle_normal_key(app: &mut App, key: KeyEvent) {
             app.input.insert_char(c);
             if c == '@' {
                 mention::activate(app);
+            } else if c == '/' {
+                slash::activate(app);
             }
         }
         _ => {}
     }
 
-    if app.input.version != input_version_before && should_sync_mention_after_key(app, key) {
+    if app.input.version != input_version_before && should_sync_autocomplete_after_key(app, key) {
         mention::sync_with_cursor(app);
+        slash::sync_with_cursor(app);
     }
+
+    sync_help_focus(app);
 }
 
 fn try_move_input_cursor_up(app: &mut App) -> bool {
@@ -288,7 +300,7 @@ fn try_move_input_cursor_down(app: &mut App) -> bool {
     (app.input.cursor_row, app.input.cursor_col) != before
 }
 
-fn should_sync_mention_after_key(app: &App, key: KeyEvent) -> bool {
+fn should_sync_autocomplete_after_key(app: &App, key: KeyEvent) -> bool {
     if app.focus_owner() == FocusOwner::TodoList {
         return false;
     }
@@ -366,6 +378,48 @@ pub(super) fn move_todo_selection_down(app: &mut App) {
     }
 }
 
+/// Handle keystrokes while mention/slash autocomplete dropdown is active.
+pub(super) fn handle_autocomplete_key(app: &mut App, key: KeyEvent) {
+    if app.mention.is_some() {
+        handle_mention_key(app, key);
+        return;
+    }
+    if app.slash.is_some() {
+        handle_slash_key(app, key);
+        return;
+    }
+    dispatch_key_by_focus(app, key);
+}
+
+fn handle_help_key(app: &mut App, key: KeyEvent) {
+    match (key.code, key.modifiers) {
+        (HELP_TAB_PREV_KEY, m) if m == KeyModifiers::NONE => set_help_view(app, HelpView::Keys),
+        (HELP_TAB_NEXT_KEY, m) if m == KeyModifiers::NONE => {
+            set_help_view(app, HelpView::SlashCommands)
+        }
+        _ => handle_normal_key(app, key),
+    }
+}
+
+fn set_help_view(app: &mut App, next: HelpView) {
+    if app.help_view != next {
+        tracing::debug!(from = ?app.help_view, to = ?next, "Help view changed via keyboard");
+        app.help_view = next;
+    }
+}
+
+fn sync_help_focus(app: &mut App) {
+    if app.is_help_active()
+        && app.pending_permission_ids.is_empty()
+        && app.mention.is_none()
+        && app.slash.is_none()
+    {
+        app.claim_focus_target(FocusTarget::Help);
+    } else {
+        app.release_focus_target(FocusTarget::Help);
+    }
+}
+
 /// Handle keystrokes while the `@` mention autocomplete dropdown is active.
 pub(super) fn handle_mention_key(app: &mut App, key: KeyEvent) {
     match (key.code, key.modifiers) {
@@ -388,6 +442,32 @@ pub(super) fn handle_mention_key(app: &mut App, key: KeyEvent) {
         // Any other key: deactivate mention and forward to normal handling
         _ => {
             mention::deactivate(app);
+            dispatch_key_by_focus(app, key);
+        }
+    }
+}
+
+/// Handle keystrokes while slash autocomplete dropdown is active.
+fn handle_slash_key(app: &mut App, key: KeyEvent) {
+    match (key.code, key.modifiers) {
+        (KeyCode::Up, _) => slash::move_up(app),
+        (KeyCode::Down, _) => slash::move_down(app),
+        (KeyCode::Enter | KeyCode::Tab, _) => slash::confirm_selection(app),
+        (KeyCode::Esc, _) => slash::deactivate(app),
+        (KeyCode::Backspace, _) => {
+            app.input.delete_char_before();
+            slash::update_query(app);
+        }
+        (KeyCode::Char(c), m) if is_printable_text_modifiers(m) => {
+            app.input.insert_char(c);
+            if c.is_whitespace() {
+                slash::deactivate(app);
+            } else {
+                slash::update_query(app);
+            }
+        }
+        _ => {
+            slash::deactivate(app);
             dispatch_key_by_focus(app, key);
         }
     }

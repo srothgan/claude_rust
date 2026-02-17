@@ -16,6 +16,7 @@
 
 use crate::app::App;
 use crate::app::mention::MAX_VISIBLE;
+use crate::app::{mention, slash};
 use crate::ui::theme;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -39,25 +40,45 @@ const LOGIN_HINT_LINES: u16 = 2;
 
 pub fn is_active(app: &App) -> bool {
     app.mention.as_ref().is_some_and(|m| !m.candidates.is_empty())
+        || app.slash.as_ref().is_some_and(|s| !s.candidates.is_empty())
 }
 
 #[allow(clippy::cast_possible_truncation)]
 pub fn compute_height(app: &App) -> u16 {
-    match &app.mention {
-        Some(m) if !m.candidates.is_empty() => {
-            let visible = m.candidates.len().min(MAX_VISIBLE) as u16;
-            visible.saturating_add(2) // +2 for top/bottom border
-        }
-        _ => 0,
+    let count = if let Some(m) = &app.mention {
+        m.candidates.len()
+    } else if let Some(s) = &app.slash {
+        s.candidates.len()
+    } else {
+        0
+    };
+    if count == 0 {
+        0
+    } else {
+        let visible = count.min(MAX_VISIBLE) as u16;
+        visible.saturating_add(2) // +2 for top/bottom border
     }
 }
 
 /// Render the autocomplete dropdown as a floating overlay above the input area.
 #[allow(clippy::cast_possible_truncation)]
 pub fn render(frame: &mut Frame, input_area: Rect, app: &App) {
-    let mention = match &app.mention {
-        Some(m) if !m.candidates.is_empty() => m,
-        _ => return,
+    enum Dropdown<'a> {
+        Mention(&'a mention::MentionState),
+        Slash(&'a slash::SlashState),
+    }
+    let dropdown = if let Some(m) = &app.mention {
+        if m.candidates.is_empty() {
+            return;
+        }
+        Dropdown::Mention(m)
+    } else if let Some(s) = &app.slash {
+        if s.candidates.is_empty() {
+            return;
+        }
+        Dropdown::Slash(s)
+    } else {
+        return;
     };
 
     let height = compute_height(app);
@@ -70,12 +91,13 @@ pub fn render(frame: &mut Frame, input_area: Rect, app: &App) {
         return;
     }
 
-    let (anchor_row, anchor_col) = wrapped_visual_pos(
-        &app.input.lines,
-        mention.trigger_row,
-        mention.trigger_col,
-        text_area.width,
-    );
+    let (trigger_row, trigger_col) = match dropdown {
+        Dropdown::Mention(m) => (m.trigger_row, m.trigger_col),
+        Dropdown::Slash(s) => (s.trigger_row, s.trigger_col),
+    };
+
+    let (anchor_row, anchor_col) =
+        wrapped_visual_pos(&app.input.lines, trigger_row, trigger_col, text_area.width);
 
     // Anchor horizontally to the `@` position.
     let mut x = text_area.x.saturating_add(anchor_col).min(text_area.right().saturating_sub(1));
@@ -92,55 +114,110 @@ pub fn render(frame: &mut Frame, input_area: Rect, app: &App) {
 
     let dropdown_area = Rect { x, y, width, height };
 
-    let visible_count = mention.candidates.len().min(MAX_VISIBLE);
-    let start = mention.scroll_offset;
-    let end = (start + visible_count).min(mention.candidates.len());
+    let (visible_count, start, end, title) = match dropdown {
+        Dropdown::Mention(m) => {
+            let visible_count = m.candidates.len().min(MAX_VISIBLE);
+            let (start, end) = m.dialog.visible_range(m.candidates.len(), MAX_VISIBLE);
+            (visible_count, start, end, format!(" Files & Folders ({}) ", m.candidates.len()))
+        }
+        Dropdown::Slash(s) => {
+            let visible_count = s.candidates.len().min(MAX_VISIBLE);
+            let (start, end) = s.dialog.visible_range(s.candidates.len(), MAX_VISIBLE);
+            (visible_count, start, end, format!(" Commands ({}) ", s.candidates.len()))
+        }
+    };
 
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(visible_count);
-    for (i, candidate) in mention.candidates[start..end].iter().enumerate() {
-        let global_idx = start + i;
-        let is_selected = global_idx == mention.selected;
-
-        let mut spans: Vec<Span<'static>> = Vec::new();
-
-        // Selection indicator
-        if is_selected {
-            spans.push(Span::styled(
-                " \u{25b8} ",
-                Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
-            ));
-        } else {
-            spans.push(Span::raw("   "));
-        }
-
-        // Path with query highlight
-        let path = &candidate.rel_path;
-        let query = &mention.query;
-        if query.is_empty() {
-            spans.push(Span::raw(path.clone()));
-        } else if let Some(match_start) = path.to_lowercase().find(&query.to_lowercase()) {
-            let before = &path[..match_start];
-            let matched = &path[match_start..match_start + query.len()];
-            let after = &path[match_start + query.len()..];
-
-            if !before.is_empty() {
-                spans.push(Span::raw(before.to_owned()));
+    match dropdown {
+        Dropdown::Mention(m) => {
+            for (i, candidate) in m.candidates[start..end].iter().enumerate() {
+                let global_idx = start + i;
+                let is_selected = global_idx == m.dialog.selected;
+                let mut spans: Vec<Span<'static>> = Vec::new();
+                if is_selected {
+                    spans.push(Span::styled(
+                        " \u{25b8} ",
+                        Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
+                    ));
+                } else {
+                    spans.push(Span::raw("   "));
+                }
+                let path = &candidate.rel_path;
+                let query = &m.query;
+                if query.is_empty() {
+                    spans.push(Span::raw(path.clone()));
+                } else if let Some(match_start) = path.to_lowercase().find(&query.to_lowercase()) {
+                    let before = &path[..match_start];
+                    let matched = &path[match_start..match_start + query.len()];
+                    let after = &path[match_start + query.len()..];
+                    if !before.is_empty() {
+                        spans.push(Span::raw(before.to_owned()));
+                    }
+                    spans.push(Span::styled(
+                        matched.to_owned(),
+                        Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
+                    ));
+                    if !after.is_empty() {
+                        spans.push(Span::raw(after.to_owned()));
+                    }
+                } else {
+                    spans.push(Span::raw(path.clone()));
+                }
+                lines.push(Line::from(spans));
             }
-            spans.push(Span::styled(
-                matched.to_owned(),
-                Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
-            ));
-            if !after.is_empty() {
-                spans.push(Span::raw(after.to_owned()));
-            }
-        } else {
-            spans.push(Span::raw(path.clone()));
         }
+        Dropdown::Slash(s) => {
+            for (i, candidate) in s.candidates[start..end].iter().enumerate() {
+                let global_idx = start + i;
+                let is_selected = global_idx == s.dialog.selected;
+                let mut spans: Vec<Span<'static>> = Vec::new();
+                if is_selected {
+                    spans.push(Span::styled(
+                        " \u{25b8} ",
+                        Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
+                    ));
+                } else {
+                    spans.push(Span::raw("   "));
+                }
 
-        lines.push(Line::from(spans));
+                let query = &s.query;
+                let command_name = &candidate.name;
+                let command_body = command_name.strip_prefix('/').unwrap_or(command_name);
+                if query.is_empty() {
+                    spans.push(Span::raw(command_name.clone()));
+                } else if let Some(match_start) =
+                    command_body.to_lowercase().find(&query.to_lowercase())
+                {
+                    let start_idx = 1 + match_start;
+                    let before = &command_name[..start_idx];
+                    let matched = &command_name[start_idx..start_idx + query.len()];
+                    let after = &command_name[start_idx + query.len()..];
+                    if !before.is_empty() {
+                        spans.push(Span::raw(before.to_owned()));
+                    }
+                    spans.push(Span::styled(
+                        matched.to_owned(),
+                        Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
+                    ));
+                    if !after.is_empty() {
+                        spans.push(Span::raw(after.to_owned()));
+                    }
+                } else {
+                    spans.push(Span::raw(command_name.clone()));
+                }
+
+                if !candidate.description.is_empty() {
+                    spans.push(Span::styled("  ", Style::default().fg(theme::DIM)));
+                    spans.push(Span::styled(
+                        candidate.description.clone(),
+                        Style::default().fg(theme::DIM),
+                    ));
+                }
+                lines.push(Line::from(spans));
+            }
+        }
     }
 
-    let title = format!(" Files & Folders ({}) ", mention.candidates.len());
     let block = Block::default()
         .title(Span::styled(title, Style::default().fg(theme::DIM)))
         .borders(Borders::ALL)
