@@ -1562,6 +1562,47 @@ mod tests {
     }
 
     #[test]
+    fn ctrl_backspace_and_delete_use_word_operations() {
+        let mut app = make_test_app();
+        app.input.set_text("hello world");
+
+        handle_normal_key(&mut app, KeyEvent::new(KeyCode::Backspace, KeyModifiers::CONTROL));
+        assert_eq!(app.input.text(), "hello ");
+
+        app.input.move_home();
+        handle_normal_key(&mut app, KeyEvent::new(KeyCode::Delete, KeyModifiers::CONTROL));
+        assert_eq!(app.input.text(), " ");
+    }
+
+    #[test]
+    fn ctrl_z_and_y_undo_and_redo_textarea_history() {
+        let mut app = make_test_app();
+        app.input.set_text("hello world");
+
+        handle_normal_key(&mut app, KeyEvent::new(KeyCode::Backspace, KeyModifiers::CONTROL));
+        assert_eq!(app.input.text(), "hello ");
+
+        handle_normal_key(&mut app, KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL));
+        assert_eq!(app.input.text(), "hello world");
+
+        handle_normal_key(&mut app, KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL));
+        assert_eq!(app.input.text(), "hello ");
+    }
+
+    #[test]
+    fn ctrl_left_right_move_by_word() {
+        let mut app = make_test_app();
+        app.input.set_text("hello world");
+        app.input.move_home();
+
+        handle_normal_key(&mut app, KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL));
+        assert!(app.input.cursor_col > 0);
+
+        handle_normal_key(&mut app, KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL));
+        assert_eq!(app.input.cursor_col, 0);
+    }
+
+    #[test]
     fn help_overlay_left_right_switches_help_view_tab() {
         let mut app = make_test_app();
         app.input.set_text("?");

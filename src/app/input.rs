@@ -14,6 +14,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use tui_textarea::{CursorMove, TextArea};
+
 #[derive(Debug)]
 pub struct InputState {
     pub lines: Vec<String>,
@@ -26,6 +28,7 @@ pub struct InputState {
     /// A placeholder line `[Pasted Text N]` is inserted into `lines` at the paste point.
     /// On `text()`, placeholders are expanded back to the original pasted content.
     pub paste_blocks: Vec<String>,
+    editor: TextArea<'static>,
 }
 
 /// Prefix/suffix used to identify paste placeholder lines in the input buffer.
@@ -42,6 +45,7 @@ impl InputState {
             cursor_col: 0,
             version: 0,
             paste_blocks: Vec::new(),
+            editor: TextArea::default(),
         }
     }
 
@@ -83,6 +87,7 @@ impl InputState {
         self.cursor_col = 0;
         self.paste_blocks.clear();
         self.version += 1;
+        self.rebuild_editor_from_snapshot();
     }
 
     /// Replace the input with the given text, placing the cursor at the end.
@@ -95,6 +100,7 @@ impl InputState {
         self.cursor_col = self.lines[self.cursor_row].chars().count();
         self.paste_blocks.clear();
         self.version += 1;
+        self.rebuild_editor_from_snapshot();
     }
 
     pub fn insert_char(&mut self, c: char) {
@@ -103,6 +109,146 @@ impl InputState {
         line.insert(byte_idx, c);
         self.cursor_col += 1;
         self.version += 1;
+    }
+
+    fn as_textarea(&self) -> TextArea<'static> {
+        let mut textarea = TextArea::from(self.lines.clone());
+        textarea.move_cursor(CursorMove::Jump(
+            u16::try_from(self.cursor_row).unwrap_or(u16::MAX),
+            u16::try_from(self.cursor_col).unwrap_or(u16::MAX),
+        ));
+        textarea
+    }
+
+    fn sync_snapshot_from_editor(&mut self) -> bool {
+        let (row, col) = self.editor.cursor();
+        let lines = self.editor.lines().to_vec();
+        if self.lines == lines && self.cursor_row == row && self.cursor_col == col {
+            return false;
+        }
+        self.lines = lines;
+        self.cursor_row = row;
+        self.cursor_col = col;
+        self.version += 1;
+        true
+    }
+
+    fn rebuild_editor_from_snapshot(&mut self) {
+        self.editor = self.as_textarea();
+    }
+
+    pub fn sync_textarea_engine(&mut self) {
+        self.rebuild_editor_from_snapshot();
+    }
+
+    fn ensure_editor_synced_from_snapshot(&mut self) {
+        if self.editor.cursor() != (self.cursor_row, self.cursor_col)
+            || self.editor.lines() != self.lines.as_slice()
+        {
+            self.rebuild_editor_from_snapshot();
+        }
+    }
+
+    fn apply_textarea_edit(&mut self, edit: impl FnOnce(&mut TextArea<'_>)) -> bool {
+        self.ensure_editor_synced_from_snapshot();
+        edit(&mut self.editor);
+        self.sync_snapshot_from_editor()
+    }
+
+    pub fn textarea_insert_char(&mut self, c: char) -> bool {
+        self.apply_textarea_edit(|textarea| {
+            textarea.insert_char(c);
+        })
+    }
+
+    pub fn textarea_insert_newline(&mut self) -> bool {
+        self.apply_textarea_edit(|textarea| {
+            textarea.insert_newline();
+        })
+    }
+
+    pub fn textarea_delete_char_before(&mut self) -> bool {
+        self.apply_textarea_edit(|textarea| {
+            let _ = textarea.delete_char();
+        })
+    }
+
+    pub fn textarea_delete_char_after(&mut self) -> bool {
+        self.apply_textarea_edit(|textarea| {
+            let _ = textarea.delete_next_char();
+        })
+    }
+
+    pub fn textarea_move_left(&mut self) -> bool {
+        self.apply_textarea_edit(|textarea| {
+            textarea.move_cursor(CursorMove::Back);
+        })
+    }
+
+    pub fn textarea_move_right(&mut self) -> bool {
+        self.apply_textarea_edit(|textarea| {
+            textarea.move_cursor(CursorMove::Forward);
+        })
+    }
+
+    pub fn textarea_move_up(&mut self) -> bool {
+        self.apply_textarea_edit(|textarea| {
+            textarea.move_cursor(CursorMove::Up);
+        })
+    }
+
+    pub fn textarea_move_down(&mut self) -> bool {
+        self.apply_textarea_edit(|textarea| {
+            textarea.move_cursor(CursorMove::Down);
+        })
+    }
+
+    pub fn textarea_move_home(&mut self) -> bool {
+        self.apply_textarea_edit(|textarea| {
+            textarea.move_cursor(CursorMove::Head);
+        })
+    }
+
+    pub fn textarea_move_end(&mut self) -> bool {
+        self.apply_textarea_edit(|textarea| {
+            textarea.move_cursor(CursorMove::End);
+        })
+    }
+
+    pub fn textarea_undo(&mut self) -> bool {
+        self.apply_textarea_edit(|textarea| {
+            let _ = textarea.undo();
+        })
+    }
+
+    pub fn textarea_redo(&mut self) -> bool {
+        self.apply_textarea_edit(|textarea| {
+            let _ = textarea.redo();
+        })
+    }
+
+    pub fn textarea_move_word_left(&mut self) -> bool {
+        self.apply_textarea_edit(|textarea| {
+            textarea.move_cursor(CursorMove::WordBack);
+        })
+    }
+
+    pub fn textarea_move_word_right(&mut self) -> bool {
+        self.apply_textarea_edit(|textarea| {
+            textarea.move_cursor(CursorMove::WordForward);
+        })
+    }
+
+    pub fn textarea_delete_word_before(&mut self) -> bool {
+        self.apply_textarea_edit(|textarea| {
+            let _ = textarea.delete_word();
+        })
+    }
+
+    pub fn textarea_delete_word_after(&mut self) -> bool {
+        self.apply_textarea_edit(|textarea| {
+            let _ = textarea.delete_next_word();
+        })
     }
 
     pub fn insert_newline(&mut self) {

@@ -62,6 +62,7 @@ pub fn compute_height(app: &App) -> u16 {
 
 /// Render the autocomplete dropdown as a floating overlay above the input area.
 #[allow(clippy::cast_possible_truncation)]
+#[allow(clippy::too_many_lines)]
 pub fn render(frame: &mut Frame, input_area: Rect, app: &App) {
     enum Dropdown<'a> {
         Mention(&'a mention::MentionState),

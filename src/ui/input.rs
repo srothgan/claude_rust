@@ -14,9 +14,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-// TODO: Replace custom InputState with tui-textarea when it supports ratatui 0.30
-// Track: https://github.com/rhysd/tui-textarea/pull/118
-
 use crate::app::input::parse_paste_placeholder_with_suffix;
 use crate::app::mention;
 use crate::app::{App, AppStatus, InputWrapCache};
@@ -28,6 +25,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Widget;
+use tui_textarea::{CursorMove, TextArea, WrapMode};
 use unicode_width::UnicodeWidthChar;
 
 /// Horizontal padding to match header/footer inset.
@@ -38,6 +36,9 @@ const PROMPT_WIDTH: u16 = 2;
 
 /// Maximum input area height (lines) to prevent the input from consuming the entire screen.
 const MAX_INPUT_HEIGHT: u16 = 12;
+const HIGHLIGHT_SLASH_PRIORITY: u8 = 6;
+const HIGHLIGHT_MENTION_PRIORITY: u8 = 7;
+const HIGHLIGHT_PASTE_PRIORITY: u8 = 8;
 
 /// Braille spinner frames (same as message.rs) for the connecting animation.
 const SPINNER_FRAMES: &[char] = &[
@@ -120,58 +121,85 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     ));
     frame.render_widget(Paragraph::new(prompt), prompt_area);
 
-    if app.input.is_empty() {
-        // Placeholder
-        let placeholder =
-            Line::from(Span::styled("Type a message...", Style::default().fg(theme::DIM)));
-        frame.render_widget(Paragraph::new(placeholder), input_area);
-
-        // Cursor at start of input area
-        frame.set_cursor_position((input_area.x, input_area.y));
+    if input_area.width == 0 {
         return;
     }
 
-    // Build wrapped input lines using cached character-based wrapping.
-    let content_width = input_area.width;
-    if content_width == 0 {
-        return;
-    }
-
-    get_or_compute_wrap(app, content_width);
-    let (lines, cursor_pos) = match app.input_wrap_cache.as_ref() {
-        Some(c) => (c.wrapped_lines.clone(), c.cursor_pos),
-        None => return,
-    };
-
-    // Post-process: highlight slash command token, @mentions, and paste placeholders.
-    let lines = highlight_slash_command(lines);
-    let lines = highlight_mentions(lines);
-    let lines = highlight_paste_placeholders(lines);
-    let cursor_row = cursor_pos.map_or(0, |(row, _)| row);
-    let scroll_y = input_scroll_y(lines.len(), cursor_row, input_area.height);
-
-    let paragraph = Paragraph::new(lines).scroll((scroll_y, 0));
+    let textarea = build_input_textarea(app);
     app.rendered_input_area = input_area;
     if app.selection.is_some() {
-        app.rendered_input_lines = render_lines_from_paragraph(&paragraph, input_area);
+        app.rendered_input_lines = render_lines_from_textarea(&textarea, input_area);
     }
-    frame.render_widget(paragraph, input_area);
+    frame.render_widget(&textarea, input_area);
 
     if let Some(sel) = app.selection
         && sel.kind == crate::app::SelectionKind::Input
     {
         frame.render_widget(SelectionOverlay { selection: sel }, input_area);
     }
+}
 
-    if let Some((row, col)) = cursor_pos
-        && row >= scroll_y
-    {
-        let cursor_x = input_area.x + col;
-        let cursor_y = input_area.y + row.saturating_sub(scroll_y);
-        if cursor_x < input_area.right() && cursor_y < input_area.bottom() {
-            frame.set_cursor_position((cursor_x, cursor_y));
+fn build_input_textarea(app: &App) -> TextArea<'static> {
+    let mut textarea = TextArea::from(app.input.lines.clone());
+    textarea.set_wrap_mode(WrapMode::Glyph);
+    textarea.set_placeholder_text("Type a message...");
+    textarea.set_placeholder_style(Style::default().fg(theme::DIM));
+    textarea.set_cursor_line_style(Style::default());
+    textarea.set_cursor_style(Style::default().add_modifier(Modifier::REVERSED));
+
+    textarea.move_cursor(CursorMove::Jump(
+        u16::try_from(app.input.cursor_row).unwrap_or(u16::MAX),
+        u16::try_from(app.input.cursor_col).unwrap_or(u16::MAX),
+    ));
+
+    apply_textarea_highlights(&mut textarea, &app.input.lines);
+    textarea
+}
+
+fn apply_textarea_highlights(textarea: &mut TextArea<'_>, lines: &[String]) {
+    let slash_style = Style::default().fg(theme::SLASH_COMMAND);
+    let mention_style = Style::default().fg(Color::Cyan);
+    let paste_style = Style::default().fg(Color::Green);
+
+    for (row, line) in lines.iter().enumerate() {
+        if let Some((start, end)) = slash_command_range(line) {
+            textarea.custom_highlight(
+                ((row, start), (row, end)),
+                slash_style,
+                HIGHLIGHT_SLASH_PRIORITY,
+            );
+        }
+
+        for (start, end, _) in mention::find_mention_spans(line) {
+            textarea.custom_highlight(
+                ((row, start), (row, end)),
+                mention_style,
+                HIGHLIGHT_MENTION_PRIORITY,
+            );
+        }
+
+        if let Some((_, suffix_end)) = parse_paste_placeholder_with_suffix(line) {
+            textarea.custom_highlight(
+                ((row, 0), (row, suffix_end)),
+                paste_style,
+                HIGHLIGHT_PASTE_PRIORITY,
+            );
         }
     }
+}
+
+fn slash_command_range(line: &str) -> Option<(usize, usize)> {
+    let start = line.find(|c: char| !c.is_whitespace())?;
+    if line.as_bytes().get(start).copied() != Some(b'/') {
+        return None;
+    }
+    let rel_end =
+        line[start..].find(char::is_whitespace).unwrap_or_else(|| line.len().saturating_sub(start));
+    let end = start + rel_end;
+    if end <= start + 1 {
+        return None;
+    }
+    Some((start, end))
 }
 
 struct SelectionOverlay {
@@ -203,9 +231,9 @@ impl Widget for SelectionOverlay {
     }
 }
 
-fn render_lines_from_paragraph(paragraph: &Paragraph, area: Rect) -> Vec<String> {
+fn render_lines_from_textarea(textarea: &TextArea<'_>, area: Rect) -> Vec<String> {
     let mut buf = Buffer::empty(area);
-    paragraph.clone().render(area, &mut buf);
+    textarea.render(area, &mut buf);
     let mut lines = Vec::with_capacity(area.height as usize);
     for y in 0..area.height {
         let mut line = String::new();
@@ -217,19 +245,6 @@ fn render_lines_from_paragraph(paragraph: &Paragraph, area: Rect) -> Vec<String>
         lines.push(line.trim_end().to_owned());
     }
     lines
-}
-
-#[allow(clippy::cast_possible_truncation)]
-fn input_scroll_y(total_wrapped_lines: usize, cursor_row: u16, viewport_height: u16) -> u16 {
-    if viewport_height == 0 {
-        return 0;
-    }
-    let total = u16::try_from(total_wrapped_lines).unwrap_or(u16::MAX);
-    if total <= viewport_height {
-        return 0;
-    }
-    let max_scroll = total.saturating_sub(viewport_height);
-    cursor_row.saturating_add(1).saturating_sub(viewport_height).min(max_scroll)
 }
 
 /// Compute (or return cached) wrap result for the input field.
@@ -354,139 +369,20 @@ fn wrap_lines_and_cursor(
     (wrapped, cursor_pos)
 }
 
-/// Style paste placeholder lines (e.g. `[Pasted Text 1 - 25 lines]`) as green.
-fn highlight_paste_placeholders(lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
-    let paste_style = Style::default().fg(Color::Green);
-
-    lines
-        .into_iter()
-        .map(|line| {
-            let raw: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-            if let Some((_, suffix_end)) = parse_paste_placeholder_with_suffix(&raw) {
-                if suffix_end == raw.len() {
-                    Line::from(Span::styled(raw, paste_style))
-                } else {
-                    Line::from(vec![
-                        Span::styled(raw[..suffix_end].to_owned(), paste_style),
-                        Span::raw(raw[suffix_end..].to_owned()),
-                    ])
-                }
-            } else {
-                line
-            }
-        })
-        .collect()
-}
-
-/// Post-process wrapped lines to highlight leading `/command` in light magenta.
-fn highlight_slash_command(lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
-    let slash_style = Style::default().fg(theme::SLASH_COMMAND);
-
-    lines
-        .into_iter()
-        .map(|line| {
-            let raw: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-            let start = raw.find(|c: char| !c.is_whitespace());
-            let Some(start) = start else {
-                return line;
-            };
-            if raw.as_bytes().get(start).copied() != Some(b'/') {
-                return line;
-            }
-            let rel_end = raw[start..]
-                .find(char::is_whitespace)
-                .unwrap_or_else(|| raw.len().saturating_sub(start));
-            let end = start + rel_end;
-            if end <= start + 1 {
-                return line;
-            }
-
-            let mut spans: Vec<Span<'static>> = Vec::new();
-            if start > 0 {
-                spans.push(Span::raw(raw[..start].to_owned()));
-            }
-            spans.push(Span::styled(raw[start..end].to_owned(), slash_style));
-            if end < raw.len() {
-                spans.push(Span::raw(raw[end..].to_owned()));
-            }
-            Line::from(spans)
-        })
-        .collect()
-}
-
-/// Post-process wrapped lines to highlight `@path` mentions in cyan.
-fn highlight_mentions(lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
-    let mention_style = Style::default().fg(Color::Cyan);
-
-    lines
-        .into_iter()
-        .map(|line| {
-            // Collect the raw text of the line from all spans
-            let raw: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-            if !raw.contains('@') {
-                return line;
-            }
-
-            let spans = mention::find_mention_spans(&raw);
-            if spans.is_empty() {
-                return line;
-            }
-
-            let mut styled_spans: Vec<Span<'static>> = Vec::new();
-            let mut last_end = 0;
-
-            for (start, end, _) in &spans {
-                if *start > last_end {
-                    styled_spans.push(Span::raw(raw[last_end..*start].to_owned()));
-                }
-                styled_spans.push(Span::styled(raw[*start..*end].to_owned(), mention_style));
-                last_end = *end;
-            }
-
-            if last_end < raw.len() {
-                styled_spans.push(Span::raw(raw[last_end..].to_owned()));
-            }
-
-            Line::from(styled_spans)
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{highlight_slash_command, input_scroll_y};
-    use ratatui::text::{Line, Span};
+    use super::slash_command_range;
 
     #[test]
-    fn input_scroll_zero_when_content_fits() {
-        assert_eq!(input_scroll_y(5, 3, 12), 0);
+    fn slash_range_matches_leading_command_token() {
+        assert_eq!(slash_command_range("/mode plan"), Some((0, 5)));
+        assert_eq!(slash_command_range("  /mode plan"), Some((2, 7)));
     }
 
     #[test]
-    fn input_scroll_follows_cursor_beyond_viewport() {
-        assert_eq!(input_scroll_y(20, 13, 12), 2);
-        assert_eq!(input_scroll_y(20, 19, 12), 8);
-    }
-
-    #[test]
-    fn input_scroll_clamps_to_max() {
-        // Max scroll = total - viewport = 3
-        assert_eq!(input_scroll_y(15, 14, 12), 3);
-    }
-
-    #[test]
-    fn slash_highlight_styles_leading_command_token_only() {
-        let lines = vec![Line::from("/mode plan")];
-        let out = highlight_slash_command(lines);
-        assert_eq!(out[0].spans.len(), 2);
-        assert_eq!(out[0].spans[0].content, "/mode");
-        assert_eq!(out[0].spans[1].content, " plan");
-    }
-
-    #[test]
-    fn slash_highlight_ignores_non_command_lines() {
-        let lines = vec![Line::from(Span::raw("hello /mode"))];
-        let out = highlight_slash_command(lines.clone());
-        assert_eq!(out[0].spans[0].content, lines[0].spans[0].content);
+    fn slash_range_ignores_non_command_lines() {
+        assert_eq!(slash_command_range("hello /mode"), None);
+        assert_eq!(slash_command_range("/"), None);
+        assert_eq!(slash_command_range("   "), None);
     }
 }

@@ -170,17 +170,46 @@ pub(super) fn handle_normal_key(app: &mut App, key: KeyEvent) {
                 && !m.contains(KeyModifiers::SHIFT)
                 && !m.contains(KeyModifiers::CONTROL) =>
         {
-            app.input.insert_newline();
+            let _ = app.input.textarea_insert_newline();
             app.pending_submit = true;
         }
         // Ctrl+Enter or Shift+Enter: explicit newline (never submits)
         (KeyCode::Enter, _) if app.focus_owner() != FocusOwner::TodoList => {
             app.pending_submit = false;
-            app.input.insert_newline();
+            let _ = app.input.textarea_insert_newline();
+        }
+        // TextArea-native history
+        (KeyCode::Char('z'), m)
+            if app.focus_owner() != FocusOwner::TodoList && m == KeyModifiers::CONTROL =>
+        {
+            let _ = app.input.textarea_undo();
+        }
+        (KeyCode::Char('y'), m)
+            if app.focus_owner() != FocusOwner::TodoList && m == KeyModifiers::CONTROL =>
+        {
+            let _ = app.input.textarea_redo();
         }
         // Navigation
-        (KeyCode::Left, _) if app.focus_owner() != FocusOwner::TodoList => app.input.move_left(),
-        (KeyCode::Right, _) if app.focus_owner() != FocusOwner::TodoList => app.input.move_right(),
+        (KeyCode::Left, m)
+            if app.focus_owner() != FocusOwner::TodoList
+                && m.contains(KeyModifiers::CONTROL)
+                && !m.contains(KeyModifiers::ALT) =>
+        {
+            let _ = app.input.textarea_move_word_left();
+        }
+        (KeyCode::Right, m)
+            if app.focus_owner() != FocusOwner::TodoList
+                && m.contains(KeyModifiers::CONTROL)
+                && !m.contains(KeyModifiers::ALT) =>
+        {
+            let _ = app.input.textarea_move_word_right();
+        }
+        (KeyCode::Left, _) if app.focus_owner() != FocusOwner::TodoList => {
+            let _ = app.input.textarea_move_left();
+        }
+        (KeyCode::Right, _) if app.focus_owner() != FocusOwner::TodoList => {
+            let _ = app.input.textarea_move_right();
+        }
         (KeyCode::Up, _) if app.focus_owner() == FocusOwner::TodoList => {
             move_todo_selection_up(app);
         }
@@ -197,8 +226,12 @@ pub(super) fn handle_normal_key(app: &mut App, key: KeyEvent) {
                 app.viewport.scroll_down(1);
             }
         }
-        (KeyCode::Home, _) if app.focus_owner() != FocusOwner::TodoList => app.input.move_home(),
-        (KeyCode::End, _) if app.focus_owner() != FocusOwner::TodoList => app.input.move_end(),
+        (KeyCode::Home, _) if app.focus_owner() != FocusOwner::TodoList => {
+            let _ = app.input.textarea_move_home();
+        }
+        (KeyCode::End, _) if app.focus_owner() != FocusOwner::TodoList => {
+            let _ = app.input.textarea_move_end();
+        }
         // Tab: toggle focus between input and open todo list
         (KeyCode::Tab, m)
             if !m.contains(KeyModifiers::SHIFT)
@@ -259,18 +292,32 @@ pub(super) fn handle_normal_key(app: &mut App, key: KeyEvent) {
             }
         }
         // Editing
+        (KeyCode::Backspace, m)
+            if app.focus_owner() != FocusOwner::TodoList
+                && m.contains(KeyModifiers::CONTROL)
+                && !m.contains(KeyModifiers::ALT) =>
+        {
+            let _ = app.input.textarea_delete_word_before();
+        }
+        (KeyCode::Delete, m)
+            if app.focus_owner() != FocusOwner::TodoList
+                && m.contains(KeyModifiers::CONTROL)
+                && !m.contains(KeyModifiers::ALT) =>
+        {
+            let _ = app.input.textarea_delete_word_after();
+        }
         (KeyCode::Backspace, _) if app.focus_owner() != FocusOwner::TodoList => {
-            app.input.delete_char_before();
+            let _ = app.input.textarea_delete_char_before();
         }
         (KeyCode::Delete, _) if app.focus_owner() != FocusOwner::TodoList => {
-            app.input.delete_char_after();
+            let _ = app.input.textarea_delete_char_after();
         }
         // Printable characters
         (KeyCode::Char(c), m) if is_printable_text_modifiers(m) => {
             if app.focus_owner() == FocusOwner::TodoList {
                 app.release_focus_target(FocusTarget::TodoList);
             }
-            app.input.insert_char(c);
+            let _ = app.input.textarea_insert_char(c);
             if c == '@' {
                 mention::activate(app);
             } else if c == '/' {
@@ -290,13 +337,13 @@ pub(super) fn handle_normal_key(app: &mut App, key: KeyEvent) {
 
 fn try_move_input_cursor_up(app: &mut App) -> bool {
     let before = (app.input.cursor_row, app.input.cursor_col);
-    app.input.move_up();
+    let _ = app.input.textarea_move_up();
     (app.input.cursor_row, app.input.cursor_col) != before
 }
 
 fn try_move_input_cursor_down(app: &mut App) -> bool {
     let before = (app.input.cursor_row, app.input.cursor_col);
-    app.input.move_down();
+    let _ = app.input.textarea_move_down();
     (app.input.cursor_row, app.input.cursor_col) != before
 }
 
@@ -318,6 +365,7 @@ fn should_sync_autocomplete_after_key(app: &App, key: KeyEvent) -> bool {
             | KeyCode::Enter,
             _,
         ) => true,
+        (KeyCode::Char('z' | 'y'), m) if m == KeyModifiers::CONTROL => true,
         (KeyCode::Char(_), m) if is_printable_text_modifiers(m) => true,
         _ => false,
     }
@@ -337,6 +385,7 @@ pub(super) fn cleanup_leaked_char_before_placeholder(app: &mut App) {
     app.input.cursor_row = 0;
     app.input.cursor_col = app.input.lines[0].chars().count();
     app.input.version += 1;
+    app.input.sync_textarea_engine();
 }
 
 pub(super) fn toggle_todo_panel_focus(app: &mut App) {
@@ -395,7 +444,7 @@ fn handle_help_key(app: &mut App, key: KeyEvent) {
     match (key.code, key.modifiers) {
         (HELP_TAB_PREV_KEY, m) if m == KeyModifiers::NONE => set_help_view(app, HelpView::Keys),
         (HELP_TAB_NEXT_KEY, m) if m == KeyModifiers::NONE => {
-            set_help_view(app, HelpView::SlashCommands)
+            set_help_view(app, HelpView::SlashCommands);
         }
         _ => handle_normal_key(app, key),
     }
@@ -428,11 +477,11 @@ pub(super) fn handle_mention_key(app: &mut App, key: KeyEvent) {
         (KeyCode::Enter | KeyCode::Tab, _) => mention::confirm_selection(app),
         (KeyCode::Esc, _) => mention::deactivate(app),
         (KeyCode::Backspace, _) => {
-            app.input.delete_char_before();
+            let _ = app.input.textarea_delete_char_before();
             mention::update_query(app);
         }
         (KeyCode::Char(c), m) if is_printable_text_modifiers(m) => {
-            app.input.insert_char(c);
+            let _ = app.input.textarea_insert_char(c);
             if c.is_whitespace() {
                 mention::deactivate(app);
             } else {
@@ -455,11 +504,11 @@ fn handle_slash_key(app: &mut App, key: KeyEvent) {
         (KeyCode::Enter | KeyCode::Tab, _) => slash::confirm_selection(app),
         (KeyCode::Esc, _) => slash::deactivate(app),
         (KeyCode::Backspace, _) => {
-            app.input.delete_char_before();
+            let _ = app.input.textarea_delete_char_before();
             slash::update_query(app);
         }
         (KeyCode::Char(c), m) if is_printable_text_modifiers(m) => {
-            app.input.insert_char(c);
+            let _ = app.input.textarea_insert_char(c);
             if c.is_whitespace() {
                 slash::deactivate(app);
             } else {

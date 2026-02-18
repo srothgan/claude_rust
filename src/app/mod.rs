@@ -276,6 +276,7 @@ fn finalize_deferred_submit(app: &mut App) {
     app.input.cursor_row = app.input.lines.len().saturating_sub(1);
     app.input.cursor_col = app.input.lines.last().map_or(0, |l| l.chars().count());
     app.input.version += 1;
+    app.input.sync_textarea_engine();
 
     input_submit::submit_input(app);
 }

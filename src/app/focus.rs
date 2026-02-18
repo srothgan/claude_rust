@@ -34,6 +34,7 @@ pub enum FocusOwner {
 }
 
 #[derive(Debug, Clone, Copy)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct FocusContext {
     pub todo_focus_available: bool,
     pub mention_active: bool,
@@ -52,6 +53,7 @@ impl FocusContext {
     }
 
     #[must_use]
+    #[allow(clippy::fn_params_excessive_bools)]
     pub const fn with_help(
         todo_focus_available: bool,
         mention_active: bool,

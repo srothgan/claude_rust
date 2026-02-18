@@ -215,9 +215,12 @@ fn build_key_help_items(app: &App) -> Vec<(String, String)> {
         items.push(("Shift+Enter".to_owned(), "Insert newline".to_owned()));
         items.push(("Up/Down".to_owned(), "Move cursor / scroll chat".to_owned()));
         items.push(("Left/Right".to_owned(), "Move cursor".to_owned()));
+        items.push(("Ctrl+Left/Right".to_owned(), "Word left/right".to_owned()));
         items.push(("Home/End".to_owned(), "Line start/end".to_owned()));
         items.push(("Backspace".to_owned(), "Delete before".to_owned()));
         items.push(("Delete".to_owned(), "Delete after".to_owned()));
+        items.push(("Ctrl+Backspace/Delete".to_owned(), "Delete word".to_owned()));
+        items.push(("Ctrl+z/y".to_owned(), "Undo/redo".to_owned()));
         items.push(("Paste".to_owned(), "Insert text".to_owned()));
     }
 

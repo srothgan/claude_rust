@@ -357,6 +357,7 @@ pub fn confirm_selection(app: &mut App) {
     *line = new_line;
     app.input.cursor_col = new_cursor_col.min(new_line_len);
     app.input.version += 1;
+    app.input.sync_textarea_engine();
 
     if app.mention.is_none() {
         app.release_focus_target(FocusTarget::Mention);
@@ -367,6 +368,7 @@ pub fn confirm_selection(app: &mut App) {
 ///
 /// Returns `true` if the slash input was fully handled and should not be sent as a prompt.
 /// Returns `false` when the input should continue through the normal prompt path.
+#[allow(clippy::too_many_lines)]
 pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
     let Some(parsed) = parse(text) else {
         return false;
@@ -420,11 +422,11 @@ pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
         }
         "/mode" => {
             app.input.clear();
-            let [mode_arg] = parsed.args.as_slice() else {
+            let [requested_mode_arg] = parsed.args.as_slice() else {
                 push_system_message(app, "Usage: /mode <id>");
                 return true;
             };
-            let mode_arg = *mode_arg;
+            let requested_mode = *requested_mode_arg;
 
             let Some((conn, sid)) = require_active_session(
                 app,
@@ -435,14 +437,15 @@ pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
             };
 
             if let Some(ref mode) = app.mode
-                && !mode.available_modes.iter().any(|m| m.id == mode_arg)
+                && !mode.available_modes.iter().any(|m| m.id == requested_mode)
             {
-                push_system_message(app, format!("Unknown mode: {mode_arg}"));
+                push_system_message(app, format!("Unknown mode: {requested_mode}"));
                 return true;
             }
 
             if let Some(ref mut mode_state) = app.mode
-                && let Some(info) = mode_state.available_modes.iter().find(|m| m.id == mode_arg)
+                && let Some(info) =
+                    mode_state.available_modes.iter().find(|m| m.id == requested_mode)
             {
                 mode_state.current_mode_id = info.id.clone();
                 mode_state.current_mode_name = info.name.clone();
@@ -450,7 +453,7 @@ pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
             }
 
             let tx = app.event_tx.clone();
-            let mode_id = acp::SessionModeId::new(mode_arg);
+            let mode_id = acp::SessionModeId::new(requested_mode);
             tokio::task::spawn_local(async move {
                 if let Err(e) =
                     conn.set_session_mode(acp::SetSessionModeRequest::new(sid, mode_id)).await
@@ -477,7 +480,7 @@ pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
                 return true;
             };
 
-            app.model_name = model_name.clone();
+            app.model_name.clone_from(&model_name);
             app.cached_header_line = None;
 
             let tx = app.event_tx.clone();
