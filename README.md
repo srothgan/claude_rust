@@ -4,7 +4,7 @@ A native Rust terminal interface for Claude Code. Drop-in replacement for Anthro
 
 [![CI](https://github.com/srothgan/claude_rust/actions/workflows/ci.yml/badge.svg)](https://github.com/srothgan/claude_rust/actions/workflows/ci.yml)
 [![License: AGPL-3.0-or-later](https://img.shields.io/badge/License-AGPL--3.0--or--later-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
-[![MSRV](https://img.shields.io/badge/MSRV-1.86.0-blue.svg)](https://blog.rust-lang.org/)
+[![MSRV](https://img.shields.io/badge/MSRV-1.88.0-blue.svg)](https://blog.rust-lang.org/)
 
 ## About
 
@@ -34,13 +34,36 @@ Three-layer design:
 
 ## Prerequisites
 
-- Rust 1.86.0+ (install via [rustup](https://rustup.rs))
+- Rust 1.88.0+ (install via [rustup](https://rustup.rs), required for source builds and Cargo installs)
 - Node.js 18+ with npx (for the ACP adapter)
 - Existing Claude Code authentication (`~/.claude/config.json`)
 
+## Install
+
+### Cargo (crates.io)
+
+```bash
+cargo install claude-rs
+```
+
+### npm (global)
+
+```bash
+npm install -g claude-rs
+```
+
+The npm package installs a `claude-rs` command and downloads the matching
+prebuilt release binary for your platform during `postinstall`.
+
+## Usage
+
+```bash
+claude-rs
+```
+
 ## Status
 
-This project is in early development. See [CONTRIBUTING.md](CONTRIBUTING.md) for how to get involved.
+This project is pre-1.0 and under active development. See [CONTRIBUTING.md](CONTRIBUTING.md) for how to get involved.
 
 ## License
 

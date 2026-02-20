@@ -1,0 +1,32 @@
+{
+  "name": "claude-rs",
+  "version": "0.1.0",
+  "description": "Native Rust terminal interface for Claude Code",
+  "license": "AGPL-3.0-or-later",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/srothgan/claude_rust.git"
+  },
+  "bugs": {
+    "url": "https://github.com/srothgan/claude_rust/issues"
+  },
+  "homepage": "https://github.com/srothgan/claude_rust#readme",
+  "bin": {
+    "claude-rs": "bin/claude-rs.js"
+  },
+  "files": [
+    "bin",
+    "scripts",
+    "LICENSE",
+    "README.md"
+  ],
+  "scripts": {
+    "postinstall": "node ./scripts/postinstall.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

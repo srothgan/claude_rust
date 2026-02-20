@@ -22,7 +22,7 @@ pub mod ui;
 use clap::Parser;
 
 #[derive(Parser, Debug)]
-#[command(name = "claude-rust", about = "Native Rust terminal for Claude Code")]
+#[command(name = "claude-rs", about = "Native Rust terminal for Claude Code")]
 pub struct Cli {
     /// Override the model (sonnet, opus, haiku)
     #[arg(long, short)]

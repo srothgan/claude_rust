@@ -39,7 +39,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         let mut spans = vec![
             Span::styled("\u{1F980} ", Style::default().fg(theme::RUST_ORANGE)),
             Span::styled(
-                "claude-rust",
+                "claude-rs",
                 Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
             ),
             sep(),

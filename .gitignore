@@ -26,6 +26,8 @@ Thumbs.db
 # Environment
 .env
 .env.local
+node_modules/
+.npm-cache/
 
 # Local Claude Code config
 .claude/
@@ -38,3 +40,5 @@ Thumbs.db
 
 # Personal Notes etc.
 /notes
+/analysis/
+/AGENTS.md
