@@ -186,7 +186,7 @@ async fn turn_error_does_not_create_message() {
 
     send_acp_event(&mut app, ClientEvent::TurnError("connection lost".into()));
 
-    // TurnError only sets status — error is logged, not shown in chat
+    // TurnError only sets status - error is logged, not shown in chat
     assert!(app.messages.is_empty(), "TurnError should not create a message");
 }
 
@@ -320,7 +320,7 @@ async fn text_chunk_after_user_message_creates_new_assistant_message() {
         ClientEvent::SessionUpdate(acp::SessionUpdate::AgentMessageChunk(chunk)),
     );
 
-    // Should NOT append to user message — creates new assistant message
+    // Should NOT append to user message - creates new assistant message
     assert_eq!(app.messages.len(), 2);
     assert!(matches!(app.messages[0].role, MessageRole::User));
     assert!(matches!(app.messages[1].role, MessageRole::Assistant));

@@ -1,4 +1,4 @@
-// claude_rust — A native Rust terminal interface for Claude Code
+// claude_rust - A native Rust terminal interface for Claude Code
 // Copyright (C) 2025  Simon Peter Rothgang
 //
 // This program is free software: you can redistribute it and/or modify

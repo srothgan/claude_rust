@@ -224,6 +224,7 @@ fn render_scrolled(
 /// Compute overlay scrollbar geometry for a single-column track.
 ///
 /// Returns None when content fits in the viewport.
+#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn compute_scrollbar_geometry(
     content_height: usize,
     viewport_height: usize,
@@ -257,6 +258,7 @@ fn ease_value(current: &mut f32, target: f32, factor: f32) {
     }
 }
 
+#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn smooth_scrollbar_geometry(
     viewport: &mut crate::app::ChatViewport,
     target: ScrollbarGeometry,
@@ -280,6 +282,7 @@ fn smooth_scrollbar_geometry(
 
     ScrollbarGeometry { thumb_top, thumb_size }
 }
+#[allow(clippy::cast_possible_truncation)]
 fn render_scrollbar_overlay(
     frame: &mut Frame,
     viewport: &mut crate::app::ChatViewport,

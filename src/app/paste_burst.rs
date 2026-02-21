@@ -1,4 +1,4 @@
-// claude_rust — A native Rust terminal interface for Claude Code
+// claude_rust - A native Rust terminal interface for Claude Code
 // Copyright (C) 2025  Simon Peter Rothgang
 //
 // This program is free software: you can redistribute it and/or modify
@@ -60,7 +60,7 @@ impl PasteBurstDetector {
             if now.duration_since(last) <= BURST_INTERVAL {
                 self.burst_len += 1;
             } else {
-                // Gap too large — start a new burst
+                // Gap too large - start a new burst
                 self.burst_len = 1;
                 self.lines_before_burst = current_line_count;
             }

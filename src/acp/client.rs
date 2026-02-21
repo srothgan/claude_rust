@@ -1,4 +1,4 @@
-// claude_rust — A native Rust terminal interface for Claude Code
+// claude_rust - A native Rust terminal interface for Claude Code
 // Copyright (C) 2025  Simon Peter Rothgang
 //
 // This program is free software: you can redistribute it and/or modify
@@ -78,7 +78,7 @@ pub struct ClaudeClient {
 
 pub struct TerminalProcess {
     child: tokio::process::Child,
-    /// Accumulated stdout+stderr — append-only, never cleared.
+    /// Accumulated stdout+stderr - append-only, never cleared.
     /// Shared with background reader tasks via Arc.
     pub(crate) output_buffer: Arc<Mutex<Vec<u8>>>,
     /// Byte offset: how much of `output_buffer` has already been returned
@@ -140,7 +140,7 @@ impl ClaudeClient {
 pub fn kill_all_terminals(terminals: &TerminalMap) {
     let mut map = terminals.borrow_mut();
     for (_, terminal) in map.iter_mut() {
-        // start_kill is synchronous — sends the kill signal without awaiting
+        // start_kill is synchronous - sends the kill signal without awaiting
         let _ = terminal.child.start_kill();
     }
     map.clear();
@@ -253,7 +253,7 @@ impl acp::Client for ClaudeClient {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .envs(req.env.iter().map(|e| (&e.name, &e.value)))
-            // Force colored output — programs disable colors when stdout is piped.
+            // Force colored output - programs disable colors when stdout is piped.
             // These env vars cover most CLI tools across ecosystems.
             .env("FORCE_COLOR", "1")
             .env("CLICOLOR_FORCE", "1")
@@ -333,7 +333,7 @@ impl acp::Client for ClaudeClient {
         let tid = req.terminal_id.to_string();
         let mut terminals = self.terminals.borrow_mut();
         if let Some(terminal) = terminals.get_mut(tid.as_str()) {
-            // start_kill sends the signal synchronously — no await needed
+            // start_kill sends the signal synchronously - no await needed
             terminal.child.start_kill().map_err(io_err)?;
         }
         Ok(acp::KillTerminalCommandResponse::new())

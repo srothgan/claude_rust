@@ -8,7 +8,7 @@ A native Rust terminal interface for Claude Code. Drop-in replacement for Anthro
 
 ## About
 
-claude-rs replaces the stock Claude Code terminal interface with a native Rust binary built on [Ratatui](https://ratatui.rs/). It connects to the same Claude API through the [ACP (Agent Client Protocol)](https://github.com/nicolo-ribaudo/agent-client-protocol) Rust SDK, spawning Zed's `@zed-industries/claude-code-acp` adapter as a child process. All existing Claude Code functionality — tool calls, file editing, terminal commands, permissions — works unchanged.
+claude-rs replaces the stock Claude Code terminal interface with a native Rust binary built on [Ratatui](https://ratatui.rs/). It connects to the same Claude API through the [ACP (Agent Client Protocol)](https://github.com/nicolo-ribaudo/agent-client-protocol) Rust SDK, spawning Zed's `@zed-industries/claude-code-acp` adapter as a child process. Core Claude Code functionality - tool calls, file editing, terminal commands, and permissions - works unchanged.
 
 ## Why
 
@@ -26,11 +26,11 @@ claude-rs fixes all of these by compiling to a single native binary with direct 
 
 Three-layer design:
 
-**Presentation** (Rust/Ratatui) — Single binary with an async event loop (Tokio) handling keyboard input and ACP messages concurrently. Virtual-scrolled chat history with syntax-highlighted code blocks.
+**Presentation** (Rust/Ratatui) - Single binary with an async event loop (Tokio) handling keyboard input and ACP messages concurrently. Virtual-scrolled chat history with syntax-highlighted code blocks.
 
-**Protocol** (ACP over stdio) — Spawns the Zed ACP adapter as a child process and communicates via JSON-RPC over stdin/stdout. Bidirectional streaming for user messages and response chunks. ACP futures are `!Send`, so all protocol code runs in a `tokio::task::LocalSet` with `mpsc` channels to the UI.
+**Protocol** (ACP over stdio) - Spawns the Zed ACP adapter as a child process and communicates via JSON-RPC over stdin/stdout. Bidirectional streaming for user messages and response chunks. ACP futures are `!Send`, so all protocol code runs in a `tokio::task::LocalSet` with `mpsc` channels to the UI.
 
-**Agent** (Zed ACP Adapter) — TypeScript/npm package by Zed Industries. Manages Claude API authentication, reads `~/.claude/config.json`, and handles tool execution.
+**Agent** (Zed ACP Adapter) - TypeScript/npm package by Zed Industries. Manages Claude API authentication, reads `~/.claude/config.json`, and handles tool execution.
 
 ## Prerequisites
 
@@ -60,6 +60,12 @@ prebuilt release binary for your platform during `postinstall`.
 ```bash
 claude-rs
 ```
+
+## Known Limitations
+
+- Token usage and cost tracking are currently unavailable because the ACP adapter does not emit usage events yet.
+- Session resume via `--resume` is currently blocked on an upstream ACP adapter release containing the Windows path encoding fix.
+- `/login` and `/logout` are intentionally not offered in command discovery for this release.
 
 ## Status
 

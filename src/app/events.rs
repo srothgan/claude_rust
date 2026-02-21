@@ -1,4 +1,4 @@
-// claude_rust — A native Rust terminal interface for Claude Code
+// claude_rust - A native Rust terminal interface for Claude Code
 // Copyright (C) 2025  Simon Peter Rothgang
 //
 // This program is free software: you can redistribute it and/or modify
@@ -472,7 +472,7 @@ fn handle_tool_call(app: &mut App, tc: acp::ToolCall) {
             app.index_tool_call(tc_id, msg_idx, block_idx);
         }
     } else {
-        // No assistant message yet — create one for this tool call
+        // No assistant message yet - create one for this tool call
         let tc_id = tool_info.id.clone();
         let new_idx = app.messages.len();
         app.messages.push(ChatMessage {
@@ -494,7 +494,7 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
     match update {
         acp::SessionUpdate::AgentMessageChunk(chunk) => {
             if let acp::ContentBlock::Text(text) = chunk.content {
-                // Text is actively streaming — suppress the "Thinking..." spinner
+                // Text is actively streaming - suppress the "Thinking..." spinner
                 app.status = AppStatus::Running;
 
                 // Append to last text block in current assistant message, or create new
@@ -631,7 +631,7 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
             }
 
             // If all tool calls have completed/failed, flip back to Thinking
-            // (the turn is still active — TurnComplete hasn't arrived yet).
+            // (the turn is still active - TurnComplete hasn't arrived yet).
             if matches!(app.status, AppStatus::Running) && !has_in_progress_tool_calls(app) {
                 app.status = AppStatus::Thinking;
             }
@@ -980,7 +980,7 @@ mod tests {
 
     #[test]
     fn shorten_title_equals_cwd_exactly() {
-        // Title IS the cwd path — after stripping, nothing left
+        // Title IS the cwd path - after stripping, nothing left
         let result = shorten_tool_title("/home/user/project", "/home/user/project");
         // The cwd+/ won't match because title doesn't have trailing content after cwd
         // cwd_norm = "/home/user/project/", title doesn't contain that
@@ -1159,7 +1159,7 @@ mod tests {
         assert!(!has_in_progress_tool_calls(&app));
     }
 
-    /// Only the LAST message matters — earlier assistant messages are ignored.
+    /// Only the LAST message matters - earlier assistant messages are ignored.
     #[test]
     fn has_in_progress_only_checks_last_message() {
         let mut app = make_test_app();
@@ -1168,7 +1168,7 @@ mod tests {
             "tc1",
             acp::ToolCallStatus::InProgress,
         )))]));
-        // Last message is user — should be false
+        // Last message is user - should be false
         app.messages.push(user_msg("thanks"));
         assert!(!has_in_progress_tool_calls(&app));
     }
@@ -1199,7 +1199,7 @@ mod tests {
         assert!(has_in_progress_tool_calls(&app));
     }
 
-    /// Text blocks mixed with tool calls — text blocks are correctly skipped.
+    /// Text blocks mixed with tool calls - text blocks are correctly skipped.
     #[test]
     fn has_in_progress_text_and_tools_mixed() {
         let mut app = make_test_app();
@@ -1255,7 +1255,7 @@ mod tests {
         assert!(!has_in_progress_tool_calls(&app));
     }
 
-    /// Mix of Failed and Completed — neither counts as in-progress.
+    /// Mix of Failed and Completed - neither counts as in-progress.
     #[test]
     fn has_in_progress_failed_and_completed_mix() {
         let mut app = make_test_app();
@@ -1275,7 +1275,7 @@ mod tests {
         assert!(!has_in_progress_tool_calls(&app));
     }
 
-    // make_test_app — verify defaults
+    // make_test_app - verify defaults
 
     #[test]
     fn test_app_defaults() {

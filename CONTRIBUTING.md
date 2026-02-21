@@ -85,7 +85,7 @@ cargo clippy --all-targets --all-features -- -D warnings
 See [detailed-plan.md](notes/detailed-plan.md) for the full architecture and implementation plan.
 
 Key architectural decisions:
-- ACP futures are `!Send` — all ACP code runs in `tokio::task::LocalSet`
+- ACP futures are `!Send` - all ACP code runs in `tokio::task::LocalSet`
 - UI and ACP communicate via `tokio::sync::mpsc` channels
 - The TUI uses Ratatui with Crossterm backend (cross-platform)
 

@@ -1,4 +1,4 @@
-// claude_rust — A native Rust terminal interface for Claude Code
+// claude_rust - A native Rust terminal interface for Claude Code
 // Copyright (C) 2025  Simon Peter Rothgang
 //
 // This program is free software: you can redistribute it and/or modify
@@ -194,7 +194,7 @@ mod tests {
         assert_eq!(end, b);
     }
 
-    /// Adjacent rows, both at col 0 — order by row.
+    /// Adjacent rows, both at col 0 - order by row.
     #[test]
     fn normalize_adjacent_rows_col_zero() {
         let a = SelectionPoint { row: 5, col: 0 };
@@ -295,7 +295,7 @@ mod tests {
         assert_eq!(slice_by_cols(s, 1, 4), "\tb\t");
     }
 
-    /// Newline embedded in a "line" — treated as one char.
+    /// Newline embedded in a "line" - treated as one char.
     #[test]
     fn slice_with_embedded_newline() {
         let s = "ab\ncd";
@@ -342,7 +342,7 @@ mod tests {
     }
 
     /// Combining diacritical mark: e + combining acute = 2 chars, 1 glyph.
-    /// Slicing between them splits the glyph — this is the char-based reality.
+    /// Slicing between them splits the glyph - this is the char-based reality.
     #[test]
     fn slice_combining_diacritical_splits_glyph() {
         let s = "e\u{0301}x"; // e + combining acute + x
@@ -386,7 +386,7 @@ mod tests {
         assert_eq!(slice_by_cols(flag, 1, 2), "\u{1F1F8}"); // other half
     }
 
-    /// Arabic RTL text — chars are chars regardless of display direction.
+    /// Arabic RTL text - chars are chars regardless of display direction.
     #[test]
     fn slice_arabic_rtl() {
         let s = "\u{0645}\u{0631}\u{062D}\u{0628}\u{0627}"; // mrhba

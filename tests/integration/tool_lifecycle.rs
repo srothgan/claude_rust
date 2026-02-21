@@ -361,7 +361,7 @@ async fn task_failed_also_removes_from_active_ids() {
     send_acp_event(&mut app, ClientEvent::SessionUpdate(acp::SessionUpdate::ToolCall(tc)));
     assert!(app.active_task_ids.contains("task-fail"));
 
-    // Fail (not complete) — should still remove
+    // Fail (not complete) - should still remove
     let fields = acp::ToolCallUpdateFields::new().status(acp::ToolCallStatus::Failed);
     send_acp_event(
         &mut app,
@@ -386,7 +386,7 @@ async fn pending_status_update_does_not_remove_task() {
         .meta(meta);
     send_acp_event(&mut app, ClientEvent::SessionUpdate(acp::SessionUpdate::ToolCall(tc)));
 
-    // Update with Pending status — should NOT remove from active set
+    // Update with Pending status - should NOT remove from active set
     let fields = acp::ToolCallUpdateFields::new().status(acp::ToolCallStatus::Pending);
     send_acp_event(
         &mut app,
@@ -407,7 +407,7 @@ async fn in_progress_status_does_not_collapse_tool_call() {
     let tc = acp::ToolCall::new("tc-inprog", "Read file").status(acp::ToolCallStatus::InProgress);
     send_acp_event(&mut app, ClientEvent::SessionUpdate(acp::SessionUpdate::ToolCall(tc)));
 
-    // Update to InProgress again — should NOT set collapsed
+    // Update to InProgress again - should NOT set collapsed
     let fields = acp::ToolCallUpdateFields::new().status(acp::ToolCallStatus::InProgress);
     send_acp_event(
         &mut app,

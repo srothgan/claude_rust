@@ -1,4 +1,4 @@
-// claude_rust — A native Rust terminal interface for Claude Code
+// claude_rust - A native Rust terminal interface for Claude Code
 // Copyright (C) 2025  Simon Peter Rothgang
 //
 // This program is free software: you can redistribute it and/or modify
@@ -842,7 +842,7 @@ mod tests {
         assert!(!result.ends_with('\n'));
     }
 
-    /// Only hashes with no text: `###` — content after stripping is empty, passthrough.
+    /// Only hashes with no text: `###` - content after stripping is empty, passthrough.
     #[test]
     fn preprocess_only_hashes() {
         let result = preprocess_markdown("###");
@@ -866,7 +866,7 @@ mod tests {
         assert!(result.contains("**\u{1F680} Launch \u{4F60}\u{597D}**"));
     }
 
-    /// Quoted heading: `> # Heading` — starts with `>` not `#`, so passthrough.
+    /// Quoted heading: `> # Heading` - starts with `>` not `#`, so passthrough.
     #[test]
     fn preprocess_blockquote_heading_passthrough() {
         let result = preprocess_markdown("> # Quoted heading");
@@ -941,7 +941,7 @@ mod tests {
         }
     }
 
-    /// Line already ending with two spaces — gets two more.
+    /// Line already ending with two spaces - gets two more.
     #[test]
     fn force_breaks_already_has_trailing_spaces() {
         let result = force_markdown_line_breaks("hello  \nworld");

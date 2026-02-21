@@ -67,4 +67,4 @@ jobs:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - name: Check lockfile
-        run: cargo update --locked
+        run: cargo fetch --locked

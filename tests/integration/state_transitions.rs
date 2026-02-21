@@ -173,7 +173,7 @@ async fn chunks_across_turns_append_to_last_assistant_message() {
     let c2 = acp::ContentChunk::new(acp::ContentBlock::Text(acp::TextContent::new("Turn 2")));
     send_acp_event(&mut app, ClientEvent::SessionUpdate(acp::SessionUpdate::AgentMessageChunk(c2)));
 
-    // Still one message — consecutive assistant chunks always merge
+    // Still one message - consecutive assistant chunks always merge
     assert_eq!(app.messages.len(), 1);
     if let MessageBlock::Text(t, ..) =
         &app.messages.last().expect("message").blocks.last().expect("block")

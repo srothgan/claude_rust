@@ -1,4 +1,4 @@
-// claude_rust — A native Rust terminal interface for Claude Code
+// claude_rust - A native Rust terminal interface for Claude Code
 // Copyright (C) 2025  Simon Peter Rothgang
 //
 // This program is free software: you can redistribute it and/or modify
@@ -40,7 +40,7 @@ fn shorten_cwd(cwd: &std::path::Path) -> String {
     cwd_str
 }
 
-/// Create the `App` struct in `Connecting` state. No I/O — returns immediately.
+/// Create the `App` struct in `Connecting` state. No I/O - returns immediately.
 pub fn create_app(cli: &Cli) -> App {
     let cwd = cli
         .dir
@@ -119,7 +119,7 @@ pub fn create_app(cli: &Cli) -> App {
 }
 
 /// Spawn the background connection task. Uses `spawn_local` so it runs on the
-/// same `LocalSet` as the TUI — `Rc<Connection>` stays on one thread.
+/// same `LocalSet` as the TUI - `Rc<Connection>` stays on one thread.
 ///
 /// On success, stores the connection in `app.conn` via a shared slot and sends
 /// `ClientEvent::Connected`. On auth error, sends `ClientEvent::AuthRequired`.
@@ -208,7 +208,7 @@ enum ConnectError {
 }
 
 /// The actual connection logic, extracted from the old `connect()`.
-/// Runs inside `spawn_local` — can use `Rc`, `!Send` types freely.
+/// Runs inside `spawn_local` - can use `Rc`, `!Send` types freely.
 #[allow(clippy::too_many_lines, clippy::similar_names)]
 async fn connect_impl(
     event_tx: &mpsc::UnboundedSender<ClientEvent>,
@@ -322,7 +322,7 @@ async fn connect_with_launcher(
 
     tracing::info!("Connected to agent: {:?}", init_response);
 
-    // Create or resume session — on AuthRequired, signal back instead of blocking
+    // Create or resume session - on AuthRequired, signal back instead of blocking
     let session_result = if let Some(sid) = resume_id {
         let session_id = acp::SessionId::new(sid);
         let load_req = acp::LoadSessionRequest::new(session_id.clone(), cwd);

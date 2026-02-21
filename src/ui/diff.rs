@@ -1,4 +1,4 @@
-// claude_rust — A native Rust terminal interface for Claude Code
+// claude_rust - A native Rust terminal interface for Claude Code
 // Copyright (C) 2025  Simon Peter Rothgang
 //
 // This program is free software: you can redistribute it and/or modify
@@ -80,7 +80,7 @@ pub fn is_markdown_file(title: &str) -> bool {
 /// Returns the raw extension (e.g. "rs", "py", "toml") which syntect
 /// can resolve to the correct syntax definition. Falls back to empty string.
 pub fn lang_from_title(title: &str) -> String {
-    // Title may be "src/main.rs" or "Read src/main.rs" — find last path-like token
+    // Title may be "src/main.rs" or "Read src/main.rs" - find last path-like token
     title
         .split_whitespace()
         .rev()
@@ -183,7 +183,7 @@ mod tests {
         let input = "````\ncontent here\n````";
         let result = strip_outer_code_fence(input);
         // Starts with ```, so it enters the stripping path.
-        // Closing is ```` — strip_suffix("```") matches the last 3 backticks
+        // Closing is ```` - strip_suffix("```") matches the last 3 backticks
         // leaving one ` in the body. Let's just verify it doesn't panic
         // and returns something reasonable.
         assert!(result.contains("content here"));
@@ -207,7 +207,7 @@ mod tests {
         assert!(result.contains("some code"));
     }
 
-    /// Very large content inside fence — stress test.
+    /// Very large content inside fence - stress test.
     #[test]
     fn strip_large_fenced_content() {
         let big: String = (0..10_000).fold(String::new(), |mut s, i| {
@@ -295,7 +295,7 @@ mod tests {
     /// Dot at end of title: extension is empty string.
     #[test]
     fn lang_dot_at_end() {
-        // "file." — rsplit('.').next() returns "", which is shorter than token
+        // "file." - rsplit('.').next() returns "", which is shorter than token
         assert_eq!(lang_from_title("file."), "");
     }
 

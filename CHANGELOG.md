@@ -90,7 +90,7 @@ Performance optimization was a major release theme across recent commits:
 ### Known Limitations
 
 - Slash command availability is intentionally conservative for this release:
-  - `/compact`, `/login`, and `/logout` are not offered
+  - `/login` and `/logout` are not offered
   - they remain excluded until ACP/Zed support is reliable enough for production use
 - Token usage and cost tracking is blocked by current ACP adapter behavior:
   - `UsageUpdate` events are not emitted

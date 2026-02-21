@@ -1,4 +1,4 @@
-// claude_rust — A native Rust terminal interface for Claude Code
+// claude_rust - A native Rust terminal interface for Claude Code
 // Copyright (C) 2025  Simon Peter Rothgang
 //
 // This program is free software: you can redistribute it and/or modify
@@ -28,7 +28,7 @@ pub(super) fn submit_input(app: &mut App) {
     app.mention = None;
     app.slash = None;
 
-    // No connection yet — can't submit
+    // No connection yet - can't submit
     let text = app.input.text();
     if text.trim().is_empty() {
         return;

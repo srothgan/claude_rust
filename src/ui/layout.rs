@@ -1,4 +1,4 @@
-// claude_rust — A native Rust terminal interface for Claude Code
+// claude_rust - A native Rust terminal interface for Claude Code
 // Copyright (C) 2025  Simon Peter Rothgang
 //
 // This program is free software: you can redistribute it and/or modify
@@ -282,7 +282,7 @@ mod tests {
 
     // offset areas
 
-    /// Area starting at non-zero x/y — layout should respect the offset.
+    /// Area starting at non-zero x/y - layout should respect the offset.
     #[test]
     fn offset_area_respects_origin() {
         let r = Rect::new(10, 5, 80, 24);
@@ -310,7 +310,7 @@ mod tests {
 
     // degenerate sizes
 
-    /// Zero-height area — everything gets zero or minimal height.
+    /// Zero-height area - everything gets zero or minimal height.
     #[test]
     fn zero_height_area() {
         let layout = compute(area(80, 0), 1, true, 0, 0);
@@ -318,7 +318,7 @@ mod tests {
         assert!(layout.footer.is_none());
     }
 
-    /// Height = 1 — absolute minimum.
+    /// Height = 1 - absolute minimum.
     #[test]
     fn height_one() {
         let layout = compute(area(80, 1), 1, true, 0, 0);
@@ -333,7 +333,7 @@ mod tests {
         assert_eq!(total_height(&layout), 2);
     }
 
-    /// Width = 1 — very narrow terminal.
+    /// Width = 1 - very narrow terminal.
     #[test]
     fn width_one() {
         let layout = compute(Rect::new(0, 0, 1, 24), 1, true, 0, 0);
@@ -367,7 +367,7 @@ mod tests {
     fn competing_constraints_squeeze_body() {
         let layout = compute(area(80, 12), 3, true, 4, 3);
         // header(1) + sep(1) + body(min 3) + todo(4) + sep(1) + input(3) + sep(1) + help(3) + footer(1) = 18
-        // Only 12 available — body gets squeezed below min, or ratatui adjusts
+        // Only 12 available - body gets squeezed below min, or ratatui adjusts
         assert_eq!(total_height(&layout), 12);
     }
 

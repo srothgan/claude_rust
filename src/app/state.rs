@@ -1,4 +1,4 @@
-// claude_rust — A native Rust terminal interface for Claude Code
+// claude_rust - A native Rust terminal interface for Claude Code
 // Copyright (C) 2025  Simon Peter Rothgang
 //
 // This program is free software: you can redistribute it and/or modify
@@ -105,12 +105,12 @@ pub struct App {
     pub event_rx: mpsc::UnboundedReceiver<ClientEvent>,
     pub spinner_frame: usize,
     /// Session-level default for tool call collapsed state.
-    /// Toggled by Ctrl+O — new tool calls inherit this value.
+    /// Toggled by Ctrl+O - new tool calls inherit this value.
     pub tools_collapsed: bool,
     /// IDs of Task tool calls currently `InProgress` -- their children get hidden.
     /// Use `insert_active_task()`, `remove_active_task()`.
     pub active_task_ids: HashSet<String>,
-    /// Shared terminal process map — used to snapshot output on completion.
+    /// Shared terminal process map - used to snapshot output on completion.
     pub terminals: crate::acp::client::TerminalMap,
     /// Force a full terminal clear on next render frame.
     pub force_redraw: bool,
@@ -522,7 +522,7 @@ impl ChatViewport {
 
     /// Set the visual height for message `idx`, growing the vec if needed.
     ///
-    /// Does NOT update `message_heights_width` — the caller must call
+    /// Does NOT update `message_heights_width` - the caller must call
     /// `mark_heights_valid()` after the full re-measurement pass completes.
     pub fn set_message_height(&mut self, idx: usize, h: usize) {
         if idx >= self.message_heights.len() {
@@ -669,7 +669,7 @@ pub struct InputWrapCache {
 /// Cached rendered lines for a block. Stores a version counter so the cache
 /// is only recomputed when the block content actually changes.
 ///
-/// Fields are private — use `invalidate()` to mark stale, `is_stale()` to check,
+/// Fields are private - use `invalidate()` to mark stale, `is_stale()` to check,
 /// `get()` to read cached lines, and `store()` to populate.
 #[derive(Default)]
 pub struct BlockCache {
@@ -864,7 +864,7 @@ impl IncrementalMarkdown {
     }
 }
 
-/// Ordered content block — text and tool calls interleaved as they arrive.
+/// Ordered content block - text and tool calls interleaved as they arrive.
 pub enum MessageBlock {
     Text(String, BlockCache, IncrementalMarkdown),
     ToolCall(Box<ToolCallInfo>),
@@ -895,7 +895,7 @@ pub struct ToolCallInfo {
     /// The actual Claude Code tool name from `meta.claudeCode.toolName`
     /// (e.g. "Task", "Glob", "`mcp__acp__Read`", "`WebSearch`")
     pub claude_tool_name: Option<String>,
-    /// Hidden tool calls are subagent children — not rendered directly.
+    /// Hidden tool calls are subagent children - not rendered directly.
     pub hidden: bool,
     /// Terminal ID if this is an Execute tool call with a running/completed terminal.
     pub terminal_id: Option<String>,
@@ -903,12 +903,12 @@ pub struct ToolCallInfo {
     pub terminal_command: Option<String>,
     /// Snapshot of terminal output, updated each frame while `InProgress`.
     pub terminal_output: Option<String>,
-    /// Length of terminal buffer at last snapshot — used to skip O(n) re-snapshots
+    /// Length of terminal buffer at last snapshot - used to skip O(n) re-snapshots
     /// when the buffer hasn't grown.
     pub terminal_output_len: usize,
     /// Per-block render cache for this tool call.
     pub cache: BlockCache,
-    /// Inline permission prompt — rendered inside this tool call block.
+    /// Inline permission prompt - rendered inside this tool call block.
     pub pending_permission: Option<InlinePermission>,
 }
 
@@ -994,7 +994,7 @@ mod tests {
         assert!(lines.is_empty());
     }
 
-    /// Store twice without invalidating — second store overwrites first.
+    /// Store twice without invalidating - second store overwrites first.
     #[test]
     fn cache_store_overwrite_without_invalidate() {
         let mut cache = BlockCache::default();
@@ -1061,7 +1061,7 @@ mod tests {
         assert_eq!(lines[0].spans.len(), 3);
     }
 
-    /// Version counter after many invalidations — verify it doesn't
+    /// Version counter after many invalidations - verify it doesn't
     /// accidentally wrap to 0 (which would make stale data appear fresh).
     /// With u64, 10K invalidations is nowhere near overflow.
     #[test]
@@ -1071,11 +1071,11 @@ mod tests {
         for _ in 0..10_000 {
             cache.invalidate();
         }
-        // Cache was invalidated 10K times without re-storing — must be stale
+        // Cache was invalidated 10K times without re-storing - must be stale
         assert!(cache.get().is_none());
     }
 
-    /// Invalidate, store, invalidate, store — alternating pattern.
+    /// Invalidate, store, invalidate, store - alternating pattern.
     #[test]
     fn cache_alternating_invalidate_store() {
         let mut cache = BlockCache::default();
@@ -1213,7 +1213,7 @@ mod tests {
 
     // App tool_call_index
 
-    /// Index same ID twice — second write overwrites first.
+    /// Index same ID twice - second write overwrites first.
     #[test]
     fn index_overwrite_existing() {
         let mut app = make_test_app();
@@ -1273,7 +1273,7 @@ mod tests {
 
     // active_task_ids
 
-    /// Insert same ID twice — set deduplicates; one remove clears it.
+    /// Insert same ID twice - set deduplicates; one remove clears it.
     #[test]
     fn active_task_insert_duplicate() {
         let mut app = make_test_app();
@@ -1313,7 +1313,7 @@ mod tests {
         assert_eq!(app.active_task_ids.len(), 2);
     }
 
-    /// Remove from empty set multiple times — no panic.
+    /// Remove from empty set multiple times - no panic.
     #[test]
     fn active_task_remove_from_empty_repeatedly() {
         let mut app = make_test_app();
