@@ -15,6 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use super::connect::take_connection_slot;
+use super::selection::clear_selection;
 use super::{
     App, AppStatus, BlockCache, ChatMessage, FocusTarget, IncrementalMarkdown, InlinePermission,
     LoginHint, MessageBlock, MessageRole, SelectionKind, SelectionPoint, ToolCallInfo,
@@ -77,6 +78,8 @@ fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
                     end: pt.point,
                     dragging: true,
                 });
+            } else {
+                clear_selection(app);
             }
         }
         MouseEventKind::Drag(crossterm::event::MouseButton::Left) => {
@@ -94,9 +97,15 @@ fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
     }
     match mouse.kind {
         MouseEventKind::ScrollUp => {
+            if app.selection.is_some() {
+                clear_selection(app);
+            }
             app.viewport.scroll_up(MOUSE_SCROLL_LINES);
         }
         MouseEventKind::ScrollDown => {
+            if app.selection.is_some() {
+                clear_selection(app);
+            }
             app.viewport.scroll_down(MOUSE_SCROLL_LINES);
         }
         _ => {}
@@ -1887,6 +1896,50 @@ mod tests {
         );
 
         assert!(app.should_quit);
+    }
+
+    #[test]
+    fn ctrl_c_with_selection_never_falls_through_to_quit() {
+        let mut app = make_test_app();
+        app.selection = Some(crate::app::SelectionState {
+            kind: crate::app::SelectionKind::Input,
+            start: crate::app::SelectionPoint { row: 0, col: 0 },
+            end: crate::app::SelectionPoint { row: 0, col: 0 },
+            dragging: false,
+        });
+
+        handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+        );
+
+        assert!(!app.should_quit);
+        assert!(app.selection.is_none());
+    }
+
+    #[test]
+    fn mouse_scroll_clears_selection_before_scrolling() {
+        let mut app = make_test_app();
+        app.viewport.scroll_target = 2;
+        app.selection = Some(crate::app::SelectionState {
+            kind: crate::app::SelectionKind::Chat,
+            start: crate::app::SelectionPoint { row: 0, col: 0 },
+            end: crate::app::SelectionPoint { row: 0, col: 1 },
+            dragging: false,
+        });
+
+        handle_terminal_event(
+            &mut app,
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::ScrollDown,
+                column: 0,
+                row: 0,
+                modifiers: KeyModifiers::NONE,
+            }),
+        );
+
+        assert!(app.selection.is_none());
+        assert_eq!(app.viewport.scroll_target, 5);
     }
 
     #[test]

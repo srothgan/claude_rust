@@ -18,7 +18,7 @@ use super::{App, AppStatus, FocusOwner, FocusTarget, HelpView, MessageBlock, Mod
 use crate::acp::client::ClientEvent;
 use crate::app::input::parse_paste_placeholder;
 use crate::app::permissions::handle_permission_key;
-use crate::app::selection::try_copy_selection;
+use crate::app::selection::{clear_selection, try_copy_selection};
 use crate::app::{mention, slash};
 use agent_client_protocol::{self as acp, Agent as _};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -61,7 +61,9 @@ fn handle_global_shortcuts(app: &mut App, key: KeyEvent) -> bool {
 
     match (key.code, key.modifiers) {
         (KeyCode::Char('c'), m) if m == KeyModifiers::CONTROL => {
-            if try_copy_selection(app) {
+            if app.selection.is_some() {
+                let _ = try_copy_selection(app);
+                clear_selection(app);
                 return true;
             }
             app.should_quit = true;

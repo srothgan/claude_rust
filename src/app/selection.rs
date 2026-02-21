@@ -32,7 +32,7 @@ pub(super) fn try_copy_selection(app: &mut App) -> bool {
         SelectionKind::Chat => extract_chat_selection(app, sel),
         SelectionKind::Input => extract_input_selection(app, sel),
     };
-    if text.trim().is_empty() {
+    if text.is_empty() {
         return false;
     }
     if !text.ends_with('\n') {
@@ -43,6 +43,12 @@ pub(super) fn try_copy_selection(app: &mut App) -> bool {
         return true;
     }
     false
+}
+
+pub(super) fn clear_selection(app: &mut App) {
+    app.selection = None;
+    app.rendered_chat_lines.clear();
+    app.rendered_input_lines.clear();
 }
 
 fn extract_chat_selection(app: &App, sel: SelectionState) -> String {
