@@ -56,10 +56,10 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     };
     let areas = {
         let _t = app.perf.as_ref().map(|p| p.start("ui::layout"));
-        layout::compute(frame_area, input_visual_lines, true, todo_height, help_height)
+        layout::compute(frame_area, input_visual_lines, app.show_header, todo_height, help_height)
     };
 
-    // Header bar (always visible)
+    // Header bar (toggleable via Ctrl+H)
     if areas.header.height > 0 {
         let _t = app.perf.as_ref().map(|p| p.start("ui::header"));
         render_separator(frame, areas.header_top_sep);

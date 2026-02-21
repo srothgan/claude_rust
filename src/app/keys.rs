@@ -81,6 +81,10 @@ fn handle_global_shortcuts(app: &mut App, key: KeyEvent) -> bool {
             app.force_redraw = true;
             true
         }
+        (KeyCode::Char('h'), m) if m == KeyModifiers::CONTROL => {
+            toggle_header(app);
+            true
+        }
         (KeyCode::Up, m) if m == KeyModifiers::CONTROL => {
             app.viewport.scroll_up(1);
             true
@@ -537,4 +541,9 @@ pub(super) fn toggle_all_tool_calls(app: &mut App) {
         }
         // Height caches are on the viewport; invalidating the block cache is enough.
     }
+}
+
+/// Toggle the header visibility.
+pub(super) fn toggle_header(app: &mut App) {
+    app.show_header = !app.show_header;
 }
