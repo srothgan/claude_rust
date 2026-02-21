@@ -89,6 +89,7 @@ pub fn create_app(cli: &Cli) -> App {
         available_commands: Vec::new(),
         cached_frame_area: ratatui::layout::Rect::new(0, 0, 0, 0),
         selection: Option::<SelectionState>::None,
+        scrollbar_drag: None,
         rendered_chat_lines: Vec::new(),
         rendered_chat_area: ratatui::layout::Rect::new(0, 0, 0, 0),
         rendered_input_lines: Vec::new(),
