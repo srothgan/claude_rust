@@ -81,6 +81,7 @@ pub fn create_app(cli: &Cli) -> App {
         force_redraw: false,
         tool_call_index: HashMap::new(),
         todos: Vec::<TodoItem>::new(),
+        show_header: true,
         show_todo_panel: false,
         todo_scroll: 0,
         todo_selected: 0,

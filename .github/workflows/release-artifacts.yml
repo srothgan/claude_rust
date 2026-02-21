@@ -76,21 +76,21 @@ jobs:
     name: Publish npm package
     runs-on: ubuntu-latest
     needs: publish-github-release
-    if: ${{ secrets.NPM_TOKEN != '' }}
     permissions:
       contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
           registry-url: "https://registry.npmjs.org"
+      - name: Install latest npm
+        run: npm install -g npm@latest
       - name: Sync npm version with tag
         shell: bash
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           npm version "${VERSION}" --no-git-tag-version --allow-same-version
       - name: Publish to npm
-        run: npm publish --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public --provenance

@@ -40,13 +40,7 @@ Three-layer design:
 
 ## Install
 
-### Cargo (crates.io)
-
-```bash
-cargo install claude-rust
-```
-
-### npm (global)
+### npm (global, recommended)
 
 ```bash
 npm install -g claude-rust
@@ -54,6 +48,17 @@ npm install -g claude-rust
 
 The npm package installs a `claude-rust` command and downloads the matching
 prebuilt release binary for your platform during `postinstall`.
+
+### Cargo (crates.io)
+
+```bash
+cargo install claude-rust
+```
+
+If `claude-rust` is not found after Cargo install, add your Cargo bin directory
+to `PATH` and restart the terminal:
+- Windows: `%USERPROFILE%\\.cargo\\bin` (or your custom `CARGO_HOME\\bin`)
+- macOS/Linux: `$HOME/.cargo/bin`
 
 ## Usage
 

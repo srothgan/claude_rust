@@ -119,6 +119,9 @@ pub struct App {
     pub tool_call_index: HashMap<String, (usize, usize)>,
     /// Current todo list from Claude's `TodoWrite` tool calls.
     pub todos: Vec<TodoItem>,
+    /// Whether the header bar is visible.
+    /// Toggled by Ctrl+H.
+    pub show_header: bool,
     /// Whether the todo panel is expanded (true) or shows compact status line (false).
     /// Toggled by Ctrl+T.
     pub show_todo_panel: bool,
@@ -330,6 +333,7 @@ impl App {
             force_redraw: false,
             tool_call_index: HashMap::default(),
             todos: Vec::new(),
+            show_header: true,
             show_todo_panel: false,
             todo_scroll: 0,
             todo_selected: 0,

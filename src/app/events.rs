@@ -1749,6 +1749,24 @@ mod tests {
         assert!(app.show_todo_panel);
     }
 
+    #[test]
+    fn ctrl_h_toggles_header_visibility() {
+        let mut app = make_test_app();
+        assert!(app.show_header);
+
+        handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL)),
+        );
+        assert!(!app.show_header);
+
+        handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL)),
+        );
+        assert!(app.show_header);
+    }
+
     fn attach_pending_permission(
         app: &mut App,
         tool_id: &str,

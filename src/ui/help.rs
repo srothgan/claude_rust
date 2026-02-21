@@ -192,6 +192,7 @@ fn build_key_help_items(app: &App) -> Vec<(String, String)> {
         ("Left/Right".to_owned(), "Switch help tab".to_owned()),
         // Global
         ("Ctrl+c".to_owned(), "Quit".to_owned()),
+        ("Ctrl+h".to_owned(), "Toggle header".to_owned()),
         ("Ctrl+l".to_owned(), "Redraw screen".to_owned()),
         ("Shift+Tab".to_owned(), "Cycle mode".to_owned()),
         ("Ctrl+o".to_owned(), "Toggle tool collapse".to_owned()),
@@ -428,6 +429,13 @@ mod tests {
         });
         let items = build_help_items(&app);
         assert!(has_item(&items, "Tab", "Toggle todo focus"));
+    }
+
+    #[test]
+    fn key_tab_shows_ctrl_h_toggle_header_shortcut() {
+        let app = App::test_default();
+        let items = build_help_items(&app);
+        assert!(has_item(&items, "Ctrl+h", "Toggle header"));
     }
 
     #[test]
