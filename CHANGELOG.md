@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.3] - 2026-02-21
+
+### Fixes
+
+- Rescan files on each `@` mention activation so new/deleted files are reflected during a session
+- Add keywords to npm package.json for better discoverability
+
 ## [0.1.2] - 2026-02-21
 
 ### UX and Interaction
