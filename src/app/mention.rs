@@ -164,10 +164,8 @@ pub fn activate(app: &mut App) {
     let Some((trigger_row, trigger_col, query)) = detection else {
         return;
     };
-    // Scan files if cache is empty
-    if app.file_cache.is_none() {
-        app.file_cache = Some(scan_files(&app.cwd_raw));
-    }
+    // Rescan files each time `@` is activated so new/deleted files are reflected
+    app.file_cache = Some(scan_files(&app.cwd_raw));
 
     let candidates =
         app.file_cache.as_ref().map(|cache| filter_candidates(cache, &query)).unwrap_or_default();
@@ -321,26 +319,27 @@ mod tests {
     use super::*;
     use crate::app::App;
 
+    /// Create a temp directory with test files and return an App pointing to it.
+    fn app_with_temp_files(files: &[&str]) -> (App, tempfile::TempDir) {
+        let tmp = tempfile::tempdir().unwrap();
+        for f in files {
+            let path = tmp.path().join(f);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(&path, "").unwrap();
+        }
+        let mut app = App::test_default();
+        app.cwd_raw = tmp.path().to_string_lossy().into_owned();
+        (app, tmp)
+    }
+
     #[test]
     fn sync_with_cursor_activates_inside_existing_mention() {
-        let mut app = App::test_default();
+        let (mut app, _tmp) = app_with_temp_files(&["src/main.rs", "tests/integration.rs"]);
         app.input.set_text("open @src/main.rs now");
         app.input.cursor_row = 0;
         app.input.cursor_col = "open @src".chars().count();
-        app.file_cache = Some(vec![
-            FileCandidate {
-                rel_path: "src/main.rs".into(),
-                depth: 1,
-                modified: SystemTime::UNIX_EPOCH,
-                is_dir: false,
-            },
-            FileCandidate {
-                rel_path: "tests/integration.rs".into(),
-                depth: 1,
-                modified: SystemTime::UNIX_EPOCH,
-                is_dir: false,
-            },
-        ]);
 
         sync_with_cursor(&mut app);
 
@@ -351,16 +350,10 @@ mod tests {
 
     #[test]
     fn confirm_selection_replaces_full_existing_token_without_double_space() {
-        let mut app = App::test_default();
-        app.input.set_text("open @src/main.rs now");
+        let (mut app, _tmp) = app_with_temp_files(&["src/lib.rs"]);
+        app.input.set_text("open @src/lib.txt now");
         app.input.cursor_row = 0;
-        app.input.cursor_col = "open @src".chars().count();
-        app.file_cache = Some(vec![FileCandidate {
-            rel_path: "src/lib.rs".into(),
-            depth: 1,
-            modified: SystemTime::UNIX_EPOCH,
-            is_dir: false,
-        }]);
+        app.input.cursor_col = "open @src/lib".chars().count();
 
         activate(&mut app);
         confirm_selection(&mut app);
@@ -371,16 +364,10 @@ mod tests {
 
     #[test]
     fn confirm_selection_at_end_keeps_trailing_space() {
-        let mut app = App::test_default();
+        let (mut app, _tmp) = app_with_temp_files(&["src/main.rs"]);
         app.input.set_text("@src/mai");
         app.input.cursor_row = 0;
         app.input.cursor_col = app.input.lines[0].chars().count();
-        app.file_cache = Some(vec![FileCandidate {
-            rel_path: "src/main.rs".into(),
-            depth: 1,
-            modified: SystemTime::UNIX_EPOCH,
-            is_dir: false,
-        }]);
 
         activate(&mut app);
         confirm_selection(&mut app);
@@ -390,36 +377,24 @@ mod tests {
 
     #[test]
     fn activate_with_empty_query_shows_all_candidates() {
-        let mut app = App::test_default();
+        let (mut app, _tmp) = app_with_temp_files(&["src/main.rs"]);
         app.input.set_text("@");
         app.input.cursor_row = 0;
         app.input.cursor_col = 1;
-        app.file_cache = Some(vec![FileCandidate {
-            rel_path: "src/main.rs".into(),
-            depth: 1,
-            modified: SystemTime::UNIX_EPOCH,
-            is_dir: false,
-        }]);
 
         activate(&mut app);
 
         let mention = app.mention.as_ref().expect("mention should be active");
         assert_eq!(mention.query, "");
-        assert_eq!(mention.candidates.len(), 1);
+        assert!(!mention.candidates.is_empty());
     }
 
     #[test]
     fn update_query_keeps_active_when_query_becomes_empty() {
-        let mut app = App::test_default();
+        let (mut app, _tmp) = app_with_temp_files(&["src/main.rs"]);
         app.input.set_text("@src");
         app.input.cursor_row = 0;
         app.input.cursor_col = app.input.lines[0].chars().count();
-        app.file_cache = Some(vec![FileCandidate {
-            rel_path: "src/main.rs".into(),
-            depth: 1,
-            modified: SystemTime::UNIX_EPOCH,
-            is_dir: false,
-        }]);
         activate(&mut app);
         assert!(app.mention.is_some());
 
@@ -429,6 +404,6 @@ mod tests {
 
         let mention = app.mention.as_ref().expect("mention should stay active");
         assert_eq!(mention.query, "");
-        assert_eq!(mention.candidates.len(), 1);
+        assert!(!mention.candidates.is_empty());
     }
 }

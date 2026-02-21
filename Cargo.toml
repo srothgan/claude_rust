@@ -49,6 +49,7 @@ perf = []
 
 [dev-dependencies]
 pretty_assertions = "1.4"
+tempfile = "3.25.0"
 
 [lints.clippy]
 # Deny panic-prone operations in production code (tests exempted via clippy.toml)
