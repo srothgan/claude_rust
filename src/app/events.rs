@@ -16,6 +16,7 @@
 
 use super::connect::take_connection_slot;
 use super::selection::clear_selection;
+use super::state::ScrollbarDragState;
 use super::{
     App, AppStatus, BlockCache, ChatMessage, FocusTarget, IncrementalMarkdown, InlinePermission,
     LoginHint, MessageBlock, MessageRole, SelectionKind, SelectionPoint, ToolCallInfo,
@@ -62,6 +63,7 @@ pub fn handle_terminal_event(app: &mut App, event: Event) {
 }
 
 const MOUSE_SCROLL_LINES: usize = 3;
+const SCROLLBAR_MIN_THUMB_HEIGHT: usize = 1;
 
 struct MouseSelectionPoint {
     kind: SelectionKind,
@@ -71,6 +73,10 @@ struct MouseSelectionPoint {
 fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
     match mouse.kind {
         MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
+            if start_scrollbar_drag(app, mouse) {
+                return;
+            }
+            app.scrollbar_drag = None;
             if let Some(pt) = mouse_point_to_selection(app, mouse) {
                 app.selection = Some(super::SelectionState {
                     kind: pt.kind,
@@ -83,12 +89,16 @@ fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
             }
         }
         MouseEventKind::Drag(crossterm::event::MouseButton::Left) => {
+            if update_scrollbar_drag(app, mouse) {
+                return;
+            }
             let pt = mouse_point_to_selection(app, mouse);
             if let (Some(sel), Some(pt)) = (&mut app.selection, pt) {
                 sel.end = pt.point;
             }
         }
         MouseEventKind::Up(crossterm::event::MouseButton::Left) => {
+            app.scrollbar_drag = None;
             if let Some(sel) = &mut app.selection {
                 sel.dragging = false;
             }
@@ -110,6 +120,133 @@ fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
         }
         _ => {}
     }
+}
+
+#[derive(Clone, Copy)]
+struct ScrollbarMetrics {
+    viewport_height: usize,
+    max_scroll: usize,
+    thumb_size: usize,
+    track_space: usize,
+}
+
+fn start_scrollbar_drag(app: &mut App, mouse: MouseEvent) -> bool {
+    if !mouse_on_scrollbar_rail(app, mouse) {
+        return false;
+    }
+    let Some(metrics) = scrollbar_metrics(app) else {
+        return false;
+    };
+    let Some(local_row) = mouse_row_on_chat_track(app, mouse) else {
+        return false;
+    };
+
+    let (thumb_top, thumb_size) = current_thumb_geometry(app, metrics);
+    let thumb_end = thumb_top.saturating_add(thumb_size);
+    let grab_offset = if (thumb_top..thumb_end).contains(&local_row) {
+        local_row.saturating_sub(thumb_top)
+    } else {
+        thumb_size / 2
+    };
+
+    set_scroll_from_thumb_top(app, local_row.saturating_sub(grab_offset), metrics);
+    app.scrollbar_drag = Some(ScrollbarDragState { thumb_grab_offset: grab_offset });
+    clear_selection(app);
+    true
+}
+
+fn update_scrollbar_drag(app: &mut App, mouse: MouseEvent) -> bool {
+    let Some(drag) = app.scrollbar_drag else {
+        return false;
+    };
+    let Some(metrics) = scrollbar_metrics(app) else {
+        app.scrollbar_drag = None;
+        return false;
+    };
+    let Some(local_row) = mouse_row_on_chat_track(app, mouse) else {
+        return false;
+    };
+
+    set_scroll_from_thumb_top(app, local_row.saturating_sub(drag.thumb_grab_offset), metrics);
+    true
+}
+
+fn scrollbar_metrics(app: &App) -> Option<ScrollbarMetrics> {
+    let area = app.rendered_chat_area;
+    if area.width == 0 || area.height == 0 {
+        return None;
+    }
+
+    let viewport_height = area.height as usize;
+    let content_height = app.viewport.total_message_height();
+    if content_height <= viewport_height {
+        return None;
+    }
+
+    let max_scroll = content_height.saturating_sub(viewport_height);
+    let thumb_size = viewport_height
+        .saturating_mul(viewport_height)
+        .checked_div(content_height)
+        .unwrap_or(0)
+        .max(SCROLLBAR_MIN_THUMB_HEIGHT)
+        .min(viewport_height);
+    let track_space = viewport_height.saturating_sub(thumb_size);
+
+    Some(ScrollbarMetrics { viewport_height, max_scroll, thumb_size, track_space })
+}
+
+#[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss, clippy::cast_sign_loss)]
+fn current_thumb_geometry(app: &App, metrics: ScrollbarMetrics) -> (usize, usize) {
+    let mut thumb_size = app.viewport.scrollbar_thumb_size.round() as usize;
+    if thumb_size == 0 {
+        thumb_size = metrics.thumb_size;
+    }
+    thumb_size = thumb_size.max(SCROLLBAR_MIN_THUMB_HEIGHT).min(metrics.viewport_height);
+    let max_top = metrics.viewport_height.saturating_sub(thumb_size);
+    let thumb_top = app.viewport.scrollbar_thumb_top.round().clamp(0.0, max_top as f32) as usize;
+    (thumb_top, thumb_size)
+}
+
+#[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss, clippy::cast_sign_loss)]
+fn set_scroll_from_thumb_top(app: &mut App, thumb_top: usize, metrics: ScrollbarMetrics) {
+    let thumb_top = thumb_top.min(metrics.track_space);
+    let target = if metrics.track_space == 0 {
+        0
+    } else {
+        ((thumb_top as f32 / metrics.track_space as f32) * metrics.max_scroll as f32).round()
+            as usize
+    }
+    .min(metrics.max_scroll);
+
+    app.viewport.auto_scroll = false;
+    app.viewport.scroll_target = target;
+    // Keep content movement responsive while dragging the thumb.
+    app.viewport.scroll_pos = target as f32;
+    app.viewport.scroll_offset = target;
+}
+
+fn mouse_on_scrollbar_rail(app: &App, mouse: MouseEvent) -> bool {
+    let area = app.rendered_chat_area;
+    if area.width == 0 || area.height == 0 {
+        return false;
+    }
+    let rail_x = area.right().saturating_sub(1);
+    mouse.column == rail_x && mouse.row >= area.y && mouse.row < area.bottom()
+}
+
+fn mouse_row_on_chat_track(app: &App, mouse: MouseEvent) -> Option<usize> {
+    let area = app.rendered_chat_area;
+    if area.height == 0 {
+        return None;
+    }
+    let max_row = area.height.saturating_sub(1) as usize;
+    if mouse.row < area.y {
+        return Some(0);
+    }
+    if mouse.row >= area.bottom() {
+        return Some(max_row);
+    }
+    Some((mouse.row - area.y) as usize)
 }
 
 fn mouse_point_to_selection(app: &App, mouse: MouseEvent) -> Option<MouseSelectionPoint> {
@@ -380,6 +517,7 @@ fn reset_for_new_session(
     app.available_commands.clear();
 
     app.selection = None;
+    app.scrollbar_drag = None;
     app.rendered_chat_lines.clear();
     app.rendered_chat_area = ratatui::layout::Rect::default();
     app.rendered_input_lines.clear();
@@ -887,6 +1025,7 @@ mod tests {
     use crate::app::{FocusOwner, FocusTarget, HelpView, TodoItem, TodoStatus, mention};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use pretty_assertions::assert_eq;
+    use ratatui::layout::Rect;
     use tokio::sync::oneshot;
 
     // Helper: build a minimal ToolCallInfo with given id + status
@@ -1958,6 +2097,87 @@ mod tests {
 
         assert!(app.selection.is_none());
         assert_eq!(app.viewport.scroll_target, 5);
+    }
+
+    #[test]
+    fn mouse_down_on_scrollbar_rail_starts_drag_and_scrolls() {
+        let mut app = make_test_app();
+        app.rendered_chat_area = Rect::new(0, 0, 20, 10);
+        app.viewport.height_prefix_sums = vec![30];
+        app.viewport.scrollbar_thumb_top = 0.0;
+        app.viewport.scrollbar_thumb_size = 3.0;
+        app.selection = Some(crate::app::SelectionState {
+            kind: crate::app::SelectionKind::Chat,
+            start: crate::app::SelectionPoint { row: 0, col: 0 },
+            end: crate::app::SelectionPoint { row: 0, col: 1 },
+            dragging: false,
+        });
+
+        handle_terminal_event(
+            &mut app,
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(crossterm::event::MouseButton::Left),
+                column: 19,
+                row: 9,
+                modifiers: KeyModifiers::NONE,
+            }),
+        );
+
+        assert!(app.scrollbar_drag.is_some());
+        assert!(app.selection.is_none());
+        assert!(!app.viewport.auto_scroll);
+        assert!(app.viewport.scroll_target > 0);
+    }
+
+    #[test]
+    fn dragging_scrollbar_thumb_can_reach_bottom_and_top() {
+        let mut app = make_test_app();
+        app.rendered_chat_area = Rect::new(0, 0, 20, 10);
+        app.viewport.height_prefix_sums = vec![30];
+        app.viewport.scrollbar_thumb_top = 0.0;
+        app.viewport.scrollbar_thumb_size = 3.0;
+
+        handle_terminal_event(
+            &mut app,
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(crossterm::event::MouseButton::Left),
+                column: 19,
+                row: 0,
+                modifiers: KeyModifiers::NONE,
+            }),
+        );
+        handle_terminal_event(
+            &mut app,
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Drag(crossterm::event::MouseButton::Left),
+                column: 19,
+                row: 9,
+                modifiers: KeyModifiers::NONE,
+            }),
+        );
+        assert_eq!(app.viewport.scroll_target, 20);
+
+        handle_terminal_event(
+            &mut app,
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Drag(crossterm::event::MouseButton::Left),
+                column: 19,
+                row: 0,
+                modifiers: KeyModifiers::NONE,
+            }),
+        );
+        assert_eq!(app.viewport.scroll_target, 0);
+
+        handle_terminal_event(
+            &mut app,
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Up(crossterm::event::MouseButton::Left),
+                column: 19,
+                row: 0,
+                modifiers: KeyModifiers::NONE,
+            }),
+        );
+        assert!(app.scrollbar_drag.is_none());
     }
 
     #[test]

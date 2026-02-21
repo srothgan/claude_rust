@@ -137,6 +137,8 @@ pub struct App {
     pub cached_frame_area: ratatui::layout::Rect,
     /// Current selection state for mouse-based selection.
     pub selection: Option<SelectionState>,
+    /// Active scrollbar drag state while left mouse button is held on the rail.
+    pub scrollbar_drag: Option<ScrollbarDragState>,
     /// Cached rendered chat lines for selection/copy.
     pub rendered_chat_lines: Vec<String>,
     /// Area where chat content was rendered (for selection mapping).
@@ -341,6 +343,7 @@ impl App {
             available_commands: Vec::new(),
             cached_frame_area: ratatui::layout::Rect::default(),
             selection: None,
+            scrollbar_drag: None,
             rendered_chat_lines: Vec::new(),
             rendered_chat_area: ratatui::layout::Rect::default(),
             rendered_input_lines: Vec::new(),
@@ -640,6 +643,12 @@ pub struct SelectionState {
     pub start: SelectionPoint,
     pub end: SelectionPoint,
     pub dragging: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScrollbarDragState {
+    /// Row offset from thumb top where the initial click happened.
+    pub thumb_grab_offset: usize,
 }
 
 pub struct ChatMessage {

@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.2] - 2026-02-21
+
+### UX and Interaction
+
+- Add OS-level shutdown signal handling (`Ctrl+C`/`SIGTERM`) so external interrupts also trigger graceful TUI teardown
+- Keep in-app `Ctrl+C` key behavior for selection copy versus quit, while unifying shutdown through the existing cleanup path
+- Make chat scrollbar draggable with proportional thumb-to-content mapping
+- Ensure scrollbar dragging can reach absolute top and bottom of chat history
+
 ## [0.1.1] - 2026-02-21
 
 ### CI and Release

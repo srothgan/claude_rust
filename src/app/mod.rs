@@ -58,6 +58,7 @@ use std::time::{Duration, Instant};
 #[allow(clippy::too_many_lines, clippy::cast_precision_loss)]
 pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
     let mut terminal = ratatui::init();
+    let mut os_shutdown = Box::pin(wait_for_shutdown_signal());
 
     // Enable bracketed paste and mouse capture (ignore error on unsupported terminals)
     let _ = crossterm::execute!(
@@ -86,6 +87,12 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
             }
             Some(event) = app.event_rx.recv() => {
                 events::handle_acp_event(app, event);
+            }
+            shutdown = &mut os_shutdown => {
+                if let Err(err) = shutdown {
+                    tracing::warn!(%err, "OS shutdown signal listener failed");
+                }
+                app.should_quit = true;
             }
             () = tokio::time::sleep(time_to_next) => {}
         }
@@ -220,6 +227,25 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
     ratatui::restore();
 
     Ok(())
+}
+
+async fn wait_for_shutdown_signal() -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        let mut sigterm =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+        tokio::select! {
+            sigint = tokio::signal::ctrl_c() => {
+                sigint?;
+            }
+            _ = sigterm.recv() => {}
+        }
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        tokio::signal::ctrl_c().await
+    }
 }
 
 /// Finalize queued `Event::Paste` chunks for this drain cycle.
