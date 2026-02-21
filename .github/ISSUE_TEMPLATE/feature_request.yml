@@ -31,6 +31,22 @@ body:
       label: Alternatives Considered
       description: Any alternative solutions or features you've considered
 
+  - type: textarea
+    id: implementation-notes
+    attributes:
+      label: Implementation Notes (optional)
+      description: Maintainer notes, technical direction, constraints, or rollout plan
+
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependencies / Blockers (optional)
+      description: Related issues, upstream blockers, or required sequencing
+      placeholder: |
+        - Blocked by #...
+        - Depends on #...
+        - Must ship after #...
+
   - type: dropdown
     id: area
     attributes:

@@ -83,6 +83,16 @@ body:
       description: Paste any relevant log output (run with `RUST_LOG=debug`)
       render: shell
 
+  - type: textarea
+    id: implementation-notes
+    attributes:
+      label: Implementation Notes (optional)
+      description: Maintainer notes, suspected root cause, or technical pointers
+      placeholder: |
+        - Suspected module/path:
+        - Possible root cause:
+        - Constraints:
+
   - type: checkboxes
     id: terms
     attributes:
