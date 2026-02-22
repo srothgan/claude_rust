@@ -312,7 +312,10 @@ async fn connect_with_launcher(
                             .write_text_file(true))
                         .terminal(true),
                 )
-                .client_info(acp::Implementation::new("claude-code-rust", env!("CARGO_PKG_VERSION"))),
+                .client_info(acp::Implementation::new(
+                    "claude-code-rust",
+                    env!("CARGO_PKG_VERSION"),
+                )),
         )
         .await
         .map_err(|e| ConnectError::Failed(format!("Handshake failed: {e}")))?;

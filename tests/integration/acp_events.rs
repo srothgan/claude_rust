@@ -7,7 +7,9 @@
 
 use agent_client_protocol as acp;
 use claude_code_rust::acp::client::ClientEvent;
-use claude_code_rust::app::{AppStatus, BlockCache, IncrementalMarkdown, MessageBlock, MessageRole};
+use claude_code_rust::app::{
+    AppStatus, BlockCache, IncrementalMarkdown, MessageBlock, MessageRole,
+};
 use pretty_assertions::assert_eq;
 
 use crate::helpers::{send_acp_event, test_app};
