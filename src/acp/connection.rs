@@ -22,9 +22,9 @@ use std::process::Stdio;
 use tokio::process::{Child, Command};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
-pub const ADAPTER_NPM_PACKAGE: &str = "@zed-industries/claude-code-acp";
-const ADAPTER_BIN_ENV: &str = "CLAUDE_CODE_ACP_BIN";
-const GLOBAL_ADAPTER_BIN_CANDIDATES: [&str; 2] = ["claude-code-acp", "zed-claude-code-acp"];
+pub const ADAPTER_NPM_PACKAGE: &str = "@zed-industries/claude-agent-acp@0.18.0";
+const ADAPTER_BIN_ENV: &str = "CLAUDE_AGENT_ACP_BIN";
+const GLOBAL_ADAPTER_BIN_CANDIDATES: [&str; 2] = ["claude-agent-acp", "zed-claude-agent-acp"];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AdapterLauncher {
@@ -32,7 +32,7 @@ pub enum AdapterLauncher {
     Direct(PathBuf),
     /// Launch a globally installed adapter binary discovered via PATH.
     Global(PathBuf),
-    /// Launch via `npx @zed-industries/claude-code-acp` as the final fallback.
+    /// Launch via `npx @zed-industries/claude-agent-acp` as the final fallback.
     Npx(PathBuf),
 }
 
@@ -61,9 +61,9 @@ impl AdapterLauncher {
 
 /// Resolve all adapter launchers in priority order:
 /// 1) `--adapter-bin`
-/// 2) `CLAUDE_CODE_ACP_BIN`
+/// 2) `CLAUDE_AGENT_ACP_BIN`
 /// 3) globally installed adapter binaries from PATH
-/// 4) `npx @zed-industries/claude-code-acp`
+/// 4) `npx @zed-industries/claude-agent-acp`
 pub fn resolve_adapter_launchers(
     cli_adapter_bin: Option<&Path>,
 ) -> anyhow::Result<Vec<AdapterLauncher>> {

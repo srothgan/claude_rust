@@ -30,7 +30,7 @@ Please include:
 ## Scope
 
 This policy covers the `claude_rust` binary and its direct dependencies. Vulnerabilities
-in the upstream ACP adapter (`@zed-industries/claude-code-acp`) or Claude API should be
+in the upstream ACP adapter (`@zed-industries/claude-agent-acp`) or Claude API should be
 reported to their respective maintainers.
 
 ## Security Measures

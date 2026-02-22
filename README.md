@@ -8,7 +8,7 @@ A native Rust terminal interface for Claude Code. Drop-in replacement for Anthro
 
 ## About
 
-Claude Code Rust replaces the stock Claude Code terminal interface with a native Rust binary built on [Ratatui](https://ratatui.rs/). It connects to the same Claude API through the [ACP (Agent Client Protocol)](https://github.com/nicolo-ribaudo/agent-client-protocol) Rust SDK, spawning Zed's `@zed-industries/claude-code-acp` adapter as a child process. Core Claude Code functionality - tool calls, file editing, terminal commands, and permissions - works unchanged.
+Claude Code Rust replaces the stock Claude Code terminal interface with a native Rust binary built on [Ratatui](https://ratatui.rs/). It connects to the same Claude API through the [ACP (Agent Client Protocol)](https://github.com/nicolo-ribaudo/agent-client-protocol) Rust SDK, spawning Zed's `@zed-industries/claude-agent-acp` adapter as a child process. Core Claude Code functionality - tool calls, file editing, terminal commands, and permissions - works unchanged.
 
 ## Requisites
 

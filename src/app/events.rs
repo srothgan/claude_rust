@@ -540,9 +540,10 @@ fn handle_tool_call(app: &mut App, tc: acp::ToolCall) {
     let kind = tc.kind;
     let id_str = tc.tool_call_id.to_string();
     tracing::debug!(
-        "ToolCall: id={id_str} title={title} kind={kind:?} status={:?} content_blocks={}",
+        "ToolCall: id={id_str} title={title} kind={kind:?} status={:?} content_blocks={} has_raw_output={}",
         tc.status,
-        tc.content.len()
+        tc.content.len(),
+        tc.raw_output.is_some()
     );
 
     // Extract claude_tool_name from meta.claudeCode.toolName
@@ -576,7 +577,13 @@ fn handle_tool_call(app: &mut App, tc: acp::ToolCall) {
         app.insert_active_task(id_str.clone());
     }
 
-    let tool_info = ToolCallInfo {
+    let initial_execute_output = if matches!(kind, acp::ToolKind::Execute) {
+        tc.raw_output.as_ref().and_then(raw_output_to_terminal_text)
+    } else {
+        None
+    };
+
+    let mut tool_info = ToolCallInfo {
         id: id_str,
         title: shorten_tool_title(&tc.title, &app.cwd_raw),
         kind,
@@ -592,6 +599,10 @@ fn handle_tool_call(app: &mut App, tc: acp::ToolCall) {
         cache: BlockCache::default(),
         pending_permission: None,
     };
+    if let Some(output) = initial_execute_output {
+        tool_info.terminal_output_len = output.len();
+        tool_info.terminal_output = Some(output);
+    }
 
     // Attach to current assistant message -- update existing or add new
     let msg_idx = app.messages.len().saturating_sub(1);
@@ -683,11 +694,18 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
             // Find and update the tool call by id (in-place)
             let id_str = tcu.tool_call_id.to_string();
             let has_content = tcu.fields.content.as_ref().map_or(0, Vec::len);
+            let has_raw_output = tcu.fields.raw_output.is_some();
             tracing::debug!(
-                "ToolCallUpdate: id={id_str} new_title={:?} new_status={:?} content_blocks={has_content}",
+                "ToolCallUpdate: id={id_str} new_title={:?} new_status={:?} content_blocks={has_content} has_raw_output={has_raw_output}",
                 tcu.fields.title,
                 tcu.fields.status
             );
+            if has_raw_output {
+                tracing::debug!(
+                    "ToolCallUpdate raw_output: id={id_str} {:?}",
+                    tcu.fields.raw_output
+                );
+            }
             if matches!(tcu.fields.status, Some(acp::ToolCallStatus::Failed))
                 && let Some(content_preview) =
                     internal_failed_tool_content_preview(tcu.fields.content.as_deref())
@@ -737,6 +755,15 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
                             }
                         }
                         tc.content = content;
+                    }
+                    let should_apply_raw_output_fallback = matches!(tc.kind, acp::ToolKind::Execute)
+                        && (tc.terminal_id.is_none() || tc.terminal_output.is_none());
+                    if should_apply_raw_output_fallback
+                        && let Some(raw_output) = tcu.fields.raw_output.as_ref()
+                        && let Some(output) = raw_output_to_terminal_text(raw_output)
+                    {
+                        tc.terminal_output_len = output.len();
+                        tc.terminal_output = Some(output);
                     }
                     // Update claude_tool_name from update meta if present
                     if let Some(ref meta) = tcu.meta
@@ -845,6 +872,28 @@ fn internal_failed_tool_content_preview(
         return None;
     }
     Some(summarize_internal_error(text))
+}
+
+fn raw_output_to_terminal_text(raw_output: &serde_json::Value) -> Option<String> {
+    match raw_output {
+        serde_json::Value::Null => None,
+        serde_json::Value::String(s) => (!s.is_empty()).then(|| s.clone()),
+        serde_json::Value::Array(items) => {
+            let chunks: Vec<&str> = items.iter().filter_map(extract_text_field).collect();
+            if !chunks.is_empty() {
+                Some(chunks.join("\n"))
+            } else {
+                serde_json::to_string_pretty(raw_output).ok().filter(|s| !s.is_empty())
+            }
+        }
+        value => extract_text_field(value)
+            .map(str::to_owned)
+            .or_else(|| serde_json::to_string_pretty(value).ok().filter(|s| !s.is_empty())),
+    }
+}
+
+fn extract_text_field(value: &serde_json::Value) -> Option<&str> {
+    value.get("text").and_then(serde_json::Value::as_str)
 }
 
 fn preview_for_log(input: &str) -> String {
@@ -1239,6 +1288,48 @@ mod tests {
             model_name: model_name.to_owned(),
             mode: None,
         }
+    }
+
+    #[test]
+    fn raw_output_string_maps_to_terminal_text() {
+        let raw = serde_json::json!("hello\nworld");
+        assert_eq!(raw_output_to_terminal_text(&raw).as_deref(), Some("hello\nworld"));
+    }
+
+    #[test]
+    fn raw_output_text_array_maps_to_terminal_text() {
+        let raw = serde_json::json!([
+            {"type": "text", "text": "first"},
+            {"type": "text", "text": "second"}
+        ]);
+        assert_eq!(raw_output_to_terminal_text(&raw).as_deref(), Some("first\nsecond"));
+    }
+
+    #[test]
+    fn execute_tool_update_uses_raw_output_fallback() {
+        let mut app = make_test_app();
+        let tc = acp::ToolCall::new("tc-exec", "Terminal")
+            .kind(acp::ToolKind::Execute)
+            .status(acp::ToolCallStatus::InProgress);
+        handle_acp_event(&mut app, ClientEvent::SessionUpdate(acp::SessionUpdate::ToolCall(tc)));
+
+        let fields = acp::ToolCallUpdateFields::new()
+            .status(acp::ToolCallStatus::Completed)
+            .raw_output(serde_json::json!("line 1\nline 2"));
+        let update = acp::ToolCallUpdate::new("tc-exec", fields);
+        handle_acp_event(
+            &mut app,
+            ClientEvent::SessionUpdate(acp::SessionUpdate::ToolCallUpdate(update)),
+        );
+
+        let Some((mi, bi)) = app.lookup_tool_call("tc-exec") else {
+            panic!("tool call not indexed");
+        };
+        let Some(MessageBlock::ToolCall(tc)) = app.messages.get(mi).and_then(|m| m.blocks.get(bi))
+        else {
+            panic!("tool call block missing");
+        };
+        assert_eq!(tc.terminal_output.as_deref(), Some("line 1\nline 2"));
     }
 
     #[test]
