@@ -51,7 +51,7 @@ By participating, you agree to uphold this code.
 # - npx (included with Node.js)
 
 # Clone and build
-git clone https://github.com/srothgan/claude_rust.git
+git clone https://github.com/srothgan/claude-code-rust.git
 cd claude_rust
 cargo build
 

@@ -6,8 +6,8 @@
 // Validates the full create -> update -> complete flow for tool calls.
 
 use agent_client_protocol as acp;
-use claude_rust::acp::client::ClientEvent;
-use claude_rust::app::{AppStatus, MessageBlock};
+use claude_code_rust::acp::client::ClientEvent;
+use claude_code_rust::app::{AppStatus, MessageBlock};
 use pretty_assertions::assert_eq;
 
 use crate::helpers::{send_acp_event, test_app};

@@ -1,21 +1,21 @@
 [package]
-name = "claude-rust"
-version = "0.1.3"
+name = "claude-code-rust"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.88.0"
 license = "AGPL-3.0-or-later"
 description = "A native Rust terminal interface for Claude Code"
-repository = "https://github.com/srothgan/claude_rust"
+repository = "https://github.com/srothgan/claude-code-rust"
 keywords = ["cli", "tui", "claude", "ai", "terminal"]
 categories = ["command-line-interface"]
-default-run = "claude-rust"
+default-run = "claude-rs"
 
 [lib]
-name = "claude_rust"
+name = "claude_code_rust"
 path = "src/lib.rs"
 
 [[bin]]
-name = "claude-rust"
+name = "claude-rs"
 path = "src/main.rs"
 
 [dependencies]

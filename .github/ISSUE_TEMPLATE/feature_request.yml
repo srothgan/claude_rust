@@ -47,22 +47,6 @@ body:
         - Depends on #...
         - Must ship after #...
 
-  - type: dropdown
-    id: area
-    attributes:
-      label: Area
-      description: Which part of the application does this affect?
-      options:
-        - TUI / Interface
-        - ACP Protocol / Connection
-        - Terminal Operations
-        - Permission System
-        - CLI Arguments
-        - Configuration
-        - Performance
-        - Documentation
-        - Other
-
   - type: checkboxes
     id: terms
     attributes:

@@ -7,10 +7,10 @@ const https = require("node:https");
 const { pipeline } = require("node:stream/promises");
 
 const TARGETS = {
-  "darwin:arm64": { target: "aarch64-apple-darwin", exe: "claude-rust" },
-  "darwin:x64": { target: "x86_64-apple-darwin", exe: "claude-rust" },
-  "linux:x64": { target: "x86_64-unknown-linux-gnu", exe: "claude-rust" },
-  "win32:x64": { target: "x86_64-pc-windows-msvc", exe: "claude-rust.exe" }
+  "darwin:arm64": { target: "aarch64-apple-darwin", exe: "claude-rs" },
+  "darwin:x64": { target: "x86_64-apple-darwin", exe: "claude-rs" },
+  "linux:x64": { target: "x86_64-unknown-linux-gnu", exe: "claude-rs" },
+  "win32:x64": { target: "x86_64-pc-windows-msvc", exe: "claude-rs.exe" }
 };
 
 const MAX_REDIRECTS = 5;
@@ -27,7 +27,7 @@ async function downloadFile(url, outPath, redirects = 0) {
   await new Promise((resolve, reject) => {
     const req = https.get(
       url,
-      { headers: { "User-Agent": "claude-rust-npm-installer" } },
+      { headers: { "User-Agent": "claude-code-rust-npm-installer" } },
       (res) => {
         const status = res.statusCode ?? 0;
 
@@ -60,18 +60,15 @@ async function main() {
   const info = getTargetInfo();
   if (!info) {
     const key = `${process.platform}:${process.arch}`;
-    throw new Error(`Unsupported platform/arch for claude-rust npm install: ${key}`);
+    throw new Error(`Unsupported platform/arch for claude-code-rust npm install: ${key}`);
   }
 
   const pkgJsonPath = path.join(__dirname, "..", "package.json");
   const pkg = JSON.parse(fs.readFileSync(pkgJsonPath, "utf8"));
   const version = process.env.npm_package_version || pkg.version;
   const tag = `v${version}`;
-  const repo =
-    process.env.CLAUDE_RUST_RELEASE_REPO ||
-    process.env.CLAUDE_RS_RELEASE_REPO ||
-    "srothgan/claude_rust";
-  const assetName = `claude-rust-${info.target}${info.exe.endsWith(".exe") ? ".exe" : ""}`;
+  const repo = "srothgan/claude-code-rust";
+  const assetName = `claude-code-rust-${info.target}${info.exe.endsWith(".exe") ? ".exe" : ""}`;
   const url = `https://github.com/${repo}/releases/download/${tag}/${assetName}`;
 
   const installDir = path.join(__dirname, "..", "vendor", info.target);
@@ -86,10 +83,10 @@ async function main() {
     fs.chmodSync(binaryPath, 0o755);
   }
 
-  console.log(`Installed claude-rust ${version} (${info.target})`);
+  console.log(`Installed claude-code-rust ${version} (${info.target})`);
 }
 
 main().catch((error) => {
-  console.error(`claude-rust postinstall failed: ${error.message}`);
+  console.error(`claude-code-rust postinstall failed: ${error.message}`);
   process.exit(1);
 });

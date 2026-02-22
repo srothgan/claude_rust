@@ -6,8 +6,10 @@
 // Validates that ClientEvent variants are correctly processed into App state.
 
 use agent_client_protocol as acp;
-use claude_rust::acp::client::ClientEvent;
-use claude_rust::app::{AppStatus, BlockCache, IncrementalMarkdown, MessageBlock, MessageRole};
+use claude_code_rust::acp::client::ClientEvent;
+use claude_code_rust::app::{
+    AppStatus, BlockCache, IncrementalMarkdown, MessageBlock, MessageRole,
+};
 use pretty_assertions::assert_eq;
 
 use crate::helpers::{send_acp_event, test_app};
@@ -305,7 +307,7 @@ async fn text_chunk_after_user_message_creates_new_assistant_message() {
     let mut app = test_app();
 
     // Simulate a user message already in the chat
-    app.messages.push(claude_rust::app::ChatMessage {
+    app.messages.push(claude_code_rust::app::ChatMessage {
         role: MessageRole::User,
         blocks: vec![MessageBlock::Text(
             "user question".into(),
@@ -360,7 +362,7 @@ async fn duplicate_tool_call_id_updates_existing() {
 async fn tool_call_after_user_message_creates_assistant_message() {
     let mut app = test_app();
 
-    app.messages.push(claude_rust::app::ChatMessage {
+    app.messages.push(claude_code_rust::app::ChatMessage {
         role: MessageRole::User,
         blocks: vec![MessageBlock::Text(
             "question".into(),

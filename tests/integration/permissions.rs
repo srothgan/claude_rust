@@ -4,8 +4,8 @@
 // are sent through the oneshot channel.
 
 use agent_client_protocol as acp;
-use claude_rust::acp::client::ClientEvent;
-use claude_rust::app::{AppStatus, MessageBlock};
+use claude_code_rust::acp::client::ClientEvent;
+use claude_code_rust::app::{AppStatus, MessageBlock};
 use pretty_assertions::assert_eq;
 use tokio::sync::oneshot;
 
@@ -14,7 +14,7 @@ use crate::helpers::{send_acp_event, test_app};
 /// Helper: create a tool call, send it, then send a permission request for it.
 /// Returns the oneshot receiver so the test can verify the response.
 fn setup_permission(
-    app: &mut claude_rust::app::App,
+    app: &mut claude_code_rust::app::App,
     tool_id: &str,
     options: Vec<acp::PermissionOption>,
 ) -> oneshot::Receiver<acp::RequestPermissionResponse> {
@@ -227,9 +227,9 @@ async fn turn_complete_does_not_clear_todos() {
     let mut app = test_app();
 
     // Simulate a TodoWrite by directly setting todos
-    app.todos = vec![claude_rust::app::TodoItem {
+    app.todos = vec![claude_code_rust::app::TodoItem {
         content: "Test task".into(),
-        status: claude_rust::app::TodoStatus::InProgress,
+        status: claude_code_rust::app::TodoStatus::InProgress,
         active_form: "Testing".into(),
     }];
     app.show_todo_panel = true;
@@ -244,10 +244,10 @@ async fn turn_complete_does_not_clear_todos() {
 async fn turn_complete_does_not_affect_mode() {
     let mut app = test_app();
 
-    app.mode = Some(claude_rust::app::ModeState {
+    app.mode = Some(claude_code_rust::app::ModeState {
         current_mode_id: "plan".into(),
         current_mode_name: "Plan".into(),
-        available_modes: vec![claude_rust::app::ModeInfo {
+        available_modes: vec![claude_code_rust::app::ModeInfo {
             id: "plan".into(),
             name: "Plan".into(),
         }],

@@ -1,19 +1,19 @@
 {
-  "name": "claude-rust",
-  "version": "0.1.0",
-  "description": "Native Rust terminal interface for Claude Code",
+  "name": "claude-code-rust",
+  "version": "0.2.0",
+  "description": "Claude Code Rust - native Rust terminal interface for Claude Code",
   "keywords": ["cli", "tui", "claude", "ai", "terminal"],
   "license": "AGPL-3.0-or-later",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/srothgan/claude_rust.git"
+    "url": "git+https://github.com/srothgan/claude-code-rust.git"
   },
   "bugs": {
-    "url": "https://github.com/srothgan/claude_rust/issues"
+    "url": "https://github.com/srothgan/claude-code-rust/issues"
   },
-  "homepage": "https://github.com/srothgan/claude_rust#readme",
+  "homepage": "https://github.com/srothgan/claude-code-rust#readme",
   "bin": {
-    "claude-rust": "bin/claude-rust.js"
+    "claude-rs": "bin/claude-rs.js"
   },
   "files": [
     "bin",

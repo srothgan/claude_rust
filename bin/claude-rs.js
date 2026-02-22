@@ -6,17 +6,17 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const TARGETS = {
-  "darwin:arm64": { target: "aarch64-apple-darwin", exe: "claude-rust" },
-  "darwin:x64": { target: "x86_64-apple-darwin", exe: "claude-rust" },
-  "linux:x64": { target: "x86_64-unknown-linux-gnu", exe: "claude-rust" },
-  "win32:x64": { target: "x86_64-pc-windows-msvc", exe: "claude-rust.exe" }
+  "darwin:arm64": { target: "aarch64-apple-darwin", exe: "claude-rs" },
+  "darwin:x64": { target: "x86_64-apple-darwin", exe: "claude-rs" },
+  "linux:x64": { target: "x86_64-unknown-linux-gnu", exe: "claude-rs" },
+  "win32:x64": { target: "x86_64-pc-windows-msvc", exe: "claude-rs.exe" }
 };
 
 function resolveInstall() {
   const key = `${process.platform}:${process.arch}`;
   const info = TARGETS[key];
   if (!info) {
-    return { error: `Unsupported platform/arch for claude-rust: ${key}` };
+    return { error: `Unsupported platform/arch for claude-rs: ${key}` };
   }
 
   const binaryPath = path.join(__dirname, "..", "vendor", info.target, info.exe);
@@ -24,7 +24,7 @@ function resolveInstall() {
     return {
       error:
         `Missing binary at ${binaryPath}\n` +
-        "Reinstall with `npm install -g claude-rust` to fetch release artifacts."
+        "Reinstall with `npm install -g claude-code-rust` to fetch release artifacts."
     };
   }
 
@@ -43,7 +43,7 @@ const child = spawn(resolved.binaryPath, process.argv.slice(2), {
 });
 
 child.on("error", (error) => {
-  console.error(`Failed to launch claude-rust: ${error.message}`);
+  console.error(`Failed to launch claude-rs: ${error.message}`);
   process.exit(1);
 });
 

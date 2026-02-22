@@ -1,4 +1,4 @@
-// claude_rust - A native Rust terminal interface for Claude Code
+// Claude Code Rust - A native Rust terminal interface for Claude Code
 // Copyright (C) 2025  Simon Peter Rothgang
 //
 // This program is free software: you can redistribute it and/or modify
@@ -39,7 +39,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         let mut spans = vec![
             Span::styled("\u{1F980} ", Style::default().fg(theme::RUST_ORANGE)),
             Span::styled(
-                "claude-rust",
+                "Claude Code Rust",
                 Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
             ),
             sep(),

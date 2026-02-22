@@ -1,4 +1,4 @@
-// claude_rust - A native Rust terminal interface for Claude Code
+// Claude Code Rust - A native Rust terminal interface for Claude Code
 // Copyright (C) 2025  Simon Peter Rothgang
 //
 // This program is free software: you can redistribute it and/or modify
@@ -15,7 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use clap::Parser;
-use claude_rust::Cli;
+use claude_code_rust::Cli;
 use std::fs::OpenOptions;
 use std::time::Instant;
 
@@ -30,14 +30,14 @@ fn main() -> anyhow::Result<()> {
 
     let resolve_started = Instant::now();
     let launchers =
-        claude_rust::acp::connection::resolve_adapter_launchers(cli.adapter_bin.as_deref())?;
+        claude_code_rust::acp::connection::resolve_adapter_launchers(cli.adapter_bin.as_deref())?;
     tracing::info!(
         "Resolved {} adapter launcher(s) in {:?}: {:?}",
         launchers.len(),
         resolve_started.elapsed(),
         launchers
             .iter()
-            .map(claude_rust::acp::connection::AdapterLauncher::describe)
+            .map(claude_code_rust::acp::connection::AdapterLauncher::describe)
             .collect::<Vec<_>>()
     );
 
@@ -46,14 +46,14 @@ fn main() -> anyhow::Result<()> {
 
     rt.block_on(local_set.run_until(async move {
         // Phase 1: create app in Connecting state (instant, no I/O)
-        let mut app = claude_rust::app::create_app(&cli);
+        let mut app = claude_code_rust::app::create_app(&cli);
 
         // Phase 2: start background connection + TUI in parallel
-        claude_rust::app::start_connection(&app, &cli, launchers);
-        let result = claude_rust::app::run_tui(&mut app).await;
+        claude_code_rust::app::start_connection(&app, &cli, launchers);
+        let result = claude_code_rust::app::run_tui(&mut app).await;
 
         // Kill any spawned terminal child processes before exiting
-        claude_rust::acp::client::kill_all_terminals(&app.terminals);
+        claude_code_rust::acp::client::kill_all_terminals(&app.terminals);
 
         result
     }))

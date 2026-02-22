@@ -6,8 +6,8 @@
 // Validates multi-event sequences and App state consistency.
 
 use agent_client_protocol as acp;
-use claude_rust::acp::client::ClientEvent;
-use claude_rust::app::{AppStatus, MessageBlock};
+use claude_code_rust::acp::client::ClientEvent;
+use claude_code_rust::app::{AppStatus, MessageBlock};
 use pretty_assertions::assert_eq;
 
 use crate::helpers::{send_acp_event, test_app};
@@ -265,12 +265,12 @@ async fn mode_update_switches_active_mode() {
     let mut app = test_app();
 
     // Initialize with two modes, "code" active
-    app.mode = Some(claude_rust::app::ModeState {
+    app.mode = Some(claude_code_rust::app::ModeState {
         current_mode_id: "code".into(),
         current_mode_name: "Code".into(),
         available_modes: vec![
-            claude_rust::app::ModeInfo { id: "code".into(), name: "Code".into() },
-            claude_rust::app::ModeInfo { id: "plan".into(), name: "Plan".into() },
+            claude_code_rust::app::ModeInfo { id: "code".into(), name: "Code".into() },
+            claude_code_rust::app::ModeInfo { id: "plan".into(), name: "Plan".into() },
         ],
     });
 
@@ -291,10 +291,10 @@ async fn mode_update_switches_active_mode() {
 async fn mode_update_unknown_id_uses_id_as_name() {
     let mut app = test_app();
 
-    app.mode = Some(claude_rust::app::ModeState {
+    app.mode = Some(claude_code_rust::app::ModeState {
         current_mode_id: "code".into(),
         current_mode_name: "Code".into(),
-        available_modes: vec![claude_rust::app::ModeInfo {
+        available_modes: vec![claude_code_rust::app::ModeInfo {
             id: "code".into(),
             name: "Code".into(),
         }],

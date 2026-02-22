@@ -1,4 +1,4 @@
-// claude_rust - A native Rust terminal interface for Claude Code
+// Claude Code Rust - A native Rust terminal interface for Claude Code
 // Copyright (C) 2025  Simon Peter Rothgang
 //
 // This program is free software: you can redistribute it and/or modify
@@ -22,7 +22,7 @@ pub mod ui;
 use clap::Parser;
 
 #[derive(Parser, Debug)]
-#[command(name = "claude-rust", about = "Native Rust terminal for Claude Code")]
+#[command(name = "claude-rs", about = "Native Rust terminal for Claude Code")]
 pub struct Cli {
     /// Override the model (sonnet, opus, haiku)
     #[arg(long, short)]
@@ -48,7 +48,7 @@ pub struct Cli {
     #[arg(long, value_name = "PATH")]
     pub log_file: Option<std::path::PathBuf>,
 
-    /// Tracing filter directives (example: `info,claude_rust::ui=trace`).
+    /// Tracing filter directives (example: `info,claude_code_rust::ui=trace`).
     /// Falls back to `RUST_LOG` when omitted.
     #[arg(long, value_name = "FILTER")]
     pub log_filter: Option<String>,

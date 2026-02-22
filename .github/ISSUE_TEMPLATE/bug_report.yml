@@ -23,7 +23,7 @@ body:
       label: Steps to Reproduce
       description: Minimal steps to reproduce the behavior
       placeholder: |
-        1. Run `claude-rust` with `--flag`
+        1. Run `claude-rs` with `--flag`
         2. Type "..."
         3. See error
     validations:
@@ -49,8 +49,8 @@ body:
     id: version
     attributes:
       label: Version
-      description: Output of `claude-rust --version`
-      placeholder: "claude-rust 0.1.0"
+      description: Output of `claude-rs --version`
+      placeholder: "claude-rs 0.2.0"
     validations:
       required: true
 

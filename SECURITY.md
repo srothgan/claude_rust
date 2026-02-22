@@ -11,7 +11,7 @@
 
 **Please do NOT report security vulnerabilities through public GitHub issues.**
 
-Instead, use [GitHub Security Advisories](https://github.com/srothgan/claude_rust/security/advisories/new)
+Instead, use [GitHub Security Advisories](https://github.com/srothgan/claude-code-rust/security/advisories/new)
 to report vulnerabilities privately.
 
 Please include:

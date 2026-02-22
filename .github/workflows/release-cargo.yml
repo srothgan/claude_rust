@@ -26,7 +26,7 @@ jobs:
       - name: Check if version is already published
         id: check
         run: |
-          PUBLISHED=$(cargo search claude-rust --limit 1 | head -1 | sed 's/.*"\(.*\)".*/\1/' || echo "")
+          PUBLISHED=$(cargo search claude-code-rust --limit 1 | head -1 | sed 's/.*"\(.*\)".*/\1/' || echo "")
           if [ "$PUBLISHED" = "${{ steps.get_version.outputs.version }}" ]; then
             echo "should-publish=false" >> $GITHUB_OUTPUT
           else
