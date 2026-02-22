@@ -756,9 +756,9 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
                         }
                         tc.content = content;
                     }
-                    let should_apply_raw_output_fallback = matches!(tc.kind, acp::ToolKind::Execute)
-                        && (tc.terminal_id.is_none() || tc.terminal_output.is_none());
-                    if should_apply_raw_output_fallback
+                    // TODO(adapter): Revisit when claude-agent-acp starts forwarding
+                    // incremental Bash output updates during long-running commands.
+                    if matches!(tc.kind, acp::ToolKind::Execute)
                         && let Some(raw_output) = tcu.fields.raw_output.as_ref()
                         && let Some(output) = raw_output_to_terminal_text(raw_output)
                     {
@@ -880,10 +880,10 @@ fn raw_output_to_terminal_text(raw_output: &serde_json::Value) -> Option<String>
         serde_json::Value::String(s) => (!s.is_empty()).then(|| s.clone()),
         serde_json::Value::Array(items) => {
             let chunks: Vec<&str> = items.iter().filter_map(extract_text_field).collect();
-            if !chunks.is_empty() {
-                Some(chunks.join("\n"))
-            } else {
+            if chunks.is_empty() {
                 serde_json::to_string_pretty(raw_output).ok().filter(|s| !s.is_empty())
+            } else {
+                Some(chunks.join("\n"))
             }
         }
         value => extract_text_field(value)

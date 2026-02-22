@@ -27,6 +27,21 @@ use std::rc::Rc;
 const HELP_TAB_PREV_KEY: KeyCode = KeyCode::Left;
 const HELP_TAB_NEXT_KEY: KeyCode = KeyCode::Right;
 
+fn is_ctrl_shortcut(modifiers: KeyModifiers) -> bool {
+    modifiers.contains(KeyModifiers::CONTROL) && !modifiers.contains(KeyModifiers::ALT)
+}
+
+fn is_ctrl_char_shortcut(key: KeyEvent, expected: char) -> bool {
+    is_ctrl_shortcut(key.modifiers)
+        && matches!(key.code, KeyCode::Char(c) if c.eq_ignore_ascii_case(&expected))
+}
+
+fn is_permission_ctrl_shortcut(key: KeyEvent) -> bool {
+    is_ctrl_char_shortcut(key, 'y')
+        || is_ctrl_char_shortcut(key, 'a')
+        || is_ctrl_char_shortcut(key, 'n')
+}
+
 pub(super) fn dispatch_key_by_focus(app: &mut App, key: KeyEvent) {
     sync_help_focus(app);
 
@@ -50,13 +65,16 @@ pub(super) fn dispatch_key_by_focus(app: &mut App, key: KeyEvent) {
 fn handle_global_shortcuts(app: &mut App, key: KeyEvent) -> bool {
     // In connecting state, only Ctrl+C should be actionable globally.
     if app.status == AppStatus::Connecting {
-        if let (KeyCode::Char('c'), m) = (key.code, key.modifiers)
-            && m == KeyModifiers::CONTROL
-        {
+        if is_ctrl_char_shortcut(key, 'c') {
             app.should_quit = true;
             return true;
         }
         return false;
+    }
+
+    // Permission quick shortcuts are global when permissions are pending.
+    if !app.pending_permission_ids.is_empty() && is_permission_ctrl_shortcut(key) {
+        return handle_permission_key(app, key);
     }
 
     match (key.code, key.modifiers) {
@@ -92,12 +110,6 @@ fn handle_global_shortcuts(app: &mut App, key: KeyEvent) -> bool {
         (KeyCode::Down, m) if m == KeyModifiers::CONTROL => {
             app.viewport.scroll_down(1);
             true
-        }
-        // Permission quick shortcuts are global when permissions are pending.
-        (KeyCode::Char('y' | 'a' | 'n'), m)
-            if m == KeyModifiers::CONTROL && !app.pending_permission_ids.is_empty() =>
-        {
-            handle_permission_key(app, key)
         }
         _ => false,
     }

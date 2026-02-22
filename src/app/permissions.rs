@@ -55,13 +55,73 @@ fn set_permission_focused(app: &mut App, queue_index: usize, focused: bool) {
 
 /// Find the option index for the currently focused permission by kind.
 fn focused_option_index_by_kind(app: &App, kind: PermissionOptionKind) -> Option<usize> {
+    focused_option_index_where(app, |opt| opt.kind == kind)
+}
+
+fn focused_option_index_where<F>(app: &App, mut predicate: F) -> Option<usize>
+where
+    F: FnMut(&acp::PermissionOption) -> bool,
+{
     let tool_id = app.pending_permission_ids.first()?;
     let (mi, bi) = app.tool_call_index.get(tool_id).copied()?;
     let MessageBlock::ToolCall(tc) = app.messages.get(mi)?.blocks.get(bi)? else {
         return None;
     };
     let pending = tc.pending_permission.as_ref()?;
-    pending.options.iter().position(|opt| opt.kind == kind)
+    pending.options.iter().position(&mut predicate)
+}
+
+fn is_ctrl_shortcut(modifiers: KeyModifiers) -> bool {
+    modifiers.contains(KeyModifiers::CONTROL) && !modifiers.contains(KeyModifiers::ALT)
+}
+
+fn is_ctrl_char_shortcut(key: KeyEvent, expected: char) -> bool {
+    is_ctrl_shortcut(key.modifiers)
+        && matches!(key.code, KeyCode::Char(c) if c.eq_ignore_ascii_case(&expected))
+}
+
+fn normalized_option_tokens(option: &acp::PermissionOption) -> String {
+    let mut out = String::new();
+    for ch in option.name.chars().chain(option.option_id.to_string().chars()) {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_lowercase());
+        }
+    }
+    out
+}
+
+fn option_tokens(option: &acp::PermissionOption) -> (bool, bool, bool) {
+    let tokens = normalized_option_tokens(option);
+    let allow_like =
+        tokens.contains("allow") || tokens.contains("accept") || tokens.contains("approve");
+    let reject_like =
+        tokens.contains("reject") || tokens.contains("deny") || tokens.contains("disallow");
+    let persistent_like = tokens.contains("always")
+        || tokens.contains("dontask")
+        || tokens.contains("remember")
+        || tokens.contains("persist")
+        || tokens.contains("bypasspermissions");
+    (allow_like, reject_like, persistent_like)
+}
+
+fn option_is_allow_once_fallback(option: &acp::PermissionOption) -> bool {
+    let (allow_like, reject_like, persistent_like) = option_tokens(option);
+    allow_like && !reject_like && !persistent_like
+}
+
+fn option_is_allow_always_fallback(option: &acp::PermissionOption) -> bool {
+    let (allow_like, reject_like, persistent_like) = option_tokens(option);
+    allow_like && !reject_like && persistent_like
+}
+
+fn option_is_reject_once_fallback(option: &acp::PermissionOption) -> bool {
+    let (allow_like, reject_like, persistent_like) = option_tokens(option);
+    reject_like && !allow_like && !persistent_like
+}
+
+fn option_is_reject_fallback(option: &acp::PermissionOption) -> bool {
+    let (allow_like, reject_like, _) = option_tokens(option);
+    reject_like && !allow_like
 }
 
 fn focused_permission_is_active(app: &App) -> bool {
@@ -86,9 +146,9 @@ pub(super) fn handle_permission_key(app: &mut App, key: KeyEvent) -> bool {
         .map_or(0, |p| p.options.len());
     let permission_has_focus = focused_permission_is_active(app);
 
-    match (key.code, key.modifiers) {
+    match key.code {
         // Up / Down: cycle focus between pending permissions
-        (KeyCode::Up | KeyCode::Down, _)
+        KeyCode::Up | KeyCode::Down
             if permission_has_focus && app.pending_permission_ids.len() > 1 =>
         {
             // Unfocus the current (first) permission
@@ -112,7 +172,7 @@ pub(super) fn handle_permission_key(app: &mut App, key: KeyEvent) -> bool {
             app.viewport.engage_auto_scroll();
             true
         }
-        (KeyCode::Left, _) if permission_has_focus && option_count > 0 => {
+        KeyCode::Left if permission_has_focus && option_count > 0 => {
             if let Some(tc) = get_focused_permission_tc(app)
                 && let Some(ref mut p) = tc.pending_permission
             {
@@ -121,7 +181,7 @@ pub(super) fn handle_permission_key(app: &mut App, key: KeyEvent) -> bool {
             }
             true
         }
-        (KeyCode::Right, _) if permission_has_focus && option_count > 0 => {
+        KeyCode::Right if permission_has_focus && option_count > 0 => {
             if let Some(tc) = get_focused_permission_tc(app)
                 && let Some(ref mut p) = tc.pending_permission
                 && p.selected_index + 1 < option_count
@@ -131,14 +191,16 @@ pub(super) fn handle_permission_key(app: &mut App, key: KeyEvent) -> bool {
             }
             true
         }
-        (KeyCode::Enter, _) if permission_has_focus && option_count > 0 => {
+        KeyCode::Enter if permission_has_focus && option_count > 0 => {
             respond_permission(app, None);
             true
         }
         // Quick shortcuts use Ctrl+lowercase so normal typing stays untouched.
-        (KeyCode::Char('y'), m) if m == KeyModifiers::CONTROL => {
+        KeyCode::Char(_) if is_ctrl_char_shortcut(key, 'y') => {
             if let Some(idx) = focused_option_index_by_kind(app, PermissionOptionKind::AllowOnce)
+                .or_else(|| focused_option_index_where(app, option_is_allow_once_fallback))
                 .or_else(|| focused_option_index_by_kind(app, PermissionOptionKind::AllowAlways))
+                .or_else(|| focused_option_index_where(app, option_is_allow_always_fallback))
             {
                 respond_permission(app, Some(idx));
                 true
@@ -146,8 +208,9 @@ pub(super) fn handle_permission_key(app: &mut App, key: KeyEvent) -> bool {
                 false
             }
         }
-        (KeyCode::Char('a'), m) if m == KeyModifiers::CONTROL => {
+        KeyCode::Char(_) if is_ctrl_char_shortcut(key, 'a') => {
             if let Some(idx) = focused_option_index_by_kind(app, PermissionOptionKind::AllowAlways)
+                .or_else(|| focused_option_index_where(app, option_is_allow_always_fallback))
             {
                 respond_permission(app, Some(idx));
                 true
@@ -155,17 +218,20 @@ pub(super) fn handle_permission_key(app: &mut App, key: KeyEvent) -> bool {
                 false
             }
         }
-        (KeyCode::Char('n'), m) if m == KeyModifiers::CONTROL => {
-            if let Some(idx) = focused_option_index_by_kind(app, PermissionOptionKind::RejectOnce) {
+        KeyCode::Char(_) if is_ctrl_char_shortcut(key, 'n') => {
+            if let Some(idx) = focused_option_index_by_kind(app, PermissionOptionKind::RejectOnce)
+                .or_else(|| focused_option_index_where(app, option_is_reject_once_fallback))
+            {
                 respond_permission(app, Some(idx));
                 true
             } else {
                 false
             }
         }
-        (KeyCode::Esc, _) if permission_has_focus => {
+        KeyCode::Esc if permission_has_focus => {
             if let Some(idx) = focused_option_index_by_kind(app, PermissionOptionKind::RejectOnce)
                 .or_else(|| focused_option_index_by_kind(app, PermissionOptionKind::RejectAlways))
+                .or_else(|| focused_option_index_where(app, option_is_reject_fallback))
             {
                 respond_permission(app, Some(idx));
                 true
@@ -457,6 +523,66 @@ mod tests {
         assert!(!consumed);
         assert_eq!(app.pending_permission_ids, vec!["perm-1"]);
         assert!(matches!(rx.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
+    }
+
+    #[test]
+    fn ctrl_a_matches_allow_always_by_label_when_kind_is_missing() {
+        let mut app = App::test_default();
+        let mut rx = add_permission(
+            &mut app,
+            "perm-1",
+            vec![
+                acp::PermissionOption::new(
+                    "allow-once",
+                    "Allow once",
+                    PermissionOptionKind::AllowOnce,
+                ),
+                acp::PermissionOption::new(
+                    "allow-always",
+                    "Allow always",
+                    PermissionOptionKind::AllowOnce,
+                ),
+                acp::PermissionOption::new(
+                    "reject-once",
+                    "Reject",
+                    PermissionOptionKind::RejectOnce,
+                ),
+            ],
+            true,
+        );
+
+        let consumed = handle_permission_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('a'), crossterm::event::KeyModifiers::CONTROL),
+        );
+        assert!(consumed);
+
+        let resp = rx.try_recv().expect("permission should be answered by ctrl+a fallback");
+        let acp::RequestPermissionOutcome::Selected(sel) = resp.outcome else {
+            panic!("expected selected permission response");
+        };
+        assert_eq!(sel.option_id.to_string(), "allow-always");
+    }
+
+    #[test]
+    fn ctrl_a_accepts_uppercase_with_shift_modifier() {
+        let mut app = App::test_default();
+        let mut rx = add_permission(&mut app, "perm-1", allow_options(), true);
+
+        let consumed = handle_permission_key(
+            &mut app,
+            KeyEvent::new(
+                KeyCode::Char('A'),
+                crossterm::event::KeyModifiers::CONTROL | crossterm::event::KeyModifiers::SHIFT,
+            ),
+        );
+        assert!(consumed);
+
+        let resp = rx.try_recv().expect("permission should be answered by uppercase ctrl+a");
+        let acp::RequestPermissionOutcome::Selected(sel) = resp.outcome else {
+            panic!("expected selected permission response");
+        };
+        assert_eq!(sel.option_id.to_string(), "allow-always");
     }
 
     #[test]

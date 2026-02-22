@@ -533,6 +533,11 @@ fn content_summary(tc: &ToolCallInfo) -> String {
     // For Execute tool calls, show last non-empty line of terminal output
     if tc.terminal_id.is_some() {
         if let Some(ref output) = tc.terminal_output {
+            if matches!(tc.status, acp::ToolCallStatus::Failed)
+                && let Some(msg) = extract_tool_use_error_message(output)
+            {
+                return msg;
+            }
             let last = output.lines().rev().find(|l| !l.trim().is_empty());
             if let Some(line) = last {
                 return if line.chars().count() > 80 {
@@ -562,6 +567,11 @@ fn content_summary(tc: &ToolCallInfo) -> String {
             acp::ToolCallContent::Content(c) => {
                 if let acp::ContentBlock::Text(text) = &c.content {
                     let stripped = strip_outer_code_fence(&text.text);
+                    if matches!(tc.status, acp::ToolCallStatus::Failed)
+                        && let Some(msg) = extract_tool_use_error_message(&stripped)
+                    {
+                        return msg;
+                    }
                     let first = stripped.lines().next().unwrap_or("");
                     return if first.chars().count() > 60 {
                         let truncated: String = first.chars().take(57).collect();
@@ -585,7 +595,11 @@ fn render_tool_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
     // For Execute tool calls with terminal output, render the live output
     if is_execute {
         if let Some(ref output) = tc.terminal_output {
-            if let Ok(ansi_text) = output.as_bytes().into_text() {
+            if matches!(tc.status, acp::ToolCallStatus::Failed)
+                && let Some(msg) = extract_tool_use_error_message(output)
+            {
+                lines.extend(render_tool_use_error_content(&msg));
+            } else if let Ok(ansi_text) = output.as_bytes().into_text() {
                 for line in ansi_text.lines {
                     let owned: Vec<Span<'static>> = line
                         .spans
@@ -614,6 +628,12 @@ fn render_tool_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
             acp::ToolCallContent::Content(c) => {
                 if let acp::ContentBlock::Text(text) = &c.content {
                     let stripped = strip_outer_code_fence(&text.text);
+                    if matches!(tc.status, acp::ToolCallStatus::Failed)
+                        && let Some(msg) = extract_tool_use_error_message(&stripped)
+                    {
+                        lines.extend(render_tool_use_error_content(&msg));
+                        continue;
+                    }
                     if matches!(tc.status, acp::ToolCallStatus::Failed)
                         && looks_like_internal_error(&stripped)
                     {
@@ -654,6 +674,16 @@ fn render_internal_failure_content(payload: &str) -> Vec<Line<'static>> {
         lines.push(Line::from(Span::styled(summary, Style::default().fg(theme::STATUS_ERROR))));
     }
     lines
+}
+
+fn render_tool_use_error_content(message: &str) -> Vec<Line<'static>> {
+    message
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| {
+            Line::from(Span::styled(line.to_owned(), Style::default().fg(theme::STATUS_ERROR)))
+        })
+        .collect()
 }
 
 fn debug_failed_tool_render(tc: &ToolCallInfo) {
@@ -743,6 +773,13 @@ fn looks_like_xml_error_shape(lower: &str) -> bool {
     has_error_node && has_detail_node
 }
 
+fn extract_tool_use_error_message(input: &str) -> Option<String> {
+    extract_xml_tag_value(input, "tool_use_error")
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+}
+
 fn summarize_internal_error(input: &str) -> String {
     if let Some(msg) = extract_xml_tag_value(input, "message") {
         return preview_for_log(msg);
@@ -802,6 +839,7 @@ fn extract_json_string_field(input: &str, field: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::BlockCache;
     use pretty_assertions::assert_eq;
 
     // status_icon
@@ -939,5 +977,66 @@ mod tests {
     fn summarize_internal_error_reads_json_rpc_message() {
         let payload = r#"{"jsonrpc":"2.0","error":{"code":-32603,"message":"internal rpc fault"}}"#;
         assert_eq!(summarize_internal_error(payload), "internal rpc fault");
+    }
+
+    #[test]
+    fn extract_tool_use_error_message_reads_inner_text() {
+        let payload = "<tool_use_error>Sibling tool call errored</tool_use_error>";
+        assert_eq!(
+            extract_tool_use_error_message(payload).as_deref(),
+            Some("Sibling tool call errored")
+        );
+    }
+
+    #[test]
+    fn render_tool_use_error_content_shows_only_inner_text_lines() {
+        let lines = render_tool_use_error_content("Line A\nLine B");
+        let rendered: Vec<String> = lines
+            .iter()
+            .map(|line| line.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        assert_eq!(rendered, vec!["Line A", "Line B"]);
+    }
+
+    #[test]
+    fn content_summary_only_extracts_tool_use_error_for_failed_execute() {
+        let tc = ToolCallInfo {
+            id: "tc-1".into(),
+            title: "Bash".into(),
+            kind: acp::ToolKind::Execute,
+            status: acp::ToolCallStatus::Completed,
+            content: Vec::new(),
+            collapsed: true,
+            claude_tool_name: Some("Bash".into()),
+            hidden: false,
+            terminal_id: Some("term-1".into()),
+            terminal_command: Some("echo done".into()),
+            terminal_output: Some("<tool_use_error>bad</tool_use_error>\ndone".into()),
+            terminal_output_len: 0,
+            cache: BlockCache::default(),
+            pending_permission: None,
+        };
+        assert_eq!(content_summary(&tc), "done");
+    }
+
+    #[test]
+    fn content_summary_extracts_tool_use_error_for_failed_execute() {
+        let tc = ToolCallInfo {
+            id: "tc-1".into(),
+            title: "Bash".into(),
+            kind: acp::ToolKind::Execute,
+            status: acp::ToolCallStatus::Failed,
+            content: Vec::new(),
+            collapsed: true,
+            claude_tool_name: Some("Bash".into()),
+            hidden: false,
+            terminal_id: Some("term-1".into()),
+            terminal_command: Some("echo done".into()),
+            terminal_output: Some("<tool_use_error>bad</tool_use_error>\ndone".into()),
+            terminal_output_len: 0,
+            cache: BlockCache::default(),
+            pending_permission: None,
+        };
+        assert_eq!(content_summary(&tc), "bad");
     }
 }
