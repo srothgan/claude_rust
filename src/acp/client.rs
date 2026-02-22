@@ -63,6 +63,8 @@ pub enum ClientEvent {
         model_name: String,
         mode: Option<crate::app::ModeState>,
     },
+    /// Startup update check found a newer published version.
+    UpdateAvailable { latest_version: String, current_version: String },
 }
 
 /// Shared handle to all spawned terminal processes.

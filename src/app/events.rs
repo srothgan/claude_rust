@@ -461,6 +461,10 @@ pub fn handle_acp_event(app: &mut App, event: ClientEvent) {
             app.pending_compact_clear = false;
             reset_for_new_session(app, session_id, model_name, mode);
         }
+        ClientEvent::UpdateAvailable { latest_version, current_version } => {
+            app.update_check_hint =
+                Some(format!("Update available: v{latest_version} (current v{current_version})"));
+        }
     }
 }
 
@@ -1610,6 +1614,25 @@ mod tests {
         };
         assert_eq!(hint.method_name, "oauth");
         assert_eq!(hint.method_description, "Open browser");
+    }
+
+    #[test]
+    fn update_available_sets_footer_hint() {
+        let mut app = make_test_app();
+        assert!(app.update_check_hint.is_none());
+
+        handle_acp_event(
+            &mut app,
+            ClientEvent::UpdateAvailable {
+                latest_version: "0.3.0".into(),
+                current_version: "0.2.0".into(),
+            },
+        );
+
+        assert_eq!(
+            app.update_check_hint.as_deref(),
+            Some("Update available: v0.3.0 (current v0.2.0)")
+        );
     }
 
     #[test]

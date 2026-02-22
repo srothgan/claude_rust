@@ -29,6 +29,7 @@ pub(crate) mod slash;
 mod state;
 mod terminal;
 mod todos;
+mod update_check;
 
 // Re-export all public types so `crate::app::App`, `crate::app::BlockCache`, etc. still work.
 pub use connect::{create_app, start_connection};
@@ -42,6 +43,7 @@ pub use state::{
     SelectionKind, SelectionPoint, SelectionState, TodoItem, TodoStatus, ToolCallInfo,
     WelcomeBlock,
 };
+pub use update_check::start_update_check;
 
 use agent_client_protocol::{self as acp, Agent as _};
 use crossterm::event::{

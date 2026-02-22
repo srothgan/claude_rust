@@ -179,6 +179,8 @@ pub struct App {
     pub cached_header_line: Option<ratatui::text::Line<'static>>,
     /// Cached footer line (invalidated on mode change).
     pub cached_footer_line: Option<ratatui::text::Line<'static>>,
+    /// Optional startup update-check hint rendered at the footer's right edge.
+    pub update_check_hint: Option<String>,
 
     /// Indexed terminal tool calls: `(terminal_id, msg_idx, block_idx)`.
     /// Avoids O(n*m) scan of all messages/blocks every frame.
@@ -360,6 +362,7 @@ impl App {
             git_branch: None,
             cached_header_line: None,
             cached_footer_line: None,
+            update_check_hint: None,
             terminal_tool_calls: Vec::new(),
             needs_redraw: true,
             perf: None,

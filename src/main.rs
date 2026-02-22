@@ -50,6 +50,7 @@ fn main() -> anyhow::Result<()> {
 
         // Phase 2: start background connection + TUI in parallel
         claude_code_rust::app::start_connection(&app, &cli, launchers);
+        claude_code_rust::app::start_update_check(&app, &cli);
         let result = claude_code_rust::app::run_tui(&mut app).await;
 
         // Kill any spawned terminal child processes before exiting

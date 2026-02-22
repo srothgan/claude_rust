@@ -106,6 +106,7 @@ pub fn create_app(cli: &Cli) -> App {
         git_branch: None,
         cached_header_line: None,
         cached_footer_line: None,
+        update_check_hint: None,
         terminal_tool_calls: Vec::new(),
         needs_redraw: true,
         perf: cli

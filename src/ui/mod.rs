@@ -30,10 +30,11 @@ mod tool_call;
 
 use crate::app::App;
 use ratatui::Frame;
-use ratatui::layout::Rect;
+use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
+use unicode_width::UnicodeWidthStr;
 
 pub fn render(frame: &mut Frame, app: &mut App) {
     let _t = app.perf.as_ref().map(|p| p.start("ui::render"));
@@ -103,7 +104,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         help::render(frame, areas.help, app);
     }
 
-    // Footer: mode pill left, command hints right
+    // Footer: mode/help on the left, optional update hint on the right.
     if let Some(footer_area) = areas.footer {
         let _t = app.perf.as_ref().map(|p| p.start("ui::footer"));
         render_footer(frame, footer_area, app);
@@ -145,7 +146,45 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &mut App) {
 
     if let Some(line) = &app.cached_footer_line {
         frame.render_widget(Paragraph::new(line.clone()), padded);
+        render_footer_update_hint(frame, padded, line, app.update_check_hint.as_deref());
     }
+}
+
+fn render_footer_update_hint(
+    frame: &mut Frame,
+    area: Rect,
+    left_line: &Line<'_>,
+    hint: Option<&str>,
+) {
+    let Some(hint) = hint else {
+        return;
+    };
+    if hint.trim().is_empty() || area.width == 0 {
+        return;
+    }
+
+    let left_width = line_display_width(left_line);
+    let hint_width = UnicodeWidthStr::width(hint);
+    if hint_width == 0 {
+        return;
+    }
+
+    // Keep a small gap and skip rendering if the footer is too narrow.
+    if !footer_can_render_update_hint(usize::from(area.width), left_width, hint_width) {
+        return;
+    }
+
+    let line = Line::from(Span::styled(hint.to_owned(), Style::default().fg(theme::RUST_ORANGE)));
+    frame.render_widget(Paragraph::new(line).alignment(Alignment::Right), area);
+}
+
+fn line_display_width(line: &Line<'_>) -> usize {
+    line.spans.iter().map(|s| UnicodeWidthStr::width(s.content.as_ref())).sum()
+}
+
+fn footer_can_render_update_hint(area_width: usize, left_width: usize, hint_width: usize) -> bool {
+    let min_total = left_width.saturating_add(3).saturating_add(hint_width);
+    area_width > min_total
 }
 
 /// Returns a color for the given mode ID.
@@ -197,3 +236,14 @@ fn render_perf_fps_overlay(frame: &mut Frame, frame_area: Rect, y: u16, app: &Ap
 
 #[cfg(not(feature = "perf"))]
 fn render_perf_fps_overlay(_frame: &mut Frame, _frame_area: Rect, _y: u16, _app: &App) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn footer_hint_requires_gap_after_left_content() {
+        assert!(footer_can_render_update_hint(40, 20, 10));
+        assert!(!footer_can_render_update_hint(33, 20, 10));
+    }
+}
