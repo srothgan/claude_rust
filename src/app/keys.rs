@@ -63,7 +63,13 @@ pub(super) fn dispatch_key_by_focus(app: &mut App, key: KeyEvent) {
 
 /// Handle shortcuts that should work regardless of current focus owner.
 fn handle_global_shortcuts(app: &mut App, key: KeyEvent) -> bool {
-    // In connecting state, only Ctrl+C should be actionable globally.
+    // Session-only dismiss for update hint.
+    if is_ctrl_char_shortcut(key, 'u') && app.update_check_hint.is_some() {
+        app.update_check_hint = None;
+        return true;
+    }
+
+    // In connecting state, only Ctrl+C is actionable globally (plus Ctrl+U above).
     if app.status == AppStatus::Connecting {
         if is_ctrl_char_shortcut(key, 'c') {
             app.should_quit = true;

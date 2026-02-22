@@ -462,8 +462,9 @@ pub fn handle_acp_event(app: &mut App, event: ClientEvent) {
             reset_for_new_session(app, session_id, model_name, mode);
         }
         ClientEvent::UpdateAvailable { latest_version, current_version } => {
-            app.update_check_hint =
-                Some(format!("Update available: v{latest_version} (current v{current_version})"));
+            app.update_check_hint = Some(format!(
+                "Update available: v{latest_version} (current v{current_version})  Ctrl+U to hide"
+            ));
         }
     }
 }
@@ -1631,7 +1632,7 @@ mod tests {
 
         assert_eq!(
             app.update_check_hint.as_deref(),
-            Some("Update available: v0.3.0 (current v0.2.0)")
+            Some("Update available: v0.3.0 (current v0.2.0)  Ctrl+U to hide")
         );
     }
 
@@ -2018,6 +2019,27 @@ mod tests {
             Event::Key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL)),
         );
         assert!(app.show_header);
+    }
+
+    #[test]
+    fn ctrl_u_hides_update_hint_globally() {
+        let mut app = make_test_app();
+        app.update_check_hint = Some("Update available: v9.9.9 (current v0.2.0)".into());
+        app.todos.push(TodoItem {
+            content: "Task".into(),
+            status: TodoStatus::Pending,
+            active_form: String::new(),
+        });
+        app.show_todo_panel = true;
+        app.claim_focus_target(FocusTarget::TodoList);
+        assert_eq!(app.focus_owner(), FocusOwner::TodoList);
+
+        handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL)),
+        );
+
+        assert!(app.update_check_hint.is_none());
     }
 
     fn attach_pending_permission(

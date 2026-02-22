@@ -201,6 +201,9 @@ fn build_key_help_items(app: &App) -> Vec<(String, String)> {
         ("Ctrl+Up/Down".to_owned(), "Scroll chat".to_owned()),
         ("Mouse wheel".to_owned(), "Scroll chat".to_owned()),
     ];
+    if app.update_check_hint.is_some() {
+        items.push(("Ctrl+u".to_owned(), "Hide update hint".to_owned()));
+    }
     let focus_owner = app.focus_owner();
 
     if app.show_todo_panel && !app.todos.is_empty() {
@@ -436,6 +439,17 @@ mod tests {
         let app = App::test_default();
         let items = build_help_items(&app);
         assert!(has_item(&items, "Ctrl+h", "Toggle header"));
+    }
+
+    #[test]
+    fn key_tab_shows_ctrl_u_only_when_update_hint_visible() {
+        let mut app = App::test_default();
+        let items = build_help_items(&app);
+        assert!(!has_item(&items, "Ctrl+u", "Hide update hint"));
+
+        app.update_check_hint = Some("Update available".into());
+        let items = build_help_items(&app);
+        assert!(has_item(&items, "Ctrl+u", "Hide update hint"));
     }
 
     #[test]
