@@ -323,6 +323,7 @@ pub fn handle_acp_event(app: &mut App, event: ClientEvent) {
                     return;
                 }
 
+                let mut layout_dirty = false;
                 if let Some(MessageBlock::ToolCall(tc)) =
                     app.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
                 {
@@ -335,6 +336,7 @@ pub fn handle_acp_event(app: &mut App, event: ClientEvent) {
                         focused: is_first,
                     });
                     tc.cache.invalidate();
+                    layout_dirty = true;
                     app.pending_permission_ids.push(tool_id);
                     app.claim_focus_target(FocusTarget::Permission);
                     app.viewport.engage_auto_scroll();
@@ -349,6 +351,9 @@ pub fn handle_acp_event(app: &mut App, event: ClientEvent) {
                             ),
                         ));
                     }
+                }
+                if layout_dirty {
+                    app.mark_message_layout_dirty(mi);
                 }
             } else {
                 tracing::warn!(
@@ -617,6 +622,7 @@ fn handle_tool_call(app: &mut App, tc: acp::ToolCall) {
 
     if is_assistant {
         if let Some((mi, bi)) = existing_pos {
+            let mut layout_dirty = false;
             if let Some(MessageBlock::ToolCall(existing)) =
                 app.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
             {
@@ -627,6 +633,10 @@ fn handle_tool_call(app: &mut App, tc: acp::ToolCall) {
                 existing.kind = tool_info.kind;
                 existing.claude_tool_name.clone_from(&tool_info.claude_tool_name);
                 existing.cache.invalidate();
+                layout_dirty = true;
+            }
+            if layout_dirty {
+                app.mark_message_layout_dirty(mi);
             }
         } else if let Some(last) = app.messages.last_mut() {
             let block_idx = last.blocks.len();
@@ -736,6 +746,7 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
             }
 
             let mut pending_todos: Option<Vec<super::TodoItem>> = None;
+            let mut layout_dirty_idx: Option<usize> = None;
             if let Some((mi, bi)) = app.lookup_tool_call(&id_str) {
                 if let Some(MessageBlock::ToolCall(tc)) =
                     app.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
@@ -801,9 +812,13 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
                         tc.collapsed = app.tools_collapsed;
                     }
                     tc.cache.invalidate();
+                    layout_dirty_idx = Some(mi);
                 }
             } else {
                 tracing::warn!("ToolCallUpdate: id={id_str} not found in index");
+            }
+            if let Some(mi) = layout_dirty_idx {
+                app.mark_message_layout_dirty(mi);
             }
             if let Some(todos) = pending_todos {
                 set_todos(app, todos);

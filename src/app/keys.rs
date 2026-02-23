@@ -611,8 +611,8 @@ pub(super) fn toggle_all_tool_calls(app: &mut App) {
                 tc.cache.invalidate();
             }
         }
-        // Height caches are on the viewport; invalidating the block cache is enough.
     }
+    app.mark_all_message_layout_dirty();
 }
 
 /// Toggle the header visibility.

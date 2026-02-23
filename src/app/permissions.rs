@@ -42,6 +42,7 @@ fn set_permission_focused(app: &mut App, queue_index: usize, focused: bool) {
     let Some((mi, bi)) = app.tool_call_index.get(tool_id).copied() else {
         return;
     };
+    let mut invalidated = false;
     if let Some(msg) = app.messages.get_mut(mi)
         && let Some(MessageBlock::ToolCall(tc)) = msg.blocks.get_mut(bi)
     {
@@ -50,6 +51,10 @@ fn set_permission_focused(app: &mut App, queue_index: usize, focused: bool) {
             perm.focused = focused;
         }
         tc.cache.invalidate();
+        invalidated = true;
+    }
+    if invalidated {
+        app.mark_message_layout_dirty(mi);
     }
 }
 
@@ -138,6 +143,145 @@ fn focused_permission_is_active(app: &App) -> bool {
     tc.pending_permission.as_ref().is_some_and(|p| p.focused)
 }
 
+fn handle_permission_focus_cycle(
+    app: &mut App,
+    key: KeyEvent,
+    permission_has_focus: bool,
+) -> Option<bool> {
+    if !permission_has_focus || app.pending_permission_ids.len() <= 1 {
+        return None;
+    }
+    if !matches!(key.code, KeyCode::Up | KeyCode::Down) {
+        return None;
+    }
+
+    // Unfocus the current (first) permission.
+    set_permission_focused(app, 0, false);
+
+    if key.code == KeyCode::Down {
+        // Move first to end (rotate forward).
+        let first = app.pending_permission_ids.remove(0);
+        app.pending_permission_ids.push(first);
+    } else {
+        // Move last to front (rotate backward).
+        let Some(last) = app.pending_permission_ids.pop() else {
+            return Some(false);
+        };
+        app.pending_permission_ids.insert(0, last);
+    }
+
+    // Focus the new first permission and scroll to it.
+    set_permission_focused(app, 0, true);
+    app.viewport.engage_auto_scroll();
+    Some(true)
+}
+
+fn move_permission_option_left(app: &mut App) {
+    let dirty_idx =
+        app.pending_permission_ids.first().and_then(|tool_id| app.lookup_tool_call(tool_id));
+    if let Some(tc) = get_focused_permission_tc(app)
+        && let Some(ref mut p) = tc.pending_permission
+    {
+        p.selected_index = p.selected_index.saturating_sub(1);
+        tc.cache.invalidate();
+    }
+    if let Some((mi, _)) = dirty_idx {
+        app.mark_message_layout_dirty(mi);
+    }
+}
+
+fn move_permission_option_right(app: &mut App, option_count: usize) {
+    let dirty_idx =
+        app.pending_permission_ids.first().and_then(|tool_id| app.lookup_tool_call(tool_id));
+    if let Some(tc) = get_focused_permission_tc(app)
+        && let Some(ref mut p) = tc.pending_permission
+        && p.selected_index + 1 < option_count
+    {
+        p.selected_index += 1;
+        tc.cache.invalidate();
+    }
+    if let Some((mi, _)) = dirty_idx {
+        app.mark_message_layout_dirty(mi);
+    }
+}
+
+fn handle_permission_option_keys(
+    app: &mut App,
+    key: KeyEvent,
+    permission_has_focus: bool,
+    option_count: usize,
+) -> Option<bool> {
+    if !permission_has_focus {
+        return None;
+    }
+    match key.code {
+        KeyCode::Left if option_count > 0 => {
+            move_permission_option_left(app);
+            Some(true)
+        }
+        KeyCode::Right if option_count > 0 => {
+            move_permission_option_right(app, option_count);
+            Some(true)
+        }
+        KeyCode::Enter if option_count > 0 => {
+            respond_permission(app, None);
+            Some(true)
+        }
+        KeyCode::Esc => {
+            if let Some(idx) = focused_option_index_by_kind(app, PermissionOptionKind::RejectOnce)
+                .or_else(|| focused_option_index_by_kind(app, PermissionOptionKind::RejectAlways))
+                .or_else(|| focused_option_index_where(app, option_is_reject_fallback))
+            {
+                respond_permission(app, Some(idx));
+                Some(true)
+            } else if option_count > 0 {
+                // Fallback for unknown adapters: keep previous behavior if no kind metadata.
+                respond_permission(app, Some(option_count - 1));
+                Some(true)
+            } else {
+                Some(false)
+            }
+        }
+        _ => None,
+    }
+}
+
+fn handle_permission_quick_shortcuts(app: &mut App, key: KeyEvent) -> Option<bool> {
+    if !matches!(key.code, KeyCode::Char(_)) {
+        return None;
+    }
+    if is_ctrl_char_shortcut(key, 'y') {
+        if let Some(idx) = focused_option_index_by_kind(app, PermissionOptionKind::AllowOnce)
+            .or_else(|| focused_option_index_where(app, option_is_allow_once_fallback))
+            .or_else(|| focused_option_index_by_kind(app, PermissionOptionKind::AllowAlways))
+            .or_else(|| focused_option_index_where(app, option_is_allow_always_fallback))
+        {
+            respond_permission(app, Some(idx));
+            return Some(true);
+        }
+        return Some(false);
+    }
+    if is_ctrl_char_shortcut(key, 'a') {
+        if let Some(idx) = focused_option_index_by_kind(app, PermissionOptionKind::AllowAlways)
+            .or_else(|| focused_option_index_where(app, option_is_allow_always_fallback))
+        {
+            respond_permission(app, Some(idx));
+            return Some(true);
+        }
+        return Some(false);
+    }
+    if is_ctrl_char_shortcut(key, 'n') {
+        if let Some(idx) = focused_option_index_by_kind(app, PermissionOptionKind::RejectOnce)
+            .or_else(|| focused_option_index_where(app, option_is_reject_once_fallback))
+        {
+            respond_permission(app, Some(idx));
+            return Some(true);
+        }
+        return Some(false);
+    }
+    None
+}
+
 /// Handle permission-only shortcuts.
 /// Returns `true` when the key was consumed by permission UI.
 pub(super) fn handle_permission_key(app: &mut App, key: KeyEvent) -> bool {
@@ -146,105 +290,18 @@ pub(super) fn handle_permission_key(app: &mut App, key: KeyEvent) -> bool {
         .map_or(0, |p| p.options.len());
     let permission_has_focus = focused_permission_is_active(app);
 
-    match key.code {
-        // Up / Down: cycle focus between pending permissions
-        KeyCode::Up | KeyCode::Down
-            if permission_has_focus && app.pending_permission_ids.len() > 1 =>
-        {
-            // Unfocus the current (first) permission
-            set_permission_focused(app, 0, false);
-
-            if key.code == KeyCode::Down {
-                // Move first to end (rotate forward)
-                let first = app.pending_permission_ids.remove(0);
-                app.pending_permission_ids.push(first);
-            } else {
-                // Move last to front (rotate backward)
-                let Some(last) = app.pending_permission_ids.pop() else {
-                    return false;
-                };
-                app.pending_permission_ids.insert(0, last);
-            }
-
-            // Focus the new first permission
-            set_permission_focused(app, 0, true);
-            // Scroll to the newly focused permission's tool call
-            app.viewport.engage_auto_scroll();
-            true
-        }
-        KeyCode::Left if permission_has_focus && option_count > 0 => {
-            if let Some(tc) = get_focused_permission_tc(app)
-                && let Some(ref mut p) = tc.pending_permission
-            {
-                p.selected_index = p.selected_index.saturating_sub(1);
-                tc.cache.invalidate();
-            }
-            true
-        }
-        KeyCode::Right if permission_has_focus && option_count > 0 => {
-            if let Some(tc) = get_focused_permission_tc(app)
-                && let Some(ref mut p) = tc.pending_permission
-                && p.selected_index + 1 < option_count
-            {
-                p.selected_index += 1;
-                tc.cache.invalidate();
-            }
-            true
-        }
-        KeyCode::Enter if permission_has_focus && option_count > 0 => {
-            respond_permission(app, None);
-            true
-        }
-        // Quick shortcuts use Ctrl+lowercase so normal typing stays untouched.
-        KeyCode::Char(_) if is_ctrl_char_shortcut(key, 'y') => {
-            if let Some(idx) = focused_option_index_by_kind(app, PermissionOptionKind::AllowOnce)
-                .or_else(|| focused_option_index_where(app, option_is_allow_once_fallback))
-                .or_else(|| focused_option_index_by_kind(app, PermissionOptionKind::AllowAlways))
-                .or_else(|| focused_option_index_where(app, option_is_allow_always_fallback))
-            {
-                respond_permission(app, Some(idx));
-                true
-            } else {
-                false
-            }
-        }
-        KeyCode::Char(_) if is_ctrl_char_shortcut(key, 'a') => {
-            if let Some(idx) = focused_option_index_by_kind(app, PermissionOptionKind::AllowAlways)
-                .or_else(|| focused_option_index_where(app, option_is_allow_always_fallback))
-            {
-                respond_permission(app, Some(idx));
-                true
-            } else {
-                false
-            }
-        }
-        KeyCode::Char(_) if is_ctrl_char_shortcut(key, 'n') => {
-            if let Some(idx) = focused_option_index_by_kind(app, PermissionOptionKind::RejectOnce)
-                .or_else(|| focused_option_index_where(app, option_is_reject_once_fallback))
-            {
-                respond_permission(app, Some(idx));
-                true
-            } else {
-                false
-            }
-        }
-        KeyCode::Esc if permission_has_focus => {
-            if let Some(idx) = focused_option_index_by_kind(app, PermissionOptionKind::RejectOnce)
-                .or_else(|| focused_option_index_by_kind(app, PermissionOptionKind::RejectAlways))
-                .or_else(|| focused_option_index_where(app, option_is_reject_fallback))
-            {
-                respond_permission(app, Some(idx));
-                true
-            } else if option_count > 0 {
-                // Fallback for unknown adapters: keep previous behavior if no kind metadata.
-                respond_permission(app, Some(option_count - 1));
-                true
-            } else {
-                false
-            }
-        }
-        _ => false,
+    if let Some(consumed) = handle_permission_focus_cycle(app, key, permission_has_focus) {
+        return consumed;
     }
+    if let Some(consumed) =
+        handle_permission_option_keys(app, key, permission_has_focus, option_count)
+    {
+        return consumed;
+    }
+    if let Some(consumed) = handle_permission_quick_shortcuts(app, key) {
+        return consumed;
+    }
+    false
 }
 
 fn respond_permission(app: &mut App, override_index: Option<usize>) {
@@ -263,6 +320,7 @@ fn respond_permission(app: &mut App, override_index: Option<usize>) {
         return;
     };
     let tc = tc.as_mut();
+    let mut invalidated = false;
     if let Some(pending) = tc.pending_permission.take() {
         let idx = override_index.unwrap_or(pending.selected_index);
         if let Some(opt) = pending.options.get(idx) {
@@ -273,6 +331,10 @@ fn respond_permission(app: &mut App, override_index: Option<usize>) {
             ));
         }
         tc.cache.invalidate();
+        invalidated = true;
+    }
+    if invalidated {
+        app.mark_message_layout_dirty(mi);
     }
 
     // Focus the next permission in the queue (now at index 0), if any.

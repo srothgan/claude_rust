@@ -30,6 +30,7 @@ pub(super) fn update_terminal_outputs(app: &mut App) -> bool {
     }
 
     let mut changed = false;
+    let mut dirty_from: Option<usize> = None;
 
     // Use the indexed terminal tool calls instead of scanning all messages/blocks.
     for &(ref tid, mi, bi) in &app.terminal_tool_calls {
@@ -60,7 +61,14 @@ pub(super) fn update_terminal_outputs(app: &mut App) -> bool {
 
         tc.terminal_output = Some(snapshot);
         tc.cache.invalidate();
+        dirty_from = Some(dirty_from.map_or(mi, |oldest| oldest.min(mi)));
         changed = true;
+    }
+
+    drop(terminals);
+
+    if let Some(mi) = dirty_from {
+        app.mark_message_layout_dirty(mi);
     }
 
     changed
