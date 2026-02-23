@@ -43,6 +43,11 @@ fn is_permission_ctrl_shortcut(key: KeyEvent) -> bool {
 }
 
 pub(super) fn dispatch_key_by_focus(app: &mut App, key: KeyEvent) {
+    if app.status == AppStatus::Connecting {
+        handle_connecting_shortcuts(app, key);
+        return;
+    }
+
     sync_help_focus(app);
 
     if handle_global_shortcuts(app, key) {
@@ -61,21 +66,58 @@ pub(super) fn dispatch_key_by_focus(app: &mut App, key: KeyEvent) {
     }
 }
 
+/// During startup, keep input disabled and only allow navigation/help shortcuts.
+fn handle_connecting_shortcuts(app: &mut App, key: KeyEvent) {
+    if is_ctrl_char_shortcut(key, 'u') && app.update_check_hint.is_some() {
+        app.update_check_hint = None;
+        sync_help_focus(app);
+        return;
+    }
+
+    if is_ctrl_char_shortcut(key, 'h') {
+        toggle_header(app);
+        sync_help_focus(app);
+        return;
+    }
+
+    if is_ctrl_char_shortcut(key, 'l') {
+        app.force_redraw = true;
+        sync_help_focus(app);
+        return;
+    }
+
+    match (key.code, key.modifiers) {
+        (KeyCode::Char('?'), m) if !m.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
+            if app.is_help_active() {
+                app.input.clear();
+            } else {
+                app.input.set_text("?");
+            }
+        }
+        (HELP_TAB_PREV_KEY, m) if m == KeyModifiers::NONE && app.is_help_active() => {
+            set_help_view(app, HelpView::Keys);
+        }
+        (HELP_TAB_NEXT_KEY, m) if m == KeyModifiers::NONE && app.is_help_active() => {
+            set_help_view(app, HelpView::SlashCommands);
+        }
+        (KeyCode::Up, m) if m == KeyModifiers::NONE || m == KeyModifiers::CONTROL => {
+            app.viewport.scroll_up(1);
+        }
+        (KeyCode::Down, m) if m == KeyModifiers::NONE || m == KeyModifiers::CONTROL => {
+            app.viewport.scroll_down(1);
+        }
+        _ => {}
+    }
+
+    sync_help_focus(app);
+}
+
 /// Handle shortcuts that should work regardless of current focus owner.
 fn handle_global_shortcuts(app: &mut App, key: KeyEvent) -> bool {
     // Session-only dismiss for update hint.
     if is_ctrl_char_shortcut(key, 'u') && app.update_check_hint.is_some() {
         app.update_check_hint = None;
         return true;
-    }
-
-    // In connecting state, only Ctrl+C is actionable globally (plus Ctrl+U above).
-    if app.status == AppStatus::Connecting {
-        if is_ctrl_char_shortcut(key, 'c') {
-            app.should_quit = true;
-            return true;
-        }
-        return false;
     }
 
     // Permission quick shortcuts are global when permissions are pending.

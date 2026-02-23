@@ -2173,7 +2173,7 @@ mod tests {
     }
 
     #[test]
-    fn connecting_state_ctrl_c_quits_without_selection_copy_path() {
+    fn connecting_state_blocks_ctrl_c() {
         let mut app = make_test_app();
         app.status = AppStatus::Connecting;
         app.selection = Some(crate::app::SelectionState {
@@ -2188,7 +2188,74 @@ mod tests {
             Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
         );
 
-        assert!(app.should_quit);
+        assert!(!app.should_quit);
+        assert!(app.selection.is_some());
+    }
+
+    #[test]
+    fn connecting_state_allows_navigation_and_help_shortcuts() {
+        let mut app = make_test_app();
+        app.status = AppStatus::Connecting;
+        app.help_view = HelpView::Keys;
+        app.viewport.scroll_target = 2;
+        assert!(app.show_header);
+
+        // Chat navigation remains available during startup.
+        handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)),
+        );
+        assert_eq!(app.viewport.scroll_target, 1);
+        handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
+        );
+        assert_eq!(app.viewport.scroll_target, 2);
+
+        // Help toggle via "?" remains available.
+        handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE)),
+        );
+        assert!(app.is_help_active());
+
+        // Help tab navigation still works.
+        handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE)),
+        );
+        assert_eq!(app.help_view, HelpView::SlashCommands);
+
+        // Global UI navigation shortcuts still work.
+        handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL)),
+        );
+        assert!(!app.show_header);
+    }
+
+    #[test]
+    fn connecting_state_blocks_input_shortcuts_and_tab() {
+        let mut app = make_test_app();
+        app.status = AppStatus::Connecting;
+        app.input.set_text("seed");
+        app.pending_submit = false;
+        app.help_view = HelpView::Keys;
+
+        for key in [
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Char('@'), KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
+        ] {
+            handle_terminal_event(&mut app, Event::Key(key));
+        }
+
+        assert_eq!(app.input.text(), "seed");
+        assert!(!app.pending_submit);
+        assert_eq!(app.help_view, HelpView::Keys);
     }
 
     #[test]
