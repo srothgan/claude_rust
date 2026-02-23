@@ -2201,10 +2201,7 @@ mod tests {
         assert!(app.show_header);
 
         // Chat navigation remains available during startup.
-        handle_terminal_event(
-            &mut app,
-            Event::Key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)),
-        );
+        handle_terminal_event(&mut app, Event::Key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)));
         assert_eq!(app.viewport.scroll_target, 1);
         handle_terminal_event(
             &mut app,
