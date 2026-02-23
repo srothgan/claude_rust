@@ -138,7 +138,7 @@ jobs:
           git push origin "${{ needs.verify.outputs.tag }}"
 
       - name: Download all assets
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v7
         with:
           pattern: claude-code-rust-*
           merge-multiple: true
