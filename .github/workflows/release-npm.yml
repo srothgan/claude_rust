@@ -116,7 +116,7 @@ jobs:
           cp "target/${{ matrix.target }}/release/$BINARY" "dist/$ASSET"
 
       - name: Upload staged asset
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: claude-code-rust-${{ matrix.target }}
           path: dist/*
