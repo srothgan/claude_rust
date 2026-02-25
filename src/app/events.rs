@@ -540,7 +540,6 @@ fn reset_for_new_session(
     app.drain_key_count = 0;
     app.paste_burst.reset();
     app.pending_paste_text.clear();
-    app.input_wrap_cache = None;
 
     app.pending_permission_ids.clear();
     app.active_task_ids.clear();

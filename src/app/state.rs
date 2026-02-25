@@ -169,8 +169,6 @@ pub struct App {
     pub pending_paste_text: String,
     /// Cached file list from cwd (scanned on first `@` trigger).
     pub file_cache: Option<Vec<mention::FileCandidate>>,
-    /// Cached input wrap result (keyed by input version + width).
-    pub input_wrap_cache: Option<InputWrapCache>,
     /// Cached todo compact line (invalidated on `set_todos()`).
     pub cached_todo_compact: Option<ratatui::text::Line<'static>>,
     /// Current git branch (refreshed on focus gain + turn complete).
@@ -380,7 +378,6 @@ impl App {
             paste_burst: super::paste_burst::PasteBurstDetector::new(),
             pending_paste_text: String::new(),
             file_cache: None,
-            input_wrap_cache: None,
             cached_todo_compact: None,
             git_branch: None,
             cached_header_line: None,
@@ -703,15 +700,6 @@ impl ChatMessage {
             })],
         }
     }
-}
-
-/// Cached result of `wrap_lines_and_cursor()` for the input field.
-/// Keyed by input version + width so the expensive wrapping runs at most once per frame.
-pub struct InputWrapCache {
-    pub version: u64,
-    pub content_width: u16,
-    pub wrapped_lines: Vec<ratatui::text::Line<'static>>,
-    pub cursor_pos: Option<(u16, u16)>,
 }
 
 /// Cached rendered lines for a block. Stores a version counter so the cache

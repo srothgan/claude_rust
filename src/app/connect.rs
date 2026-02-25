@@ -101,7 +101,6 @@ pub fn create_app(cli: &Cli) -> App {
         paste_burst: crate::app::paste_burst::PasteBurstDetector::new(),
         pending_paste_text: String::new(),
         file_cache: None,
-        input_wrap_cache: None,
         cached_todo_compact: None,
         git_branch: None,
         cached_header_line: None,
