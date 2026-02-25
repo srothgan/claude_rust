@@ -50,7 +50,7 @@ body:
     attributes:
       label: Version
       description: Output of `claude-rs --version`
-      placeholder: "claude-rs 0.2.0"
+      placeholder: "claude-rs 3.0.0"
     validations:
       required: true
 
