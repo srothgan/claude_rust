@@ -225,8 +225,7 @@ impl App {
             return;
         }
         self.messages.insert(0, ChatMessage::welcome(&self.model_name, &self.cwd));
-        self.viewport.message_heights_width = 0;
-        self.viewport.prefix_sums_width = 0;
+        self.mark_all_message_layout_dirty();
     }
 
     /// Update the welcome message's model name, but only before chat starts.
@@ -245,8 +244,7 @@ impl App {
         };
         welcome.model_name.clone_from(&self.model_name);
         welcome.cache.invalidate();
-        self.viewport.message_heights_width = 0;
-        self.viewport.prefix_sums_width = 0;
+        self.mark_message_layout_dirty(0);
     }
 
     /// Track a Task tool call as active (in-progress subagent).
@@ -270,13 +268,33 @@ impl App {
         self.tool_call_index.insert(id, (msg_idx, block_idx));
     }
 
+    /// Mark message layout caches dirty from `msg_idx` onward.
+    ///
+    /// Non-tail changes invalidate prefix-sum fast path so a full rebuild happens once.
+    pub fn mark_message_layout_dirty(&mut self, msg_idx: usize) {
+        self.viewport.mark_message_dirty(msg_idx);
+        if msg_idx + 1 < self.messages.len() {
+            self.viewport.prefix_sums_width = 0;
+        }
+    }
+
+    /// Mark all message layout caches dirty.
+    pub fn mark_all_message_layout_dirty(&mut self) {
+        if self.messages.is_empty() {
+            return;
+        }
+        self.viewport.mark_message_dirty(0);
+        self.viewport.prefix_sums_width = 0;
+    }
+
     /// Force-finish any lingering in-progress tool calls.
     /// Returns the number of tool calls that were transitioned.
     pub fn finalize_in_progress_tool_calls(&mut self, new_status: acp::ToolCallStatus) -> usize {
         let mut changed = 0usize;
         let mut cleared_permission = false;
+        let mut first_changed_idx: Option<usize> = None;
 
-        for msg in &mut self.messages {
+        for (msg_idx, msg) in self.messages.iter_mut().enumerate() {
             for block in &mut msg.blocks {
                 if let MessageBlock::ToolCall(tc) = block {
                     let tc = tc.as_mut();
@@ -289,6 +307,8 @@ impl App {
                         if tc.pending_permission.take().is_some() {
                             cleared_permission = true;
                         }
+                        first_changed_idx =
+                            Some(first_changed_idx.map_or(msg_idx, |prev| prev.min(msg_idx)));
                         changed += 1;
                     }
                 }
@@ -296,6 +316,9 @@ impl App {
         }
 
         if changed > 0 || cleared_permission {
+            if let Some(msg_idx) = first_changed_idx {
+                self.mark_message_layout_dirty(msg_idx);
+            }
             self.pending_permission_ids.clear();
             self.release_focus_target(FocusTarget::Permission);
         }
@@ -467,6 +490,8 @@ pub struct ChatViewport {
     pub message_heights: Vec<usize>,
     /// Width at which `message_heights` was last computed.
     pub message_heights_width: u16,
+    /// Oldest message index whose cached height may be stale.
+    pub dirty_from: Option<usize>,
 
     // --- Prefix sums ---
     /// Cumulative heights: `height_prefix_sums[i]` = sum of heights `0..=i`.
@@ -490,6 +515,7 @@ impl ChatViewport {
             width: 0,
             message_heights: Vec::new(),
             message_heights_width: 0,
+            dirty_from: None,
             height_prefix_sums: Vec::new(),
             prefix_sums_width: 0,
         }
@@ -545,6 +571,12 @@ impl ChatViewport {
     /// Call after `update_visual_heights()` finishes re-measuring.
     pub fn mark_heights_valid(&mut self) {
         self.message_heights_width = self.width;
+        self.dirty_from = None;
+    }
+
+    /// Mark cached heights dirty from `idx` onward.
+    pub fn mark_message_dirty(&mut self, idx: usize) {
+        self.dirty_from = Some(self.dirty_from.map_or(idx, |oldest| oldest.min(idx)));
     }
 
     // --- Prefix sums ---
@@ -1509,6 +1541,7 @@ mod tests {
         assert!(vp.auto_scroll);
         assert_eq!(vp.width, 0);
         assert!(vp.message_heights.is_empty());
+        assert!(vp.dirty_from.is_none());
         assert!(vp.height_prefix_sums.is_empty());
     }
 
@@ -1564,6 +1597,25 @@ mod tests {
         assert_eq!(vp.message_heights.len(), 6);
         assert_eq!(vp.message_height(5), 42);
         assert_eq!(vp.message_height(3), 0); // gap filled with 0
+    }
+
+    #[test]
+    fn viewport_mark_message_dirty_tracks_oldest_index() {
+        let mut vp = ChatViewport::new();
+        vp.mark_message_dirty(5);
+        vp.mark_message_dirty(2);
+        vp.mark_message_dirty(7);
+        assert_eq!(vp.dirty_from, Some(2));
+    }
+
+    #[test]
+    fn viewport_mark_heights_valid_clears_dirty_index() {
+        let mut vp = ChatViewport::new();
+        vp.on_frame(80);
+        vp.mark_message_dirty(1);
+        assert_eq!(vp.dirty_from, Some(1));
+        vp.mark_heights_valid();
+        assert!(vp.dirty_from.is_none());
     }
 
     #[test]

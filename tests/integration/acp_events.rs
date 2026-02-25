@@ -183,13 +183,18 @@ async fn turn_error_sets_status_error() {
 }
 
 #[tokio::test]
-async fn turn_error_does_not_create_message() {
+async fn turn_error_creates_system_error_message() {
     let mut app = test_app();
 
     send_acp_event(&mut app, ClientEvent::TurnError("connection lost".into()));
 
-    // TurnError only sets status - error is logged, not shown in chat
-    assert!(app.messages.is_empty(), "TurnError should not create a message");
+    assert_eq!(app.messages.len(), 1, "TurnError should append a system error message");
+    assert!(matches!(app.messages[0].role, MessageRole::System));
+    let Some(MessageBlock::Text(text, ..)) = app.messages[0].blocks.first() else {
+        panic!("expected system text block");
+    };
+    assert!(text.contains("Turn failed: connection lost"));
+    assert!(text.contains("Press Ctrl+Q to quit and try again"));
 }
 
 // --- AgentThoughtChunk ---

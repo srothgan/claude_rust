@@ -189,17 +189,14 @@ fn build_help_items(app: &App) -> Vec<(String, String)> {
 
 fn build_key_help_items(app: &App) -> Vec<(String, String)> {
     if app.status == AppStatus::Connecting {
-        let mut items: Vec<(String, String)> = vec![
-            ("Left/Right".to_owned(), "Switch help tab".to_owned()),
-            ("?".to_owned(), "Toggle help".to_owned()),
-            ("Ctrl+q".to_owned(), "Quit".to_owned()),
-            ("Up/Down".to_owned(), "Scroll chat".to_owned()),
-            ("Ctrl+Up/Down".to_owned(), "Scroll chat".to_owned()),
-            ("Mouse wheel".to_owned(), "Scroll chat".to_owned()),
-            ("Ctrl+h".to_owned(), "Toggle header".to_owned()),
-            ("Ctrl+l".to_owned(), "Redraw screen".to_owned()),
-            ("Input keys".to_owned(), "Unavailable while connecting".to_owned()),
-        ];
+        let mut items = blocked_input_help_items("Unavailable while connecting");
+        if app.update_check_hint.is_some() {
+            items.push(("Ctrl+u".to_owned(), "Hide update hint".to_owned()));
+        }
+        return items;
+    }
+    if app.status == AppStatus::Error {
+        let mut items = blocked_input_help_items("Unavailable after error");
         if app.update_check_hint.is_some() {
             items.push(("Ctrl+u".to_owned(), "Hide update hint".to_owned()));
         }
@@ -271,6 +268,21 @@ fn build_key_help_items(app: &App) -> Vec<(String, String)> {
     }
 
     items
+}
+
+fn blocked_input_help_items(input_line: &str) -> Vec<(String, String)> {
+    vec![
+        ("Left/Right".to_owned(), "Switch help tab".to_owned()),
+        ("?".to_owned(), "Toggle help".to_owned()),
+        ("Ctrl+c".to_owned(), "Quit".to_owned()),
+        ("Ctrl+q".to_owned(), "Quit".to_owned()),
+        ("Up/Down".to_owned(), "Scroll chat".to_owned()),
+        ("Ctrl+Up/Down".to_owned(), "Scroll chat".to_owned()),
+        ("Mouse wheel".to_owned(), "Scroll chat".to_owned()),
+        ("Ctrl+h".to_owned(), "Toggle header".to_owned()),
+        ("Ctrl+l".to_owned(), "Redraw screen".to_owned()),
+        ("Input keys".to_owned(), input_line.to_owned()),
+    ]
 }
 
 fn build_slash_help_items(app: &App) -> Vec<(String, String)> {
@@ -535,10 +547,23 @@ mod tests {
 
         let items = build_help_items(&app);
         assert!(has_item(&items, "?", "Toggle help"));
+        assert!(has_item(&items, "Ctrl+c", "Quit"));
         assert!(has_item(&items, "Ctrl+q", "Quit"));
         assert!(has_item(&items, "Up/Down", "Scroll chat"));
         assert!(has_item(&items, "Input keys", "Unavailable while connecting"));
-        assert!(!has_item(&items, "Ctrl+c", "Quit"));
+        assert!(!has_item(&items, "Enter", "Send message"));
+    }
+
+    #[test]
+    fn key_tab_error_shows_locked_input_shortcuts() {
+        let mut app = App::test_default();
+        app.status = AppStatus::Error;
+
+        let items = build_help_items(&app);
+        assert!(has_item(&items, "Ctrl+c", "Quit"));
+        assert!(has_item(&items, "Ctrl+q", "Quit"));
+        assert!(has_item(&items, "Up/Down", "Scroll chat"));
+        assert!(has_item(&items, "Input keys", "Unavailable after error"));
         assert!(!has_item(&items, "Enter", "Send message"));
     }
 }

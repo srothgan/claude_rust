@@ -14,8 +14,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use super::{App, SelectionKind, SelectionState};
-use tui_textarea::{CursorMove, TextArea};
+use super::App;
 
 pub(crate) fn normalize_selection(
     a: super::SelectionPoint,
@@ -24,81 +23,13 @@ pub(crate) fn normalize_selection(
     if (a.row, a.col) <= (b.row, b.col) { (a, b) } else { (b, a) }
 }
 
-pub(super) fn try_copy_selection(app: &mut App) -> bool {
-    let Some(sel) = app.selection else {
-        return false;
-    };
-    let mut text = match sel.kind {
-        SelectionKind::Chat => extract_chat_selection(app, sel),
-        SelectionKind::Input => extract_input_selection(app, sel),
-    };
-    if text.is_empty() {
-        return false;
-    }
-    if !text.ends_with('\n') {
-        text.push('\n');
-    }
-    if let Ok(mut clipboard) = arboard::Clipboard::new() {
-        let _ = clipboard.set_text(text);
-        return true;
-    }
-    false
-}
-
 pub(super) fn clear_selection(app: &mut App) {
     app.selection = None;
     app.rendered_chat_lines.clear();
     app.rendered_input_lines.clear();
 }
 
-fn extract_chat_selection(app: &App, sel: SelectionState) -> String {
-    let (start, end) = normalize_selection(sel.start, sel.end);
-    let mut out = String::new();
-    let lines = &app.rendered_chat_lines;
-    for row in start.row..=end.row {
-        let line = lines.get(row).map_or("", String::as_str);
-        let slice = if start.row == end.row {
-            slice_by_cols(line, start.col, end.col)
-        } else if row == start.row {
-            slice_by_cols(line, start.col, line.chars().count())
-        } else if row == end.row {
-            slice_by_cols(line, 0, end.col)
-        } else {
-            line.to_owned()
-        };
-        out.push_str(&slice);
-        if row != end.row {
-            out.push('\n');
-        }
-    }
-    out
-}
-
-fn extract_input_selection(app: &App, sel: SelectionState) -> String {
-    let (start, end) = normalize_selection(sel.start, sel.end);
-    if app.rendered_input_lines.is_empty() {
-        return String::new();
-    }
-
-    let mut textarea = TextArea::from(app.rendered_input_lines.clone());
-    textarea.move_cursor(CursorMove::Jump(
-        u16::try_from(start.row).unwrap_or(u16::MAX),
-        u16::try_from(start.col).unwrap_or(u16::MAX),
-    ));
-    textarea.start_selection();
-    textarea.move_cursor(CursorMove::Jump(
-        u16::try_from(end.row).unwrap_or(u16::MAX),
-        u16::try_from(end.col).unwrap_or(u16::MAX),
-    ));
-
-    if textarea.selection_range().is_none() {
-        return String::new();
-    }
-
-    textarea.copy();
-    textarea.yank_text()
-}
-
+#[cfg(test)]
 fn slice_by_cols(text: &str, start_col: usize, end_col: usize) -> String {
     let mut out = String::new();
     for (i, ch) in text.chars().enumerate() {

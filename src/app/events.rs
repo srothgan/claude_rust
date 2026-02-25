@@ -30,6 +30,8 @@ use crossterm::event::{Event, KeyEventKind, MouseEvent, MouseEventKind};
 
 const CONVERSATION_INTERRUPTED_HINT: &str =
     "Conversation interrupted. Tell the model how to proceed.";
+const TURN_ERROR_INPUT_LOCK_HINT: &str =
+    "Input disabled after an error. Press Ctrl+Q to quit and try again.";
 
 pub fn handle_terminal_event(app: &mut App, event: Event) {
     app.needs_redraw = true;
@@ -41,7 +43,7 @@ pub fn handle_terminal_event(app: &mut App, event: Event) {
             handle_mouse_event(app, mouse);
         }
         Event::Paste(text) => {
-            if app.status != AppStatus::Connecting {
+            if !matches!(app.status, AppStatus::Connecting | AppStatus::Error) {
                 // Queue paste chunks for this drain cycle. Some terminals split a
                 // single clipboard paste into multiple `Event::Paste` payloads.
                 app.pending_paste_text.push_str(&text);
@@ -323,6 +325,7 @@ pub fn handle_acp_event(app: &mut App, event: ClientEvent) {
                     return;
                 }
 
+                let mut layout_dirty = false;
                 if let Some(MessageBlock::ToolCall(tc)) =
                     app.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
                 {
@@ -335,6 +338,7 @@ pub fn handle_acp_event(app: &mut App, event: ClientEvent) {
                         focused: is_first,
                     });
                     tc.cache.invalidate();
+                    layout_dirty = true;
                     app.pending_permission_ids.push(tool_id);
                     app.claim_focus_target(FocusTarget::Permission);
                     app.viewport.engage_auto_scroll();
@@ -349,6 +353,9 @@ pub fn handle_acp_event(app: &mut App, event: ClientEvent) {
                             ),
                         ));
                     }
+                }
+                if layout_dirty {
+                    app.mark_message_layout_dirty(mi);
                 }
             } else {
                 tracing::warn!(
@@ -401,11 +408,14 @@ pub fn handle_acp_event(app: &mut App, event: ClientEvent) {
                 );
             }
             app.cancelled_turn_pending_hint = false;
-            let _ = app.finalize_in_progress_tool_calls(acp::ToolCallStatus::Failed);
-            app.status = AppStatus::Error;
             if should_compact_clear {
                 super::slash::clear_conversation_history(app);
             }
+            let _ = app.finalize_in_progress_tool_calls(acp::ToolCallStatus::Failed);
+            app.input.clear();
+            app.pending_submit = false;
+            app.status = AppStatus::Error;
+            push_turn_error_message(app, &msg);
         }
         ClientEvent::Connected { session_id, model_name, mode } => {
             // Grab connection + child from the shared slot
@@ -435,15 +445,10 @@ pub fn handle_acp_event(app: &mut App, event: ClientEvent) {
         ClientEvent::ConnectionFailed(msg) => {
             app.pending_compact_clear = false;
             app.cancelled_turn_pending_hint = false;
+            app.input.clear();
+            app.pending_submit = false;
             app.status = AppStatus::Error;
-            app.messages.push(ChatMessage {
-                role: MessageRole::Assistant,
-                blocks: vec![MessageBlock::Text(
-                    format!("Connection failed: {msg}"),
-                    BlockCache::default(),
-                    IncrementalMarkdown::default(),
-                )],
-            });
+            push_connection_error_message(app, &msg);
         }
         ClientEvent::SlashCommandError(msg) => {
             app.messages.push(ChatMessage {
@@ -476,6 +481,32 @@ fn push_interrupted_hint(app: &mut App) {
             CONVERSATION_INTERRUPTED_HINT.to_owned(),
             BlockCache::default(),
             IncrementalMarkdown::from_complete(CONVERSATION_INTERRUPTED_HINT),
+        )],
+    });
+    app.viewport.engage_auto_scroll();
+}
+
+fn push_turn_error_message(app: &mut App, error: &str) {
+    let message = format!("Turn failed: {error}\n\n{TURN_ERROR_INPUT_LOCK_HINT}");
+    app.messages.push(ChatMessage {
+        role: MessageRole::System,
+        blocks: vec![MessageBlock::Text(
+            message.clone(),
+            BlockCache::default(),
+            IncrementalMarkdown::from_complete(&message),
+        )],
+    });
+    app.viewport.engage_auto_scroll();
+}
+
+fn push_connection_error_message(app: &mut App, error: &str) {
+    let message = format!("Connection failed: {error}\n\n{TURN_ERROR_INPUT_LOCK_HINT}");
+    app.messages.push(ChatMessage {
+        role: MessageRole::System,
+        blocks: vec![MessageBlock::Text(
+            message.clone(),
+            BlockCache::default(),
+            IncrementalMarkdown::from_complete(&message),
         )],
     });
     app.viewport.engage_auto_scroll();
@@ -617,6 +648,7 @@ fn handle_tool_call(app: &mut App, tc: acp::ToolCall) {
 
     if is_assistant {
         if let Some((mi, bi)) = existing_pos {
+            let mut layout_dirty = false;
             if let Some(MessageBlock::ToolCall(existing)) =
                 app.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
             {
@@ -627,6 +659,10 @@ fn handle_tool_call(app: &mut App, tc: acp::ToolCall) {
                 existing.kind = tool_info.kind;
                 existing.claude_tool_name.clone_from(&tool_info.claude_tool_name);
                 existing.cache.invalidate();
+                layout_dirty = true;
+            }
+            if layout_dirty {
+                app.mark_message_layout_dirty(mi);
             }
         } else if let Some(last) = app.messages.last_mut() {
             let block_idx = last.blocks.len();
@@ -736,6 +772,7 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
             }
 
             let mut pending_todos: Option<Vec<super::TodoItem>> = None;
+            let mut layout_dirty_idx: Option<usize> = None;
             if let Some((mi, bi)) = app.lookup_tool_call(&id_str) {
                 if let Some(MessageBlock::ToolCall(tc)) =
                     app.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
@@ -801,9 +838,13 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
                         tc.collapsed = app.tools_collapsed;
                     }
                     tc.cache.invalidate();
+                    layout_dirty_idx = Some(mi);
                 }
             } else {
                 tracing::warn!("ToolCallUpdate: id={id_str} not found in index");
+            }
+            if let Some(mi) = layout_dirty_idx {
+                app.mark_message_layout_dirty(mi);
             }
             if let Some(todos) = pending_todos {
                 set_todos(app, todos);
@@ -1723,9 +1764,17 @@ mod tests {
         handle_acp_event(&mut app, ClientEvent::TurnError("adapter failed".into()));
 
         assert!(!app.pending_compact_clear);
-        assert!(matches!(app.status, AppStatus::Ready));
-        assert_eq!(app.messages.len(), 1);
+        assert!(matches!(app.status, AppStatus::Error));
+        assert_eq!(app.messages.len(), 2);
         assert!(matches!(app.messages[0].role, MessageRole::Welcome));
+        let Some(ChatMessage { role: MessageRole::System, blocks }) = app.messages.get(1) else {
+            panic!("expected system error message");
+        };
+        let Some(MessageBlock::Text(text, _, _)) = blocks.first() else {
+            panic!("expected text block");
+        };
+        assert!(text.contains("Turn failed: adapter failed"));
+        assert!(text.contains("Press Ctrl+Q to quit and try again"));
     }
 
     #[test]
@@ -2173,7 +2222,7 @@ mod tests {
     }
 
     #[test]
-    fn connecting_state_blocks_ctrl_c() {
+    fn connecting_state_ctrl_c_quits() {
         let mut app = make_test_app();
         app.status = AppStatus::Connecting;
         app.selection = Some(crate::app::SelectionState {
@@ -2188,7 +2237,7 @@ mod tests {
             Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
         );
 
-        assert!(!app.should_quit);
+        assert!(app.should_quit);
         assert!(app.selection.is_some());
     }
 
@@ -2256,7 +2305,7 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_c_with_selection_never_falls_through_to_quit() {
+    fn ctrl_c_with_selection_force_quits() {
         let mut app = make_test_app();
         app.selection = Some(crate::app::SelectionState {
             kind: crate::app::SelectionKind::Input,
@@ -2270,8 +2319,8 @@ mod tests {
             Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
         );
 
-        assert!(!app.should_quit);
-        assert!(app.selection.is_none());
+        assert!(app.should_quit);
+        assert!(app.selection.is_some());
     }
 
     #[test]
@@ -2303,6 +2352,65 @@ mod tests {
         );
 
         assert!(app.should_quit);
+    }
+
+    #[test]
+    fn error_state_blocks_input_shortcuts() {
+        let mut app = make_test_app();
+        app.status = AppStatus::Error;
+        app.input.set_text("seed");
+        app.pending_submit = false;
+
+        for key in [
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Char('@'), KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
+        ] {
+            handle_terminal_event(&mut app, Event::Key(key));
+        }
+
+        assert_eq!(app.input.text(), "seed");
+        assert!(!app.pending_submit);
+    }
+
+    #[test]
+    fn error_state_ctrl_q_quits() {
+        let mut app = make_test_app();
+        app.status = AppStatus::Error;
+
+        handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL)),
+        );
+
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn error_state_ctrl_c_quits() {
+        let mut app = make_test_app();
+        app.status = AppStatus::Error;
+
+        handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+        );
+
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn error_state_blocks_paste_events() {
+        let mut app = make_test_app();
+        app.status = AppStatus::Error;
+
+        handle_terminal_event(&mut app, Event::Paste("blocked".into()));
+
+        assert!(app.pending_paste_text.is_empty());
+        assert!(app.input.is_empty());
     }
 
     #[test]

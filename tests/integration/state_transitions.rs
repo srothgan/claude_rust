@@ -7,7 +7,7 @@
 
 use agent_client_protocol as acp;
 use claude_code_rust::acp::client::ClientEvent;
-use claude_code_rust::app::{AppStatus, MessageBlock};
+use claude_code_rust::app::{AppStatus, MessageBlock, MessageRole};
 use pretty_assertions::assert_eq;
 
 use crate::helpers::{send_acp_event, test_app};
@@ -483,10 +483,22 @@ async fn error_during_tool_calls_leaves_tool_calls_intact() {
     send_acp_event(&mut app, ClientEvent::TurnError("crashed".into()));
 
     assert!(matches!(app.status, AppStatus::Error));
-    // Tool call should still be in the index and message
+    // Tool call should remain indexed and preserved in the original assistant message.
     assert!(app.tool_call_index.contains_key("tc-err"));
-    assert_eq!(app.messages.len(), 1);
+    assert_eq!(app.messages.len(), 2, "assistant message + system error message");
+    assert!(matches!(app.messages[0].role, MessageRole::Assistant));
     assert_eq!(app.messages[0].blocks.len(), 2, "text + tool call preserved");
+    let Some(MessageBlock::ToolCall(tc)) = app.messages[0].blocks.get(1) else {
+        panic!("expected preserved tool call block");
+    };
+    assert_eq!(tc.id, "tc-err");
+    assert_eq!(tc.status, acp::ToolCallStatus::Failed, "in-progress tool should be failed");
+
+    assert!(matches!(app.messages[1].role, MessageRole::System));
+    let Some(MessageBlock::Text(text, ..)) = app.messages[1].blocks.first() else {
+        panic!("expected system error text block");
+    };
+    assert!(text.contains("Turn failed: crashed"));
 }
 
 #[tokio::test]

@@ -24,6 +24,10 @@ use std::path::Path;
 use std::rc::Rc;
 
 pub(super) fn submit_input(app: &mut App) {
+    if matches!(app.status, AppStatus::Connecting | AppStatus::Error) {
+        return;
+    }
+
     // Dismiss any open mention dropdown
     app.mention = None;
     app.slash = None;

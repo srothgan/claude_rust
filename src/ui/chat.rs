@@ -31,6 +31,7 @@ const SCROLLBAR_MIN_THUMB_HEIGHT: usize = 1;
 const SCROLLBAR_TOP_EASE: f32 = 0.35;
 const SCROLLBAR_SIZE_EASE: f32 = 0.2;
 const SCROLLBAR_EASE_EPSILON: f32 = 0.01;
+const OVERSCROLL_CLAMP_EASE: f32 = 0.2;
 
 #[derive(Clone, Copy, Default)]
 struct HeightUpdateStats {
@@ -91,10 +92,16 @@ fn update_visual_heights(
     let msg_count = app.messages.len();
     let is_streaming = matches!(app.status, AppStatus::Thinking | AppStatus::Running);
     let width_valid = app.viewport.message_heights_width == width;
+    let dirty_from = app.viewport.dirty_from.filter(|&idx| idx < msg_count);
     let mut stats = HeightUpdateStats::default();
     for i in (0..msg_count).rev() {
         let is_last = i + 1 == msg_count;
-        if width_valid && app.viewport.message_height(i) > 0 && !(is_last && is_streaming) {
+        let is_dirty = dirty_from.is_some_and(|idx| i >= idx);
+        if !is_dirty
+            && width_valid
+            && app.viewport.message_height(i) > 0
+            && !(is_last && is_streaming)
+        {
             stats.reused_msgs = i + 1;
             break;
         }
@@ -165,9 +172,7 @@ fn render_scrolled(
         }
     }
     vp.scroll_offset = vp.scroll_pos.round() as usize;
-    if vp.scroll_offset >= max_scroll {
-        vp.auto_scroll = true;
-    }
+    clamp_scroll_to_content(vp, max_scroll);
 
     let scroll_offset = vp.scroll_offset;
     crate::perf::mark_with("chat::max_scroll", "rows", max_scroll);
@@ -218,6 +223,27 @@ fn render_scrolled(
             .as_ref()
             .map(|p| p.start_with("chat::render_widget", "scroll", render_stats.local_scroll));
         frame.render_widget(paragraph.scroll((render_stats.local_scroll as u16, 0)), area);
+    }
+}
+
+#[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss, clippy::cast_sign_loss)]
+fn clamp_scroll_to_content(viewport: &mut crate::app::ChatViewport, max_scroll: usize) {
+    viewport.scroll_target = viewport.scroll_target.min(max_scroll);
+
+    // Shrinks can leave the smoothed scroll position beyond new content end.
+    // Ease it back toward the valid bound while keeping rendered offset clamped.
+    let max_scroll_f = max_scroll as f32;
+    if viewport.scroll_pos > max_scroll_f {
+        let overshoot = viewport.scroll_pos - max_scroll_f;
+        viewport.scroll_pos = max_scroll_f + overshoot * OVERSCROLL_CLAMP_EASE;
+        if (viewport.scroll_pos - max_scroll_f).abs() < SCROLLBAR_EASE_EPSILON {
+            viewport.scroll_pos = max_scroll_f;
+        }
+    }
+
+    viewport.scroll_offset = (viewport.scroll_pos.round() as usize).min(max_scroll);
+    if viewport.scroll_offset >= max_scroll {
+        viewport.auto_scroll = true;
     }
 }
 
@@ -522,7 +548,27 @@ fn render_lines_from_paragraph(
 
 #[cfg(test)]
 mod tests {
-    use super::{SCROLLBAR_MIN_THUMB_HEIGHT, ScrollbarGeometry, compute_scrollbar_geometry};
+    use super::{
+        SCROLLBAR_MIN_THUMB_HEIGHT, ScrollbarGeometry, clamp_scroll_to_content,
+        compute_scrollbar_geometry, update_visual_heights,
+    };
+    use crate::app::{
+        App, AppStatus, BlockCache, ChatMessage, ChatViewport, IncrementalMarkdown, MessageBlock,
+        MessageRole,
+    };
+    use crate::ui::message::SpinnerState;
+
+    fn assistant_text_message(text: &str) -> ChatMessage {
+        ChatMessage {
+            role: MessageRole::Assistant,
+            blocks: vec![MessageBlock::Text(
+                text.to_owned(),
+                BlockCache::default(),
+                IncrementalMarkdown::from_complete(text),
+            )],
+        }
+    }
+
     #[test]
     fn scrollbar_hidden_when_content_fits() {
         assert_eq!(compute_scrollbar_geometry(10, 10, 0.0), None);
@@ -563,5 +609,92 @@ mod tests {
             compute_scrollbar_geometry(10_000, 10, 0.0),
             Some(ScrollbarGeometry { thumb_top: 0, thumb_size: SCROLLBAR_MIN_THUMB_HEIGHT })
         );
+    }
+
+    #[test]
+    fn update_visual_heights_remeasures_dirty_non_tail_message() {
+        let mut app = App::test_default();
+        app.status = AppStatus::Ready;
+        app.messages =
+            vec![assistant_text_message("short"), assistant_text_message("tail stays unchanged")];
+
+        app.viewport.on_frame(12);
+        let spinner = SpinnerState {
+            frame: 0,
+            is_active: false,
+            is_last_message: false,
+            is_thinking_mid_turn: false,
+        };
+
+        update_visual_heights(&mut app, spinner, false, 12);
+        let base_h = app.viewport.message_height(0);
+        assert!(base_h > 0);
+
+        if let Some(MessageBlock::Text(text, cache, incr)) =
+            app.messages.get_mut(0).and_then(|m| m.blocks.get_mut(0))
+        {
+            let extra = " this now wraps across multiple lines";
+            text.push_str(extra);
+            incr.append(extra);
+            cache.invalidate();
+        }
+        app.mark_message_layout_dirty(0);
+
+        update_visual_heights(&mut app, spinner, false, 12);
+        assert!(
+            app.viewport.message_height(0) > base_h,
+            "dirty non-tail message should be remeasured"
+        );
+    }
+
+    #[test]
+    fn clamp_scroll_to_content_snaps_overscroll_after_shrink() {
+        let mut viewport = ChatViewport::new();
+        viewport.auto_scroll = false;
+        viewport.scroll_target = 120;
+        viewport.scroll_pos = 120.0;
+        viewport.scroll_offset = 120;
+
+        clamp_scroll_to_content(&mut viewport, 40);
+
+        assert!(viewport.auto_scroll);
+        assert_eq!(viewport.scroll_target, 40);
+        assert!(viewport.scroll_pos > 40.0);
+        assert!(viewport.scroll_pos < 120.0);
+        assert_eq!(viewport.scroll_offset, 40);
+    }
+
+    #[test]
+    fn clamp_scroll_to_content_preserves_in_range_scroll() {
+        let mut viewport = ChatViewport::new();
+        viewport.auto_scroll = false;
+        viewport.scroll_target = 20;
+        viewport.scroll_pos = 20.0;
+        viewport.scroll_offset = 20;
+
+        clamp_scroll_to_content(&mut viewport, 40);
+
+        assert!(!viewport.auto_scroll);
+        assert_eq!(viewport.scroll_target, 20);
+        assert!((viewport.scroll_pos - 20.0).abs() < f32::EPSILON);
+        assert_eq!(viewport.scroll_offset, 20);
+    }
+
+    #[test]
+    fn clamp_scroll_to_content_settles_to_max_over_frames() {
+        let mut viewport = ChatViewport::new();
+        viewport.auto_scroll = false;
+        viewport.scroll_target = 120;
+        viewport.scroll_pos = 120.0;
+        viewport.scroll_offset = 120;
+
+        for _ in 0..12 {
+            clamp_scroll_to_content(&mut viewport, 40);
+        }
+
+        assert_eq!(viewport.scroll_target, 40);
+        assert_eq!(viewport.scroll_offset, 40);
+        assert!(viewport.scroll_pos >= 40.0);
+        assert!(viewport.scroll_pos < 40.1);
     }
 }

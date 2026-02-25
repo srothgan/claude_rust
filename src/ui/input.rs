@@ -110,6 +110,21 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         return;
     }
 
+    if app.status == AppStatus::Error {
+        let lines = vec![
+            Line::from(Span::styled(
+                "Input disabled due to error",
+                Style::default().fg(theme::STATUS_ERROR),
+            )),
+            Line::from(Span::styled(
+                "Press Ctrl+Q to quit and try again.",
+                Style::default().fg(theme::DIM),
+            )),
+        ];
+        frame.render_widget(Paragraph::new(lines), padded);
+        return;
+    }
+
     // Split into prompt icon column (fixed) and input column (remaining)
     let [prompt_area, input_area] =
         Layout::horizontal([Constraint::Length(PROMPT_WIDTH), Constraint::Min(1)]).areas(padded);

@@ -18,7 +18,6 @@ use super::{App, AppStatus, FocusOwner, FocusTarget, HelpView, MessageBlock, Mod
 use crate::acp::client::ClientEvent;
 use crate::app::input::parse_paste_placeholder;
 use crate::app::permissions::handle_permission_key;
-use crate::app::selection::{clear_selection, try_copy_selection};
 use crate::app::{mention, slash};
 use agent_client_protocol::{self as acp, Agent as _};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -42,9 +41,21 @@ fn is_permission_ctrl_shortcut(key: KeyEvent) -> bool {
         || is_ctrl_char_shortcut(key, 'n')
 }
 
+fn handle_always_allowed_shortcuts(app: &mut App, key: KeyEvent) -> bool {
+    if is_ctrl_char_shortcut(key, 'c') || is_ctrl_char_shortcut(key, 'q') {
+        app.should_quit = true;
+        return true;
+    }
+    false
+}
+
 pub(super) fn dispatch_key_by_focus(app: &mut App, key: KeyEvent) {
-    if app.status == AppStatus::Connecting {
-        handle_connecting_shortcuts(app, key);
+    if handle_always_allowed_shortcuts(app, key) {
+        return;
+    }
+
+    if matches!(app.status, AppStatus::Connecting | AppStatus::Error) {
+        handle_blocked_input_shortcuts(app, key);
         return;
     }
 
@@ -66,14 +77,9 @@ pub(super) fn dispatch_key_by_focus(app: &mut App, key: KeyEvent) {
     }
 }
 
-/// During startup, keep input disabled and only allow navigation/help shortcuts.
-fn handle_connecting_shortcuts(app: &mut App, key: KeyEvent) {
-    if is_ctrl_char_shortcut(key, 'q') {
-        app.should_quit = true;
-        sync_help_focus(app);
-        return;
-    }
-
+/// During blocked-input states (Connecting, Error), keep input disabled and only allow
+/// navigation/help shortcuts.
+fn handle_blocked_input_shortcuts(app: &mut App, key: KeyEvent) {
     if is_ctrl_char_shortcut(key, 'u') && app.update_check_hint.is_some() {
         app.update_check_hint = None;
         sync_help_focus(app);
@@ -120,12 +126,6 @@ fn handle_connecting_shortcuts(app: &mut App, key: KeyEvent) {
 
 /// Handle shortcuts that should work regardless of current focus owner.
 fn handle_global_shortcuts(app: &mut App, key: KeyEvent) -> bool {
-    // Safe quit shortcut (always quits, never copies selection).
-    if is_ctrl_char_shortcut(key, 'q') {
-        app.should_quit = true;
-        return true;
-    }
-
     // Session-only dismiss for update hint.
     if is_ctrl_char_shortcut(key, 'u') && app.update_check_hint.is_some() {
         app.update_check_hint = None;
@@ -138,15 +138,6 @@ fn handle_global_shortcuts(app: &mut App, key: KeyEvent) -> bool {
     }
 
     match (key.code, key.modifiers) {
-        (KeyCode::Char('c'), m) if m == KeyModifiers::CONTROL => {
-            if app.selection.is_some() {
-                let _ = try_copy_selection(app);
-                clear_selection(app);
-                return true;
-            }
-            app.should_quit = true;
-            true
-        }
         (KeyCode::Char('t'), m) if m == KeyModifiers::CONTROL => {
             toggle_todo_panel_focus(app);
             true
@@ -611,8 +602,8 @@ pub(super) fn toggle_all_tool_calls(app: &mut App) {
                 tc.cache.invalidate();
             }
         }
-        // Height caches are on the viewport; invalidating the block cache is enough.
     }
+    app.mark_all_message_layout_dirty();
 }
 
 /// Toggle the header visibility.
