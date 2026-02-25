@@ -592,6 +592,31 @@ fn reset_for_new_session(
     app.refresh_git_branch();
 }
 
+fn sdk_tool_name_from_meta(meta: Option<&serde_json::Value>) -> Option<&str> {
+    meta.and_then(|m| m.get("claudeCode")).and_then(|v| v.get("toolName")).and_then(|v| v.as_str())
+}
+
+fn fallback_sdk_tool_name(kind: acp::ToolKind) -> &'static str {
+    match kind {
+        acp::ToolKind::Read => "Read",
+        acp::ToolKind::Edit => "Edit",
+        acp::ToolKind::Delete => "Delete",
+        acp::ToolKind::Move => "Move",
+        acp::ToolKind::Search => "Search",
+        acp::ToolKind::Execute => "Bash",
+        acp::ToolKind::Think => "Think",
+        acp::ToolKind::Fetch => "Fetch",
+        acp::ToolKind::SwitchMode => "ExitPlanMode",
+        acp::ToolKind::Other => "Tool",
+    }
+}
+
+fn resolve_sdk_tool_name(kind: acp::ToolKind, meta: Option<&serde_json::Value>) -> String {
+    sdk_tool_name_from_meta(meta)
+        .filter(|name| !name.trim().is_empty())
+        .map_or_else(|| fallback_sdk_tool_name(kind).to_owned(), str::to_owned)
+}
+
 fn handle_tool_call(app: &mut App, tc: acp::ToolCall) {
     let title = tc.title.clone();
     let kind = tc.kind;
@@ -603,22 +628,15 @@ fn handle_tool_call(app: &mut App, tc: acp::ToolCall) {
         tc.raw_output.is_some()
     );
 
-    // Extract claude_tool_name from meta.claudeCode.toolName
-    let claude_tool_name = tc.meta.as_ref().and_then(|m| {
-        m.get("claudeCode")
-            .and_then(|v| v.get("toolName"))
-            .and_then(|v| v.as_str())
-            .map(str::to_owned)
-    });
-
-    let is_task = claude_tool_name.as_deref() == Some("Task");
+    let sdk_tool_name = resolve_sdk_tool_name(kind, tc.meta.as_ref());
+    let is_task = sdk_tool_name == "Task";
 
     // Subagent children are never hidden -- they need to be visible so
     // permission prompts render and the user can interact with them.
     let hidden = false;
 
     // Extract todos from TodoWrite tool calls
-    if claude_tool_name.as_deref() == Some("TodoWrite") {
+    if sdk_tool_name == "TodoWrite" {
         tracing::info!("TodoWrite ToolCall detected: id={id_str}, raw_input={:?}", tc.raw_input);
         if let Some(ref raw_input) = tc.raw_input {
             let todos = parse_todos(raw_input);
@@ -634,7 +652,7 @@ fn handle_tool_call(app: &mut App, tc: acp::ToolCall) {
         app.insert_active_task(id_str.clone());
     }
 
-    let initial_execute_output = if matches!(kind, acp::ToolKind::Execute) {
+    let initial_execute_output = if super::is_execute_tool_name(&sdk_tool_name) {
         tc.raw_output.as_ref().and_then(raw_output_to_terminal_text)
     } else {
         None
@@ -643,11 +661,10 @@ fn handle_tool_call(app: &mut App, tc: acp::ToolCall) {
     let mut tool_info = ToolCallInfo {
         id: id_str,
         title: shorten_tool_title(&tc.title, &app.cwd_raw),
-        kind,
+        sdk_tool_name,
         status: tc.status,
         content: tc.content,
         collapsed: app.tools_collapsed,
-        claude_tool_name,
         hidden,
         terminal_id: None,
         terminal_command: None,
@@ -677,8 +694,7 @@ fn handle_tool_call(app: &mut App, tc: acp::ToolCall) {
                 existing.title.clone_from(&tool_info.title);
                 existing.status = tool_info.status;
                 existing.content.clone_from(&tool_info.content);
-                existing.kind = tool_info.kind;
-                existing.claude_tool_name.clone_from(&tool_info.claude_tool_name);
+                existing.sdk_tool_name.clone_from(&tool_info.sdk_tool_name);
                 existing.cache.invalidate();
                 layout_dirty = true;
             }
@@ -774,13 +790,11 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
                     tcu.fields.raw_output.as_ref(),
                 )
             {
-                let claude_tool_name = tcu.meta.as_ref().and_then(|m| {
-                    m.get("claudeCode").and_then(|v| v.get("toolName")).and_then(|v| v.as_str())
-                });
+                let sdk_tool_name = sdk_tool_name_from_meta(tcu.meta.as_ref());
                 tracing::debug!(
                     tool_call_id = %id_str,
                     title = ?tcu.fields.title,
-                    claude_tool_name = ?claude_tool_name,
+                    sdk_tool_name = ?sdk_tool_name,
                     content_preview = %content_preview,
                     "Internal failed ToolCallUpdate payload"
                 );
@@ -823,24 +837,21 @@ fn handle_session_update(app: &mut App, update: acp::SessionUpdate) {
                     }
                     // Keep updating Execute output from raw_output so long-running commands
                     // can stream visible terminal text before completion.
-                    if matches!(tc.kind, acp::ToolKind::Execute)
+                    if tc.is_execute_tool()
                         && let Some(raw_output) = tcu.fields.raw_output.as_ref()
                         && let Some(output) = raw_output_to_terminal_text(raw_output)
                     {
                         tc.terminal_output_len = output.len();
                         tc.terminal_output = Some(output);
                     }
-                    // Update claude_tool_name from update meta if present
-                    if let Some(ref meta) = tcu.meta
-                        && let Some(name) = meta
-                            .get("claudeCode")
-                            .and_then(|v| v.get("toolName"))
-                            .and_then(|v| v.as_str())
+                    // Update sdk_tool_name from update meta when provided.
+                    if let Some(name) = sdk_tool_name_from_meta(tcu.meta.as_ref())
+                        && !name.trim().is_empty()
                     {
-                        tc.claude_tool_name = Some(name.to_owned());
+                        tc.sdk_tool_name = name.to_owned();
                     }
                     // Update todos from TodoWrite raw_input updates
-                    if tc.claude_tool_name.as_deref() == Some("TodoWrite") {
+                    if tc.sdk_tool_name == "TodoWrite" {
                         tracing::info!(
                             "TodoWrite ToolCallUpdate: id={id_str}, raw_input={:?}",
                             tcu.fields.raw_input
@@ -1174,11 +1185,10 @@ mod tests {
         ToolCallInfo {
             id: id.into(),
             title: id.into(),
-            kind: acp::ToolKind::Read,
+            sdk_tool_name: "Read".into(),
             status,
             content: vec![],
             collapsed: false,
-            claude_tool_name: None,
             hidden: false,
             terminal_id: None,
             terminal_command: None,

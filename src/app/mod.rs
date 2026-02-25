@@ -41,6 +41,7 @@ pub use state::{
     App, AppStatus, BlockCache, ChatMessage, ChatViewport, HelpView, IncrementalMarkdown,
     InlinePermission, LoginHint, MessageBlock, MessageRole, ModeInfo, ModeState, SelectionKind,
     SelectionPoint, SelectionState, TodoItem, TodoStatus, ToolCallInfo, WelcomeBlock,
+    is_execute_tool_name,
 };
 pub use update_check::start_update_check;
 

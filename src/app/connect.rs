@@ -264,11 +264,7 @@ fn handle_bridge_event(
 ) {
     match envelope.event {
         BridgeEvent::Connected { session_id, model_name, mode } => {
-            tracing::info!(
-                "bridge connected: session_id={} model={}",
-                session_id,
-                model_name
-            );
+            tracing::info!("bridge connected: session_id={} model={}", session_id, model_name);
             let mode = mode.map(convert_mode_state);
             if *connected_once {
                 let _ = event_tx.send(ClientEvent::SessionReplaced {
@@ -509,8 +505,10 @@ fn convert_tool_call(tool_call: types::ToolCall) -> acp::ToolCall {
 
 fn convert_tool_call_update(update: types::ToolCallUpdate) -> acp::ToolCallUpdate {
     let update_meta = update.fields.meta.clone();
-    let mut out =
-        acp::ToolCallUpdate::new(update.tool_call_id, convert_tool_call_update_fields(update.fields));
+    let mut out = acp::ToolCallUpdate::new(
+        update.tool_call_id,
+        convert_tool_call_update_fields(update.fields),
+    );
     if let Some(meta) = update_meta {
         out = out.meta(meta);
     }

@@ -63,7 +63,7 @@ pub fn render_tool_call_cached(
     spinner_frame: usize,
     out: &mut Vec<Line<'static>>,
 ) {
-    let is_execute = matches!(tc.kind, acp::ToolKind::Execute);
+    let is_execute = tc.is_execute_tool();
 
     // Execute/Bash: two-layer rendering (cache content, apply borders at render time)
     if is_execute {
@@ -148,7 +148,7 @@ pub fn measure_tool_call_height_cached(
     width: u16,
     spinner_frame: usize,
 ) -> (usize, usize) {
-    let is_execute = matches!(tc.kind, acp::ToolKind::Execute);
+    let is_execute = tc.is_execute_tool();
     if is_execute {
         if tc.cache.get().is_none() {
             let content = render_execute_content(tc);
@@ -216,7 +216,7 @@ pub fn measure_tool_call_height_cached(
 /// Execute tool calls are handled separately via `render_execute_with_borders`.
 fn render_tool_call_title(tc: &ToolCallInfo, _width: u16, spinner_frame: usize) -> Line<'static> {
     let (icon, icon_color) = status_icon(tc.status, spinner_frame);
-    let (kind_icon, _kind_name) = theme::tool_kind_label(tc.kind, tc.claude_tool_name.as_deref());
+    let (kind_icon, _kind_name) = theme::tool_name_label(&tc.sdk_tool_name);
 
     let mut title_spans = vec![
         Span::styled(format!("  {icon} "), Style::default().fg(icon_color)),
@@ -262,6 +262,8 @@ fn render_standard_body(tc: &ToolCallInfo, lines: &mut Vec<Line<'static>>) {
     }
 
     // Force expanded when permission is pending (user needs to see context)
+    // TODO(agent-sdk): force failed/error tool calls to single-line collapsed summary
+    // even when content is large, to avoid long noisy failure blocks by default.
     let effectively_collapsed = tc.collapsed && !has_diff && !has_permission;
 
     if effectively_collapsed {
@@ -373,11 +375,15 @@ fn render_execute_with_borders(
 
     // Top border with status icon and title
     let (status_icon_str, icon_color) = status_icon(tc.status, spinner_frame);
+    let (_tool_icon, tool_label) = theme::tool_name_label(&tc.sdk_tool_name);
     let line_budget = width as usize;
     let left_prefix = vec![
         Span::styled("  \u{256D}\u{2500}", border),
         Span::styled(format!(" {status_icon_str} "), Style::default().fg(icon_color)),
-        Span::styled("Bash ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            format!("{tool_label} "),
+            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+        ),
     ];
     let prefix_w = spans_width(&left_prefix);
     let right_border_w = 1; // "╮"
@@ -589,7 +595,7 @@ fn content_summary(tc: &ToolCallInfo) -> String {
 
 /// Render the full content of a tool call as lines.
 fn render_tool_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
-    let is_execute = matches!(tc.kind, acp::ToolKind::Execute);
+    let is_execute = tc.is_execute_tool();
     let mut lines: Vec<Line<'static>> = Vec::new();
 
     // For Execute tool calls with terminal output, render the live output
@@ -715,7 +721,7 @@ fn debug_failed_tool_render(tc: &ToolCallInfo) {
     tracing::debug!(
         tool_call_id = %tc.id,
         title = %tc.title,
-        kind = ?tc.kind,
+        sdk_tool_name = %tc.sdk_tool_name,
         content_blocks = tc.content.len(),
         text_preview = %text_preview,
         terminal_preview = %terminal_preview,
@@ -934,11 +940,10 @@ mod tests {
             id: "tc-1".into(),
             title: "echo very long command title with markdown **bold** and path /a/b/c/d/e/f"
                 .into(),
-            kind: acp::ToolKind::Execute,
+            sdk_tool_name: "Bash".into(),
             status: acp::ToolCallStatus::Pending,
             content: Vec::new(),
             collapsed: false,
-            claude_tool_name: Some("Bash".into()),
             hidden: false,
             terminal_id: None,
             terminal_command: None,
@@ -1003,11 +1008,10 @@ mod tests {
         let tc = ToolCallInfo {
             id: "tc-1".into(),
             title: "Bash".into(),
-            kind: acp::ToolKind::Execute,
+            sdk_tool_name: "Bash".into(),
             status: acp::ToolCallStatus::Completed,
             content: Vec::new(),
             collapsed: true,
-            claude_tool_name: Some("Bash".into()),
             hidden: false,
             terminal_id: Some("term-1".into()),
             terminal_command: Some("echo done".into()),
@@ -1024,11 +1028,10 @@ mod tests {
         let tc = ToolCallInfo {
             id: "tc-1".into(),
             title: "Bash".into(),
-            kind: acp::ToolKind::Execute,
+            sdk_tool_name: "Bash".into(),
             status: acp::ToolCallStatus::Failed,
             content: Vec::new(),
             collapsed: true,
-            claude_tool_name: Some("Bash".into()),
             hidden: false,
             terminal_id: Some("term-1".into()),
             terminal_command: Some("echo done".into()),

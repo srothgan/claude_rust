@@ -38,35 +38,28 @@ pub const ICON_FAILED: &str = "\u{2717}";
 pub const STATUS_ERROR: Color = Color::Red;
 pub const SLASH_COMMAND: Color = Color::LightMagenta;
 
-/// Tool kind icon + label pair. Monochrome Unicode symbols.
-/// If `claude_tool_name` is provided, override icon/label for specific tools.
-pub fn tool_kind_label(
-    kind: crate::agent::protocol::ToolKind,
-    claude_tool_name: Option<&str>,
-) -> (&'static str, &'static str) {
-    use crate::agent::protocol::ToolKind;
-
-    // Override for specific Claude Code tool names.
-    // TODO(ui): Evaluate removing claude_tool_name label overrides and using ToolKind labels only.
-    if let Some(name) = claude_tool_name {
-        match name {
-            "Task" => return ("\u{25c7}", "Agent"),
-            "WebSearch" => return ("\u{2295}", "WebSearch"),
-            "WebFetch" => return ("\u{2295}", "WebFetch"),
-            _ => {}
-        }
-    }
-
-    match kind {
-        ToolKind::Read => ("\u{2b1a}", "Read"),
-        ToolKind::Edit => ("\u{25a3}", "Edit"),
-        ToolKind::Delete => ("\u{25a3}", "Delete"),
-        ToolKind::Move => ("\u{21c4}", "Move"),
-        ToolKind::Search => ("\u{2315}", "Find"),
-        ToolKind::Execute => ("\u{27e9}", "Bash"),
-        ToolKind::Think => ("\u{2756}", "Think"),
-        ToolKind::Fetch => ("\u{2295}", "Fetch"),
-        ToolKind::SwitchMode => ("\u{2299}", "Mode"),
-        ToolKind::Other => ("\u{25cb}", "Tool"),
+/// SDK tool icon + label pair. Monochrome Unicode symbols.
+/// Unknown tool names fall back to a generic Tool label.
+pub fn tool_name_label(sdk_tool_name: &str) -> (&'static str, &'static str) {
+    match sdk_tool_name {
+        "Read" => ("\u{2b1a}", "Read"),
+        "Write" => ("\u{25a3}", "Write"),
+        "Edit" => ("\u{25a3}", "Edit"),
+        "MultiEdit" => ("\u{25a3}", "MultiEdit"),
+        "NotebookEdit" => ("\u{25a3}", "NotebookEdit"),
+        "Delete" => ("\u{25a3}", "Delete"),
+        "Move" => ("\u{21c4}", "Move"),
+        "Glob" => ("\u{2315}", "Glob"),
+        "Grep" => ("\u{2315}", "Grep"),
+        "LS" => ("\u{2315}", "LS"),
+        "Bash" => ("\u{27e9}", "Bash"),
+        "Task" => ("\u{25c7}", "Task"),
+        "WebFetch" => ("\u{2295}", "WebFetch"),
+        "WebSearch" => ("\u{2295}", "WebSearch"),
+        "ExitPlanMode" => ("\u{2299}", "ExitPlanMode"),
+        "TodoWrite" => ("\u{25cc}", "TodoWrite"),
+        "Config" => ("\u{2299}", "Config"),
+        "EnterWorktree" => ("\u{21c4}", "EnterWorktree"),
+        _ => ("\u{25cb}", "Tool"),
     }
 }

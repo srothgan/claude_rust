@@ -379,11 +379,10 @@ mod tests {
         ToolCallInfo {
             id: id.to_owned(),
             title: format!("Tool {id}"),
-            kind: acp::ToolKind::Read,
+            sdk_tool_name: "Read".to_owned(),
             status: acp::ToolCallStatus::InProgress,
             content: Vec::new(),
             collapsed: false,
-            claude_tool_name: None,
             hidden: false,
             terminal_id: None,
             terminal_command: None,

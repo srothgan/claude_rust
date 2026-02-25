@@ -924,16 +924,15 @@ pub struct WelcomeBlock {
 pub struct ToolCallInfo {
     pub id: String,
     pub title: String,
-    pub kind: acp::ToolKind,
+    /// The SDK tool name from `meta.claudeCode.toolName` when available.
+    /// Falls back to a derived name when metadata is absent.
+    pub sdk_tool_name: String,
     pub status: acp::ToolCallStatus,
     pub content: Vec<acp::ToolCallContent>,
     pub collapsed: bool,
-    /// The actual Claude Code tool name from `meta.claudeCode.toolName`
-    /// (e.g. "Task", "Glob", "`mcp__acp__Read`", "`WebSearch`")
-    pub claude_tool_name: Option<String>,
     /// Hidden tool calls are subagent children - not rendered directly.
     pub hidden: bool,
-    /// Terminal ID if this is an Execute tool call with a running/completed terminal.
+    /// Terminal ID if this is a Bash-like SDK tool call with a running/completed terminal.
     pub terminal_id: Option<String>,
     /// The shell command that was executed (e.g. "echo hello && ls -la").
     pub terminal_command: Option<String>,
@@ -946,6 +945,18 @@ pub struct ToolCallInfo {
     pub cache: BlockCache,
     /// Inline permission prompt - rendered inside this tool call block.
     pub pending_permission: Option<InlinePermission>,
+}
+
+impl ToolCallInfo {
+    #[must_use]
+    pub fn is_execute_tool(&self) -> bool {
+        is_execute_tool_name(&self.sdk_tool_name)
+    }
+}
+
+#[must_use]
+pub fn is_execute_tool_name(tool_name: &str) -> bool {
+    tool_name.eq_ignore_ascii_case("bash")
 }
 
 /// Permission state stored inline on a `ToolCallInfo`, so the permission
