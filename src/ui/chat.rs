@@ -226,6 +226,11 @@ fn render_scrolled(
     }
 }
 
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 fn clamp_scroll_to_content(viewport: &mut crate::app::ChatViewport, max_scroll: usize) {
     viewport.scroll_target = viewport.scroll_target.min(max_scroll);
 
@@ -675,7 +680,7 @@ mod tests {
 
         assert!(!viewport.auto_scroll);
         assert_eq!(viewport.scroll_target, 20);
-        assert_eq!(viewport.scroll_pos, 20.0);
+        assert!((viewport.scroll_pos - 20.0).abs() < f32::EPSILON);
         assert_eq!(viewport.scroll_offset, 20);
     }
 
