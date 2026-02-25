@@ -2,7 +2,36 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.2.0] - 2026-02-22
+## [0.3.0] - 2026-02-25 [Changes][v0.3.0]
+
+### Features
+
+- **Startup update check** (#30): Non-blocking check via GitHub Releases API with 24h cache, footer hint, `Ctrl+U` dismiss, `--no-update-check` / `CLAUDE_RUST_NO_UPDATE_CHECK=1` opt-out
+- **Shortcuts during connecting** (#38): Navigation and help shortcuts work while ACP adapter connects; input keys remain blocked
+- **Global Ctrl+Q quit** (#38): Safe quit available in all states including connecting and error
+- **Input height API and word wrapping** (#40): Adopt tui-textarea-2 v0.10 `TextArea::measure()` for input sizing, switch to `WrapMode::WordOrGlyph`, remove custom `InputWrapCache` plumbing
+
+### Fixes
+
+- **Height cache recalculation** (#39): Track dirty message index and re-measure non-tail messages when content or tool blocks change
+- **Error state and input locking** (#39): Connection and turn failures surface immediately with quit hint; input blocked during connecting/error
+- **Scroll clamp after permission collapse** (#39): Clamp overscroll when content shrinks; ease scroll position for smooth settling; consume Up/Down with single pending permission
+- **Permission shortcut reliability** (#29): `Ctrl+Y/A/N` work globally while prompts are pending with fallback option matching
+- **Tool-call error rendering** (#29): Improved error handling with raw_output fallback and cleaner failed-call display
+
+### CI and Dependencies
+
+- Bump `actions/upload-artifact` 4 to 6, `actions/setup-node` 4 to 6, `actions/download-artifact` 5 to 7 (#31, #32, #33)
+- Bump `pulldown-cmark` from 0.13.0 to 0.13.1 (#34)
+- Unify cargo publish, binary build, GitHub release, and npm publish into one workflow (#30)
+- Add `revert` to allowed semantic PR title types (#37)
+
+### Internal
+
+- Attempted migration to `claude-agent-acp` (#29), reverted to `claude-code-acp` (#37) due to feature parity gaps
+- Regression tests for height remeasurement, scroll clamp, permission keys, connecting shortcuts, and update check
+
+## [0.2.0] - 2026-02-22 [Changes][v0.2.0]
 
 ### Rename and Distribution
 
@@ -10,14 +39,14 @@ All notable changes to this project will be documented in this file.
 - Rename command to `claude-rs`
 - Update release workflows and artifacts to publish/build under the new names
 
-## [0.1.3] - 2026-02-21
+## [0.1.3] - 2026-02-21 [Changes][v0.1.3]
 
 ### Fixes
 
 - Rescan files on each `@` mention activation so new/deleted files are reflected during a session
 - Add keywords to npm package.json for better discoverability
 
-## [0.1.2] - 2026-02-21
+## [0.1.2] - 2026-02-21 [Changes][v0.1.2]
 
 ### UX and Interaction
 
@@ -26,7 +55,7 @@ All notable changes to this project will be documented in this file.
 - Make chat scrollbar draggable with proportional thumb-to-content mapping
 - Ensure scrollbar dragging can reach absolute top and bottom of chat history
 
-## [0.1.1] - 2026-02-21
+## [0.1.1] - 2026-02-21 [Changes][v0.1.1]
 
 ### CI and Release
 
@@ -37,7 +66,7 @@ All notable changes to this project will be documented in this file.
 - Tags created by github-actions[bot] for verified provenance
 - Remove release-plz.toml and cliff.toml
 
-## [0.1.0] - 2026-02-20
+## [0.1.0] - 2026-02-20 [Changes][v0.1.0]
 
 ### Release Summary
 
@@ -131,3 +160,10 @@ Performance optimization was a major release theme across recent commits:
   - `UsageUpdate` events are not emitted
   - `PromptResponse.usage` is `None`
 - Session resume (`--resume`) is blocked on an upstream adapter release that contains a Windows path encoding fix
+
+[v0.3.0]: https://github.com/srothgan/claude-code-rust/compare/v0.2.0...v0.3.0
+[v0.2.0]: https://github.com/srothgan/claude-code-rust/compare/v0.1.3...v0.2.0
+[v0.1.3]: https://github.com/srothgan/claude-code-rust/compare/v0.1.2...v0.1.3
+[v0.1.2]: https://github.com/srothgan/claude-code-rust/compare/v0.1.1...v0.1.2
+[v0.1.1]: https://github.com/srothgan/claude-code-rust/compare/v0.1.0...v0.1.1
+[v0.1.0]: https://github.com/srothgan/claude-code-rust/releases/tag/v0.1.0
