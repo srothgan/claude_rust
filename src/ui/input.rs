@@ -16,7 +16,7 @@
 
 use crate::app::input::parse_paste_placeholder_with_suffix;
 use crate::app::mention;
-use crate::app::{App, AppStatus, InputWrapCache};
+use crate::app::{App, AppStatus};
 use crate::ui::theme;
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
@@ -26,7 +26,6 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Widget;
 use tui_textarea::{CursorMove, TextArea, WrapMode};
-use unicode_width::UnicodeWidthChar;
 
 /// Horizontal padding to match header/footer inset.
 const INPUT_PAD: u16 = 2;
@@ -156,7 +155,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
 
 fn build_input_textarea(app: &App) -> TextArea<'static> {
     let mut textarea = TextArea::from(app.input.lines.clone());
-    textarea.set_wrap_mode(WrapMode::Glyph);
+    textarea.set_wrap_mode(WrapMode::WordOrGlyph);
     textarea.set_placeholder_text("Type a message...");
     textarea.set_placeholder_style(Style::default().fg(theme::DIM));
     textarea.set_cursor_line_style(Style::default());
@@ -262,131 +261,23 @@ fn render_lines_from_textarea(textarea: &TextArea<'_>, area: Rect) -> Vec<String
     lines
 }
 
-/// Compute (or return cached) wrap result for the input field.
-/// The cache is keyed by `(input.version, content_width)` and is stored on `App`.
-#[allow(clippy::cast_possible_truncation)]
-fn get_or_compute_wrap(app: &mut App, content_width: u16) {
-    let fresh = app
-        .input_wrap_cache
-        .as_ref()
-        .is_none_or(|c| c.version != app.input.version || c.content_width != content_width);
-    if fresh {
-        let (wrapped_lines, cursor_pos) = wrap_lines_and_cursor(
-            &app.input.lines,
-            app.input.cursor_row,
-            app.input.cursor_col,
-            content_width,
-        );
-        app.input_wrap_cache = Some(InputWrapCache {
-            version: app.input.version,
-            content_width,
-            wrapped_lines,
-            cursor_pos,
-        });
-    }
-}
-
 /// Total visual height for the input area: input lines + login hint banner.
 /// Called by the layout to allocate the correct input area height.
-#[allow(clippy::cast_possible_truncation)]
-pub fn visual_line_count(app: &mut App, area_width: u16) -> u16 {
+pub fn visual_line_count(app: &App, area_width: u16) -> u16 {
     let hint = if has_login_hint(app) { LOGIN_HINT_LINES } else { 0 };
-    let input_lines = if app.input.is_empty() {
-        1
-    } else {
-        let content_width = area_width.saturating_sub(INPUT_PAD * 2).saturating_sub(PROMPT_WIDTH);
-        if content_width == 0 {
-            app.input.line_count()
-        } else {
-            get_or_compute_wrap(app, content_width);
-            app.input_wrap_cache
-                .as_ref()
-                .map_or(1, |c| (c.wrapped_lines.len() as u16).min(MAX_INPUT_HEIGHT))
-        }
-    };
+    let content_width = area_width.saturating_sub(INPUT_PAD * 2).saturating_sub(PROMPT_WIDTH);
+    let mut textarea = build_input_textarea(app);
+    textarea.set_min_rows(1);
+    textarea.set_max_rows(MAX_INPUT_HEIGHT);
+    let input_lines =
+        if content_width == 0 { 1 } else { textarea.measure(content_width).preferred_rows };
     hint + input_lines
-}
-
-#[allow(clippy::cast_possible_truncation)]
-fn wrap_lines_and_cursor(
-    lines: &[String],
-    cursor_row: usize,
-    cursor_col: usize,
-    content_width: u16,
-) -> (Vec<Line<'static>>, Option<(u16, u16)>) {
-    let width = content_width as usize;
-    let mut wrapped: Vec<Line<'static>> = Vec::new();
-    let mut cursor_pos: Option<(u16, u16)> = None;
-    let mut visual_row: u16 = 0;
-
-    if width == 0 {
-        return (wrapped, None);
-    }
-
-    for (row, line) in lines.iter().enumerate() {
-        let mut col: usize = 0;
-        let mut current = String::new();
-        let mut char_idx: usize = 0;
-
-        if row == cursor_row && cursor_col == 0 {
-            cursor_pos = Some((visual_row, 0));
-        }
-
-        for ch in line.chars() {
-            if row == cursor_row && char_idx == cursor_col {
-                cursor_pos = Some((visual_row, col as u16));
-            }
-
-            let w = UnicodeWidthChar::width(ch).unwrap_or(0);
-            if w > 0 && col + w > width && col > 0 {
-                wrapped.push(Line::from(Span::raw(std::mem::take(&mut current))));
-                visual_row = visual_row.saturating_add(1);
-                col = 0;
-            }
-
-            if w > width && col == 0 {
-                current.push(ch);
-                wrapped.push(Line::from(Span::raw(std::mem::take(&mut current))));
-                visual_row = visual_row.saturating_add(1);
-                col = 0;
-                char_idx += 1;
-                continue;
-            }
-
-            current.push(ch);
-            if w > 0 {
-                col += w;
-            }
-            char_idx += 1;
-        }
-
-        if row == cursor_row && char_idx == cursor_col {
-            if col >= width {
-                cursor_pos = Some((visual_row.saturating_add(1), 0));
-            } else {
-                cursor_pos = Some((visual_row, col as u16));
-            }
-        }
-
-        if line.is_empty() {
-            wrapped.push(Line::from(Span::raw(String::new())));
-            visual_row = visual_row.saturating_add(1);
-        } else if !current.is_empty() {
-            wrapped.push(Line::from(Span::raw(current)));
-            visual_row = visual_row.saturating_add(1);
-        }
-    }
-
-    if lines.is_empty() {
-        wrapped.push(Line::from(Span::raw(String::new())));
-    }
-
-    (wrapped, cursor_pos)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::slash_command_range;
+    use super::{LOGIN_HINT_LINES, MAX_INPUT_HEIGHT, slash_command_range, visual_line_count};
+    use crate::app::{App, LoginHint};
 
     #[test]
     fn slash_range_matches_leading_command_token() {
@@ -399,5 +290,22 @@ mod tests {
         assert_eq!(slash_command_range("hello /mode"), None);
         assert_eq!(slash_command_range("/"), None);
         assert_eq!(slash_command_range("   "), None);
+    }
+
+    #[test]
+    fn visual_line_count_uses_textarea_max_rows() {
+        let mut app = App::test_default();
+        app.input.set_text(&"x".repeat(500));
+        assert_eq!(visual_line_count(&app, 8), MAX_INPUT_HEIGHT);
+    }
+
+    #[test]
+    fn visual_line_count_includes_login_hint_rows() {
+        let mut app = App::test_default();
+        app.login_hint = Some(LoginHint {
+            method_name: "oauth".to_owned(),
+            method_description: "Sign in".to_owned(),
+        });
+        assert_eq!(visual_line_count(&app, 80), LOGIN_HINT_LINES + 1);
     }
 }

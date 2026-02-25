@@ -39,9 +39,8 @@ pub use input::InputState;
 pub(crate) use selection::normalize_selection;
 pub use state::{
     App, AppStatus, BlockCache, ChatMessage, ChatViewport, HelpView, IncrementalMarkdown,
-    InlinePermission, InputWrapCache, LoginHint, MessageBlock, MessageRole, ModeInfo, ModeState,
-    SelectionKind, SelectionPoint, SelectionState, TodoItem, TodoStatus, ToolCallInfo,
-    WelcomeBlock,
+    InlinePermission, LoginHint, MessageBlock, MessageRole, ModeInfo, ModeState, SelectionKind,
+    SelectionPoint, SelectionState, TodoItem, TodoStatus, ToolCallInfo, WelcomeBlock,
 };
 pub use update_check::start_update_check;
 
