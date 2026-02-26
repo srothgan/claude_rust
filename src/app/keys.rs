@@ -18,6 +18,7 @@ use super::{App, AppStatus, FocusOwner, FocusTarget, HelpView, MessageBlock, Mod
 use crate::agent::events::ClientEvent;
 use crate::app::input::parse_paste_placeholder;
 use crate::app::permissions::handle_permission_key;
+use crate::app::selection::clear_selection;
 use crate::app::{mention, slash};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::rc::Rc;
@@ -47,6 +48,7 @@ fn handle_always_allowed_shortcuts(app: &mut App, key: KeyEvent) -> bool {
     }
     if is_ctrl_char_shortcut(key, 'c') {
         if copy_selection_to_clipboard(app) {
+            clear_selection(app);
             return true;
         }
         app.should_quit = true;
@@ -60,9 +62,8 @@ fn copy_selection_to_clipboard(app: &App) -> bool {
         return false;
     };
     let selected_text = selection_text_from_rendered_lines(app, selection);
-    if selected_text.trim().is_empty() {
-        // An active selection still means copy intent: do not treat Ctrl+C as quit.
-        return true;
+    if selected_text.is_empty() {
+        return false;
     }
     if let Ok(mut clipboard) = arboard::Clipboard::new() {
         let _ = clipboard.set_text(selected_text);

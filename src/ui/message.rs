@@ -749,7 +749,9 @@ fn welcome_lines(block: &WelcomeBlock, width: u16) -> Vec<Line<'static>> {
 
     lines.push(Line::default());
     lines.push(Line::from(Span::styled(
-        format!("{pad}Tips: Enter to send, Shift+Enter for newline, Ctrl+C to copy or quit"),
+        format!(
+            "{pad}Tips: Enter to send, Shift+Enter for newline, Ctrl+C copies selection or quits"
+        ),
         Style::default().fg(theme::DIM),
     )));
 
