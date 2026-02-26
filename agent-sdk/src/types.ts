@@ -28,6 +28,10 @@ export interface UsageUpdate {
   output_tokens?: number;
   cache_read_tokens?: number;
   cache_write_tokens?: number;
+  total_cost_usd?: number;
+  turn_cost_usd?: number;
+  context_window?: number;
+  max_output_tokens?: number;
 }
 
 export type ContentBlock =
@@ -87,7 +91,9 @@ export type SessionUpdate =
   | { type: "available_commands_update"; commands: AvailableCommand[] }
   | { type: "current_mode_update"; current_mode_id: string }
   | { type: "config_option_update"; option_id: string; value: Json }
-  | { type: "usage_update"; usage: UsageUpdate };
+  | { type: "usage_update"; usage: UsageUpdate }
+  | { type: "session_status_update"; status: "compacting" | "idle" }
+  | { type: "compaction_boundary"; trigger: "manual" | "auto"; pre_tokens: number };
 
 export interface PermissionOption {
   option_id: string;

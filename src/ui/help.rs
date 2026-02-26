@@ -227,6 +227,9 @@ fn build_key_help_items(app: &App) -> Vec<(String, String)> {
     if app.update_check_hint.is_some() {
         items.push(("Ctrl+u".to_owned(), "Hide update hint".to_owned()));
     }
+    if app.is_compacting {
+        items.push(("Status".to_owned(), "Compacting context".to_owned()));
+    }
     let focus_owner = app.focus_owner();
 
     if app.show_todo_panel && !app.todos.is_empty() {

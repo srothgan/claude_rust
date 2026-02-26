@@ -75,7 +75,7 @@ pub enum BridgeCommand {
     Shutdown,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EventEnvelope {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub request_id: Option<String>,
@@ -83,7 +83,7 @@ pub struct EventEnvelope {
     pub event: BridgeEvent,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum BridgeEvent {
     Connected {

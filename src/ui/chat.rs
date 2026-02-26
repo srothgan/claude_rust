@@ -421,6 +421,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         is_active: matches!(app.status, AppStatus::Thinking | AppStatus::Running),
         is_last_message: false,
         is_thinking_mid_turn: false,
+        is_compacting: app.is_compacting,
     };
 
     // Detect width change and invalidate layout caches
@@ -566,6 +567,7 @@ mod tests {
                 BlockCache::default(),
                 IncrementalMarkdown::from_complete(text),
             )],
+            usage: None,
         }
     }
 
@@ -624,6 +626,7 @@ mod tests {
             is_active: false,
             is_last_message: false,
             is_thinking_mid_turn: false,
+            is_compacting: false,
         };
 
         update_visual_heights(&mut app, spinner, false, 12);

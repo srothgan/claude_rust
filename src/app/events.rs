@@ -19,7 +19,8 @@ use super::selection::clear_selection;
 use super::state::{RecentSessionInfo, ScrollbarDragState};
 use super::{
     App, AppStatus, BlockCache, ChatMessage, FocusTarget, IncrementalMarkdown, InlinePermission,
-    LoginHint, MessageBlock, MessageRole, SelectionKind, SelectionPoint, ToolCallInfo,
+    LoginHint, MessageBlock, MessageRole, MessageUsage, SelectionKind, SelectionPoint,
+    ToolCallInfo,
 };
 use crate::agent::events::ClientEvent;
 use crate::agent::model;
@@ -374,12 +375,14 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
         }
         ClientEvent::TurnCancelled => {
             app.pending_compact_clear = false;
+            app.is_compacting = false;
             app.cancelled_turn_pending_hint = true;
             let _ = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Failed);
         }
         ClientEvent::TurnComplete => {
             let should_compact_clear = app.pending_compact_clear;
             app.pending_compact_clear = false;
+            app.is_compacting = false;
             let show_interrupted_hint = app.cancelled_turn_pending_hint;
             app.cancelled_turn_pending_hint = false;
             if show_interrupted_hint {
@@ -401,6 +404,7 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
         ClientEvent::TurnError(msg) => {
             let should_compact_clear = app.pending_compact_clear;
             app.pending_compact_clear = false;
+            app.is_compacting = false;
             let cancelled_requested = app.cancelled_turn_pending_hint;
             app.cancelled_turn_pending_hint = false;
 
@@ -451,6 +455,8 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
             app.mode = mode;
             app.login_hint = None;
             app.pending_compact_clear = false;
+            app.is_compacting = false;
+            app.session_usage = super::SessionUsageState::default();
             app.cancelled_turn_pending_hint = false;
             app.cached_header_line = None;
             app.cached_footer_line = None;
@@ -481,10 +487,12 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
             app.resuming_session_id = None;
             app.login_hint = Some(LoginHint { method_name, method_description });
             app.pending_compact_clear = false;
+            app.is_compacting = false;
             app.cancelled_turn_pending_hint = false;
         }
         ClientEvent::ConnectionFailed(msg) => {
             app.pending_compact_clear = false;
+            app.is_compacting = false;
             app.cancelled_turn_pending_hint = false;
             app.resuming_session_id = None;
             app.input.clear();
@@ -500,6 +508,7 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
                     BlockCache::default(),
                     IncrementalMarkdown::from_complete(&msg),
                 )],
+                usage: None,
             });
             app.viewport.engage_auto_scroll();
             app.status = AppStatus::Ready;
@@ -507,6 +516,7 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
         }
         ClientEvent::SessionReplaced { session_id, cwd, model_name, mode, history_updates } => {
             app.pending_compact_clear = false;
+            app.is_compacting = false;
             apply_session_cwd(app, cwd);
             reset_for_new_session(app, session_id, model_name, mode);
             if !history_updates.is_empty() {
@@ -531,6 +541,7 @@ fn push_interrupted_hint(app: &mut App) {
             BlockCache::default(),
             IncrementalMarkdown::from_complete(CONVERSATION_INTERRUPTED_HINT),
         )],
+        usage: None,
     });
     app.viewport.engage_auto_scroll();
 }
@@ -544,6 +555,7 @@ fn push_turn_error_message(app: &mut App, error: &str) {
             BlockCache::default(),
             IncrementalMarkdown::from_complete(&message),
         )],
+        usage: None,
     });
     app.viewport.engage_auto_scroll();
 }
@@ -557,6 +569,7 @@ fn push_connection_error_message(app: &mut App, error: &str) {
             BlockCache::default(),
             IncrementalMarkdown::from_complete(&message),
         )],
+        usage: None,
     });
     app.viewport.engage_auto_scroll();
 }
@@ -596,6 +609,68 @@ fn apply_session_cwd(app: &mut App, cwd_raw: String) {
     sync_welcome_cwd(app);
 }
 
+fn update_session_usage(app: &mut App, usage: &model::UsageUpdate) -> MessageUsage {
+    let has_turn_usage_snapshot = usage.input_tokens.is_some()
+        || usage.output_tokens.is_some()
+        || usage.cache_read_tokens.is_some()
+        || usage.cache_write_tokens.is_some();
+    if has_turn_usage_snapshot {
+        app.session_usage.latest_input_tokens = usage.input_tokens;
+        app.session_usage.latest_output_tokens = usage.output_tokens;
+        app.session_usage.latest_cache_read_tokens = usage.cache_read_tokens;
+        app.session_usage.latest_cache_write_tokens = usage.cache_write_tokens;
+    }
+
+    if let Some(v) = usage.input_tokens {
+        app.session_usage.total_input_tokens =
+            app.session_usage.total_input_tokens.saturating_add(v);
+    }
+    if let Some(v) = usage.output_tokens {
+        app.session_usage.total_output_tokens =
+            app.session_usage.total_output_tokens.saturating_add(v);
+    }
+    if let Some(v) = usage.cache_read_tokens {
+        app.session_usage.total_cache_read_tokens =
+            app.session_usage.total_cache_read_tokens.saturating_add(v);
+    }
+    if let Some(v) = usage.cache_write_tokens {
+        app.session_usage.total_cache_write_tokens =
+            app.session_usage.total_cache_write_tokens.saturating_add(v);
+    }
+
+    if let Some(v) = usage.turn_cost_usd {
+        app.session_usage.total_cost_usd =
+            Some(app.session_usage.total_cost_usd.unwrap_or(0.0) + v);
+    } else if let Some(v) = usage.total_cost_usd {
+        app.session_usage.total_cost_usd = Some(v);
+    }
+
+    if let Some(v) = usage.context_window {
+        app.session_usage.context_window = Some(v);
+    }
+    if let Some(v) = usage.max_output_tokens {
+        app.session_usage.max_output_tokens = Some(v);
+    }
+
+    MessageUsage {
+        input_tokens: usage.input_tokens,
+        output_tokens: usage.output_tokens,
+        cache_read_tokens: usage.cache_read_tokens,
+        cache_write_tokens: usage.cache_write_tokens,
+        turn_cost_usd: usage.turn_cost_usd.or(usage.total_cost_usd),
+    }
+}
+
+fn attach_usage_to_latest_assistant_message(app: &mut App, usage: MessageUsage) {
+    for (idx, msg) in app.messages.iter_mut().enumerate().rev() {
+        if matches!(msg.role, MessageRole::Assistant) {
+            msg.usage = Some(usage);
+            app.mark_message_layout_dirty(idx);
+            break;
+        }
+    }
+}
+
 fn append_resume_user_message_chunk(app: &mut App, chunk: &model::ContentChunk) {
     let model::ContentBlock::Text(text) = &chunk.content else {
         return;
@@ -624,6 +699,7 @@ fn append_resume_user_message_chunk(app: &mut App, chunk: &model::ContentChunk) 
     app.messages.push(ChatMessage {
         role: MessageRole::User,
         blocks: vec![MessageBlock::Text(text.text.clone(), BlockCache::default(), incr)],
+        usage: None,
     });
 }
 
@@ -661,6 +737,8 @@ fn reset_for_new_session(
     app.mode = mode;
     app.login_hint = None;
     app.pending_compact_clear = false;
+    app.is_compacting = false;
+    app.session_usage = super::SessionUsageState::default();
     app.should_quit = false;
     app.files_accessed = 0;
     app.cancelled_turn_pending_hint = false;
@@ -835,6 +913,7 @@ fn handle_tool_call(app: &mut App, tc: model::ToolCall) {
         app.messages.push(ChatMessage {
             role: MessageRole::Assistant,
             blocks: vec![MessageBlock::ToolCall(Box::new(tool_info))],
+            usage: None,
         });
         app.index_tool_call(tc_id, new_idx, 0);
     }
@@ -883,6 +962,7 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
                         BlockCache::default(),
                         incr,
                     )],
+                    usage: None,
                 });
             }
         }
@@ -1051,12 +1131,50 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
             tracing::debug!("Config update: {:?}", config);
         }
         model::SessionUpdate::UsageUpdate(usage) => {
+            let message_usage = update_session_usage(app, &usage);
+            attach_usage_to_latest_assistant_message(app, message_usage);
+            app.cached_footer_line = None;
             tracing::debug!(
-                "UsageUpdate: used={} size={} cost={:?}",
-                usage.used,
-                usage.size,
-                usage.cost
+                "UsageUpdate: in={:?} out={:?} cache_read={:?} cache_write={:?} total_cost={:?} turn_cost={:?} ctx_window={:?}",
+                usage.input_tokens,
+                usage.output_tokens,
+                usage.cache_read_tokens,
+                usage.cache_write_tokens,
+                usage.total_cost_usd,
+                usage.turn_cost_usd,
+                usage.context_window
             );
+        }
+        model::SessionUpdate::SessionStatusUpdate(status) => {
+            // TODO(runtime-verification): confirm in real SDK sessions that compaction
+            // status updates are emitted consistently; if not, add a fallback indicator.
+            app.is_compacting = matches!(status, model::SessionStatus::Compacting);
+            app.cached_footer_line = None;
+            tracing::debug!("SessionStatusUpdate: compacting={}", app.is_compacting);
+        }
+        model::SessionUpdate::CompactionBoundary(boundary) => {
+            app.is_compacting = true;
+            app.session_usage.last_compaction_trigger = Some(boundary.trigger);
+            app.session_usage.last_compaction_pre_tokens = Some(boundary.pre_tokens);
+            app.cached_footer_line = None;
+            tracing::debug!(
+                "CompactionBoundary: trigger={:?} pre_tokens={}",
+                boundary.trigger,
+                boundary.pre_tokens
+            );
+            if matches!(boundary.trigger, model::CompactionTrigger::Auto) {
+                let text = "Auto-compacting context...";
+                app.messages.push(ChatMessage {
+                    role: MessageRole::System,
+                    blocks: vec![MessageBlock::Text(
+                        text.to_owned(),
+                        BlockCache::default(),
+                        IncrementalMarkdown::from_complete(text),
+                    )],
+                    usage: None,
+                });
+                app.viewport.engage_auto_scroll();
+            }
         }
     }
 }
@@ -1289,6 +1407,8 @@ fn session_update_name(update: &model::SessionUpdate) -> &'static str {
         model::SessionUpdate::CurrentModeUpdate(_) => "CurrentModeUpdate",
         model::SessionUpdate::ConfigOptionUpdate(_) => "ConfigOptionUpdate",
         model::SessionUpdate::UsageUpdate(_) => "UsageUpdate",
+        model::SessionUpdate::SessionStatusUpdate(_) => "SessionStatusUpdate",
+        model::SessionUpdate::CompactionBoundary(_) => "CompactionBoundary",
     }
 }
 
@@ -1326,7 +1446,7 @@ mod tests {
     }
 
     fn assistant_msg(blocks: Vec<MessageBlock>) -> ChatMessage {
-        ChatMessage { role: MessageRole::Assistant, blocks }
+        ChatMessage { role: MessageRole::Assistant, blocks, usage: None }
     }
 
     fn user_msg(text: &str) -> ChatMessage {
@@ -1337,6 +1457,7 @@ mod tests {
                 BlockCache::default(),
                 IncrementalMarkdown::default(),
             )],
+            usage: None,
         }
     }
 
@@ -2143,7 +2264,8 @@ mod tests {
         assert!(matches!(app.status, AppStatus::Error));
         assert_eq!(app.messages.len(), 2);
         assert!(matches!(app.messages[0].role, MessageRole::Welcome));
-        let Some(ChatMessage { role: MessageRole::System, blocks }) = app.messages.get(1) else {
+        let Some(ChatMessage { role: MessageRole::System, blocks, .. }) = app.messages.get(1)
+        else {
             panic!("expected system error message");
         };
         let Some(MessageBlock::Text(text, _, _)) = blocks.first() else {
@@ -2151,6 +2273,29 @@ mod tests {
         };
         assert!(text.contains("Turn failed: adapter failed"));
         assert!(text.contains("Press Ctrl+Q to quit and try again"));
+    }
+
+    #[test]
+    fn compaction_boundary_enables_compacting_and_records_boundary() {
+        let mut app = make_test_app();
+        assert!(!app.is_compacting);
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionUpdate(model::SessionUpdate::CompactionBoundary(
+                model::CompactionBoundary {
+                    trigger: model::CompactionTrigger::Manual,
+                    pre_tokens: 123_456,
+                },
+            )),
+        );
+
+        assert!(app.is_compacting);
+        assert_eq!(
+            app.session_usage.last_compaction_trigger,
+            Some(model::CompactionTrigger::Manual)
+        );
+        assert_eq!(app.session_usage.last_compaction_pre_tokens, Some(123_456));
     }
 
     #[test]

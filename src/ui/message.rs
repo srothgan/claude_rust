@@ -46,6 +46,7 @@ const FERRIS_SAYS: &[&str] = &[
 /// Snapshot of the app state needed by the spinner -- extracted before
 /// the message loop so we don't need `&App` (which conflicts with `&mut msg`).
 #[derive(Clone, Copy)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct SpinnerState {
     pub frame: usize,
     pub is_active: bool,
@@ -55,6 +56,62 @@ pub struct SpinnerState {
     /// True when the agent is thinking mid-turn (all tool calls finished,
     /// waiting for next action). Shows a trailing spinner after existing blocks.
     pub is_thinking_mid_turn: bool,
+    /// True while the SDK reports active compaction.
+    pub is_compacting: bool,
+}
+
+fn format_scaled_count(value: u64, divisor: u64, suffix: char) -> String {
+    // Integer arithmetic avoids precision-loss casts and keeps stable output.
+    let scaled_tenths = (u128::from(value) * 10 + u128::from(divisor / 2)) / u128::from(divisor);
+    let whole = scaled_tenths / 10;
+    let frac = scaled_tenths % 10;
+    if frac == 0 { format!("{whole}{suffix}") } else { format!("{whole}.{frac}{suffix}") }
+}
+
+fn format_token_count(value: u64) -> String {
+    if value >= 1_000_000 {
+        format_scaled_count(value, 1_000_000, 'M')
+    } else if value >= 1_000 {
+        format_scaled_count(value, 1_000, 'k')
+    } else {
+        value.to_string()
+    }
+}
+
+fn format_turn_usage(usage: &crate::app::MessageUsage) -> Option<String> {
+    let mut parts: Vec<String> = Vec::new();
+    let turn_tokens =
+        usage.input_tokens.unwrap_or(0).saturating_add(usage.output_tokens.unwrap_or(0));
+    if turn_tokens > 0 {
+        parts.push(format!("{} tok", format_token_count(turn_tokens)));
+    }
+    if let Some(cost) = usage.turn_cost_usd {
+        parts.push(format!("${cost:.2}"));
+    }
+    if parts.is_empty() { None } else { Some(parts.join(" / ")) }
+}
+
+fn assistant_role_label_line(msg: &ChatMessage, spinner: &SpinnerState) -> Line<'static> {
+    let mut spans = vec![Span::styled(
+        "Claude",
+        Style::default().fg(theme::ROLE_ASSISTANT).add_modifier(Modifier::BOLD),
+    )];
+
+    if let Some(usage) = msg.usage.as_ref()
+        && let Some(text) = format_turn_usage(usage)
+    {
+        spans.push(Span::styled(
+            format!("  ({text})"),
+            Style::default().fg(theme::DIM).add_modifier(Modifier::ITALIC),
+        ));
+    }
+
+    if spinner.is_compacting && spinner.is_last_message {
+        let ch = SPINNER_FRAMES[spinner.frame % SPINNER_FRAMES.len()];
+        spans.push(Span::styled(format!("  {ch} Compacting..."), Style::default().fg(theme::DIM)));
+    }
+
+    Line::from(spans)
 }
 
 /// Render a single chat message into a `Vec<Line>`, using per-block caches.
@@ -98,11 +155,7 @@ pub fn render_message(
             }
         }
         MessageRole::Assistant => {
-            // "Claude" label in Rust orange bold
-            out.push(Line::from(Span::styled(
-                "Claude",
-                Style::default().fg(theme::ROLE_ASSISTANT).add_modifier(Modifier::BOLD),
-            )));
+            out.push(assistant_role_label_line(msg, spinner));
 
             // Empty blocks + thinking = show spinner (only on the last message)
             if msg.blocks.is_empty() && spinner.is_active && spinner.is_last_message {
@@ -294,7 +347,12 @@ pub fn render_message_from_offset(
     let mut remaining_skip = skip_rows;
     let mut can_consume_skip = true;
 
-    emit_line_with_skip(role_label_line(&msg.role), out, &mut remaining_skip, can_consume_skip);
+    let role_line = if matches!(msg.role, MessageRole::Assistant) {
+        assistant_role_label_line(msg, spinner)
+    } else {
+        role_label_line(&msg.role)
+    };
+    emit_line_with_skip(role_line, out, &mut remaining_skip, can_consume_skip);
 
     match msg.role {
         MessageRole::Welcome => {
@@ -1307,6 +1365,7 @@ mod tests {
                 BlockCache::default(),
                 IncrementalMarkdown::from_complete(text),
             )],
+            usage: None,
         }
     }
 
@@ -1328,6 +1387,7 @@ mod tests {
             is_active: false,
             is_last_message: false,
             is_thinking_mid_turn: false,
+            is_compacting: false,
         };
 
         let mut measured_msg = make_text_message(MessageRole::User, &text);
@@ -1349,6 +1409,7 @@ mod tests {
             is_active: false,
             is_last_message: false,
             is_thinking_mid_turn: false,
+            is_compacting: false,
         };
 
         let mut measured_msg = make_text_message(MessageRole::Assistant, &text);
@@ -1372,6 +1433,7 @@ mod tests {
             is_active: false,
             is_last_message: false,
             is_thinking_mid_turn: false,
+            is_compacting: false,
         };
         let mut msg = make_text_message(MessageRole::User, "hello\nworld");
         let mut truth_msg = make_text_message(MessageRole::User, "hello\nworld");
@@ -1391,6 +1453,7 @@ mod tests {
             is_active: false,
             is_last_message: false,
             is_thinking_mid_turn: false,
+            is_compacting: false,
         };
         let mut measured_msg = make_welcome_message("claude-sonnet-4-5", "~/project");
         let mut truth_msg = make_welcome_message("claude-sonnet-4-5", "~/project");

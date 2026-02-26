@@ -101,6 +101,7 @@ fn push_system_message(app: &mut App, text: impl Into<String>) {
             BlockCache::default(),
             IncrementalMarkdown::from_complete(&text),
         )],
+        usage: None,
     });
     app.viewport.engage_auto_scroll();
 }
@@ -114,6 +115,7 @@ fn push_user_message(app: &mut App, text: impl Into<String>) {
             BlockCache::default(),
             IncrementalMarkdown::from_complete(&text),
         )],
+        usage: None,
     });
     app.viewport.engage_auto_scroll();
 }
@@ -148,6 +150,7 @@ pub(crate) fn clear_conversation_history(app: &mut App) {
     app.status = AppStatus::Ready;
     app.resuming_session_id = None;
     app.files_accessed = 0;
+    app.is_compacting = false;
     app.cancelled_turn_pending_hint = false;
 
     app.messages.clear();
@@ -423,6 +426,7 @@ pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
             // Forward `/compact` through the bridge via the normal prompt path, then clear
             // local history once the turn completes.
             app.pending_compact_clear = true;
+            app.is_compacting = true;
             false
         }
         "/mode" => {
@@ -713,6 +717,19 @@ mod tests {
     }
 
     #[test]
+    fn compact_with_active_session_sets_pending_and_compacting() {
+        let mut app = App::test_default();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        app.conn = Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+        app.session_id = Some(model::SessionId::new("session-1"));
+
+        let consumed = try_handle_submit(&mut app, "/compact");
+        assert!(!consumed);
+        assert!(app.pending_compact_clear);
+        assert!(app.is_compacting);
+    }
+
+    #[test]
     fn compact_with_args_returns_usage_message() {
         let mut app = App::test_default();
         app.messages.push(ChatMessage {
@@ -722,6 +739,7 @@ mod tests {
                 BlockCache::default(),
                 IncrementalMarkdown::from_complete("keep"),
             )],
+            usage: None,
         });
 
         let consumed = try_handle_submit(&mut app, "/compact now");

@@ -28,7 +28,7 @@ pub mod theme;
 mod todo;
 mod tool_call;
 
-use crate::app::App;
+use crate::app::{App, MessageRole};
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Color, Style};
@@ -115,6 +115,10 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 }
 
 const FOOTER_PAD: u16 = 2;
+const FOOTER_SPINNER_FRAMES: &[char] = &[
+    '\u{280B}', '\u{2819}', '\u{2839}', '\u{2838}', '\u{283C}', '\u{2834}', '\u{2826}', '\u{2827}',
+    '\u{2807}', '\u{280F}',
+];
 
 fn render_footer(frame: &mut Frame, area: Rect, app: &mut App) {
     let padded = Rect {
@@ -146,25 +150,102 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &mut App) {
 
     if let Some(line) = &app.cached_footer_line {
         frame.render_widget(Paragraph::new(line.clone()), padded);
-        render_footer_update_hint(frame, padded, line, app.update_check_hint.as_deref());
+        render_footer_right_info(frame, padded, line, app);
     }
 }
 
-fn render_footer_update_hint(
-    frame: &mut Frame,
-    area: Rect,
-    left_line: &Line<'_>,
-    hint: Option<&str>,
-) {
-    let Some(hint) = hint else {
+fn format_scaled_count(value: u64, divisor: u64, suffix: char) -> String {
+    // Integer arithmetic avoids precision-loss casts and keeps stable output.
+    let scaled_tenths = (u128::from(value) * 10 + u128::from(divisor / 2)) / u128::from(divisor);
+    let whole = scaled_tenths / 10;
+    let frac = scaled_tenths % 10;
+    if frac == 0 { format!("{whole}{suffix}") } else { format!("{whole}.{frac}{suffix}") }
+}
+
+fn format_token_count(value: u64) -> String {
+    if value >= 1_000_000 {
+        format_scaled_count(value, 1_000_000, 'M')
+    } else if value >= 1_000 {
+        format_scaled_count(value, 1_000, 'k')
+    } else {
+        value.to_string()
+    }
+}
+
+fn context_remaining_percent_rounded(used: u64, window: u64) -> Option<u64> {
+    if window == 0 {
+        return None;
+    }
+    let used_percent = (u128::from(used) * 100 + (u128::from(window) / 2)) / u128::from(window);
+    Some(100_u64.saturating_sub(used_percent.min(100) as u64))
+}
+
+fn context_text(window: Option<u64>, used: Option<u64>, show_new_session_default: bool) -> String {
+    if show_new_session_default {
+        return "100%".to_owned();
+    }
+
+    window
+        .zip(used)
+        .and_then(|(w, u)| context_remaining_percent_rounded(u, w))
+        .map_or_else(|| "-".to_owned(), |percent| format!("{percent}%"))
+}
+
+fn footer_telemetry_text(app: &App) -> Option<String> {
+    let mut parts: Vec<String> = Vec::new();
+    let show_defaults = app.session_id.is_some();
+    let totals = &app.session_usage;
+    let total_tokens = totals.total_input_tokens.saturating_add(totals.total_output_tokens);
+    if show_defaults || total_tokens > 0 {
+        parts.push(format!("Tokens: {}", format_token_count(total_tokens)));
+    }
+    if show_defaults || totals.total_cost_usd.is_some() {
+        parts.push(format!("Costs: ${:.2}", totals.total_cost_usd.unwrap_or(0.0)));
+    }
+    if show_defaults || totals.context_window.is_some() || totals.context_used_tokens().is_some() {
+        let is_new_session = app.session_id.is_some()
+            && app.messages.iter().all(|m| matches!(m.role, MessageRole::Welcome))
+            && totals.total_tokens() == 0
+            && totals.context_used_tokens().is_none();
+        let context_text =
+            context_text(totals.context_window, totals.context_used_tokens(), is_new_session);
+        parts.push(format!("Context: {context_text}"));
+    }
+
+    if parts.is_empty() && !app.is_compacting {
+        return None;
+    }
+
+    let mut text = parts.join(" | ");
+    if app.is_compacting {
+        let ch = FOOTER_SPINNER_FRAMES[app.spinner_frame % FOOTER_SPINNER_FRAMES.len()];
+        text = if text.is_empty() {
+            format!("{ch} Compacting...")
+        } else {
+            format!("{ch} Compacting...  {text}")
+        };
+    }
+    Some(text)
+}
+
+fn footer_right_text(app: &App) -> Option<(String, Color)> {
+    if let Some(text) = footer_telemetry_text(app) {
+        let color = if app.is_compacting { theme::RUST_ORANGE } else { theme::DIM };
+        return Some((text, color));
+    }
+    app.update_check_hint.as_ref().map(|hint| (hint.clone(), theme::RUST_ORANGE))
+}
+
+fn render_footer_right_info(frame: &mut Frame, area: Rect, left_line: &Line<'_>, app: &App) {
+    let Some((right_text, right_color)) = footer_right_text(app) else {
         return;
     };
-    if hint.trim().is_empty() || area.width == 0 {
+    if right_text.trim().is_empty() || area.width == 0 {
         return;
     }
 
     let left_width = line_display_width(left_line);
-    let hint_width = UnicodeWidthStr::width(hint);
+    let hint_width = UnicodeWidthStr::width(right_text.as_str());
     if hint_width == 0 {
         return;
     }
@@ -174,7 +255,7 @@ fn render_footer_update_hint(
         return;
     }
 
-    let line = Line::from(Span::styled(hint.to_owned(), Style::default().fg(theme::RUST_ORANGE)));
+    let line = Line::from(Span::styled(right_text, Style::default().fg(right_color)));
     frame.render_widget(Paragraph::new(line).alignment(Alignment::Right), area);
 }
 
@@ -245,5 +326,22 @@ mod tests {
     fn footer_hint_requires_gap_after_left_content() {
         assert!(footer_can_render_update_hint(40, 20, 10));
         assert!(!footer_can_render_update_hint(33, 20, 10));
+    }
+
+    #[test]
+    fn context_text_new_session_defaults_to_full() {
+        assert_eq!(context_text(None, None, true), "100%");
+        assert_eq!(context_text(Some(200_000), None, true), "100%");
+    }
+
+    #[test]
+    fn context_text_unknown_when_not_new_session() {
+        assert_eq!(context_text(None, None, false), "-");
+        assert_eq!(context_text(Some(200_000), None, false), "-");
+    }
+
+    #[test]
+    fn context_text_computes_percent_when_defined() {
+        assert_eq!(context_text(Some(200_000), Some(100_000), false), "50%");
     }
 }

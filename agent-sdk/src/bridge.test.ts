@@ -355,6 +355,26 @@ test("buildUsageUpdateFromResult maps SDK camelCase usage keys", () => {
   });
 });
 
+test("buildUsageUpdateFromResult includes cost and context window fields", () => {
+  const update = buildUsageUpdateFromResult({
+    total_cost_usd: 1.25,
+    modelUsage: {
+      "claude-sonnet-4-5": {
+        contextWindow: 200000,
+        maxOutputTokens: 64000,
+      },
+    },
+  });
+  assert.deepEqual(update, {
+    type: "usage_update",
+    usage: {
+      total_cost_usd: 1.25,
+      context_window: 200000,
+      max_output_tokens: 64000,
+    },
+  });
+});
+
 test("looksLikeAuthRequired detects login hints", () => {
   assert.equal(looksLikeAuthRequired("Please run /login to continue"), true);
   assert.equal(looksLikeAuthRequired("normal tool output"), false);

@@ -76,6 +76,48 @@ pub struct RecentSessionInfo {
     pub updated_at: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct MessageUsage {
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub cache_read_tokens: Option<u64>,
+    pub cache_write_tokens: Option<u64>,
+    pub turn_cost_usd: Option<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct SessionUsageState {
+    pub total_input_tokens: u64,
+    pub total_output_tokens: u64,
+    pub total_cache_read_tokens: u64,
+    pub total_cache_write_tokens: u64,
+    pub latest_input_tokens: Option<u64>,
+    pub latest_output_tokens: Option<u64>,
+    pub latest_cache_read_tokens: Option<u64>,
+    pub latest_cache_write_tokens: Option<u64>,
+    pub total_cost_usd: Option<f64>,
+    pub context_window: Option<u64>,
+    pub max_output_tokens: Option<u64>,
+    pub last_compaction_trigger: Option<model::CompactionTrigger>,
+    pub last_compaction_pre_tokens: Option<u64>,
+}
+
+impl SessionUsageState {
+    #[must_use]
+    pub fn total_tokens(&self) -> u64 {
+        self.total_input_tokens + self.total_output_tokens
+    }
+
+    #[must_use]
+    pub fn context_used_tokens(&self) -> Option<u64> {
+        let input = self.latest_input_tokens?;
+        let output = self.latest_output_tokens?;
+        let cache_read = self.latest_cache_read_tokens.unwrap_or(0);
+        let cache_write = self.latest_cache_write_tokens.unwrap_or(0);
+        Some(input.saturating_add(output).saturating_add(cache_read).saturating_add(cache_write))
+    }
+}
+
 #[allow(clippy::struct_excessive_bools)]
 pub struct App {
     pub messages: Vec<ChatMessage>,
@@ -188,6 +230,10 @@ pub struct App {
     pub cached_footer_line: Option<ratatui::text::Line<'static>>,
     /// Optional startup update-check hint rendered at the footer's right edge.
     pub update_check_hint: Option<String>,
+    /// Session-wide usage and cost telemetry from the bridge.
+    pub session_usage: SessionUsageState,
+    /// True while the SDK reports active compaction.
+    pub is_compacting: bool,
 
     /// Indexed terminal tool calls: `(terminal_id, msg_idx, block_idx)`.
     /// Avoids O(n*m) scan of all messages/blocks every frame.
@@ -412,6 +458,8 @@ impl App {
             cached_header_line: None,
             cached_footer_line: None,
             update_check_hint: None,
+            session_usage: SessionUsageState::default(),
+            is_compacting: false,
             terminal_tool_calls: Vec::new(),
             needs_redraw: true,
             perf: None,
@@ -717,6 +765,7 @@ pub struct ScrollbarDragState {
 pub struct ChatMessage {
     pub role: MessageRole,
     pub blocks: Vec<MessageBlock>,
+    pub usage: Option<MessageUsage>,
 }
 
 impl ChatMessage {
@@ -739,6 +788,7 @@ impl ChatMessage {
                 recent_sessions: recent_sessions.to_vec(),
                 cache: BlockCache::default(),
             })],
+            usage: None,
         }
     }
 }
@@ -1755,6 +1805,44 @@ mod tests {
         assert_eq!(a.width, b.width);
         assert_eq!(a.auto_scroll, b.auto_scroll);
         assert_eq!(a.message_heights.len(), b.message_heights.len());
+    }
+
+    #[test]
+    fn session_usage_total_tokens_excludes_cache_tokens() {
+        let usage = SessionUsageState {
+            total_input_tokens: 1_000,
+            total_output_tokens: 2_000,
+            total_cache_read_tokens: 50_000,
+            total_cache_write_tokens: 10_000,
+            ..SessionUsageState::default()
+        };
+
+        assert_eq!(usage.total_tokens(), 3_000);
+    }
+
+    #[test]
+    fn session_usage_context_used_tokens_ignores_compaction_pre_tokens() {
+        let usage = SessionUsageState {
+            latest_input_tokens: Some(3_000),
+            latest_output_tokens: Some(1_500),
+            latest_cache_read_tokens: Some(50_000),
+            latest_cache_write_tokens: Some(10_000),
+            last_compaction_pre_tokens: Some(190_000),
+            ..SessionUsageState::default()
+        };
+
+        assert_eq!(usage.context_used_tokens(), Some(64_500));
+    }
+
+    #[test]
+    fn session_usage_context_used_tokens_requires_latest_turn_snapshot() {
+        let usage = SessionUsageState {
+            total_input_tokens: 99_000,
+            total_output_tokens: 11_000,
+            ..SessionUsageState::default()
+        };
+
+        assert_eq!(usage.context_used_tokens(), None);
     }
 
     #[test]

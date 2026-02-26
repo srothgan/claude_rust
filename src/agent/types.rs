@@ -37,13 +37,31 @@ pub struct AvailableCommand {
     pub input_hint: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[allow(clippy::struct_field_names)]
 pub struct UsageUpdate {
     pub input_tokens: Option<u64>,
     pub output_tokens: Option<u64>,
     pub cache_read_tokens: Option<u64>,
     pub cache_write_tokens: Option<u64>,
+    pub total_cost_usd: Option<f64>,
+    pub turn_cost_usd: Option<f64>,
+    pub context_window: Option<u64>,
+    pub max_output_tokens: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionStatus {
+    Compacting,
+    Idle,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompactionTrigger {
+    Manual,
+    Auto,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -105,7 +123,7 @@ pub struct PlanEntry {
     pub active_form: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SessionUpdate {
     AgentMessageChunk { content: ContentBlock },
@@ -118,6 +136,8 @@ pub enum SessionUpdate {
     CurrentModeUpdate { current_mode_id: String },
     ConfigOptionUpdate { option_id: String, value: serde_json::Value },
     UsageUpdate { usage: UsageUpdate },
+    SessionStatusUpdate { status: SessionStatus },
+    CompactionBoundary { trigger: CompactionTrigger, pre_tokens: u64 },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

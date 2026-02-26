@@ -54,9 +54,14 @@ pub(super) fn submit_input(app: &mut App) {
             BlockCache::default(),
             IncrementalMarkdown::from_complete(&text),
         )],
+        usage: None,
     });
     // Create empty assistant message immediately -- message.rs shows thinking indicator
-    app.messages.push(ChatMessage { role: MessageRole::Assistant, blocks: Vec::new() });
+    app.messages.push(ChatMessage {
+        role: MessageRole::Assistant,
+        blocks: Vec::new(),
+        usage: None,
+    });
     app.input.clear();
     app.status = AppStatus::Thinking;
     app.viewport.engage_auto_scroll();

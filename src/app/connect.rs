@@ -115,6 +115,8 @@ pub fn create_app(cli: &Cli) -> App {
         cached_header_line: None,
         cached_footer_line: None,
         update_check_hint: None,
+        session_usage: super::SessionUsageState::default(),
+        is_compacting: false,
         terminal_tool_calls: Vec::new(),
         needs_redraw: true,
         perf: cli
@@ -460,10 +462,31 @@ fn map_session_update(update: types::SessionUpdate) -> Option<model::SessionUpda
         }
         types::SessionUpdate::ConfigOptionUpdate { .. } => None,
         types::SessionUpdate::UsageUpdate { usage } => {
-            let used = usage.input_tokens.unwrap_or(0) + usage.output_tokens.unwrap_or(0);
-            let size =
-                used + usage.cache_read_tokens.unwrap_or(0) + usage.cache_write_tokens.unwrap_or(0);
-            Some(model::SessionUpdate::UsageUpdate(model::UsageUpdate::new(used, size)))
+            Some(model::SessionUpdate::UsageUpdate(model::UsageUpdate {
+                input_tokens: usage.input_tokens,
+                output_tokens: usage.output_tokens,
+                cache_read_tokens: usage.cache_read_tokens,
+                cache_write_tokens: usage.cache_write_tokens,
+                total_cost_usd: usage.total_cost_usd,
+                turn_cost_usd: usage.turn_cost_usd,
+                context_window: usage.context_window,
+                max_output_tokens: usage.max_output_tokens,
+            }))
+        }
+        types::SessionUpdate::SessionStatusUpdate { status } => {
+            Some(model::SessionUpdate::SessionStatusUpdate(match status {
+                types::SessionStatus::Compacting => model::SessionStatus::Compacting,
+                types::SessionStatus::Idle => model::SessionStatus::Idle,
+            }))
+        }
+        types::SessionUpdate::CompactionBoundary { trigger, pre_tokens } => {
+            Some(model::SessionUpdate::CompactionBoundary(model::CompactionBoundary {
+                trigger: match trigger {
+                    types::CompactionTrigger::Manual => model::CompactionTrigger::Manual,
+                    types::CompactionTrigger::Auto => model::CompactionTrigger::Auto,
+                },
+                pre_tokens,
+            }))
         }
     }
 }

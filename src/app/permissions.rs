@@ -406,6 +406,7 @@ mod tests {
         ChatMessage {
             role: MessageRole::Assistant,
             blocks: vec![MessageBlock::ToolCall(Box::new(tc))],
+            usage: None,
         }
     }
 
