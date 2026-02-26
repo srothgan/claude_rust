@@ -23,8 +23,6 @@ use crate::ui::tool_call;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Paragraph, Wrap};
-use std::time::{SystemTime, UNIX_EPOCH};
-use unicode_width::UnicodeWidthStr;
 
 const SPINNER_FRAMES: &[char] = &[
     '\u{280B}', '\u{2819}', '\u{2839}', '\u{2838}', '\u{283C}', '\u{2834}', '\u{2826}', '\u{2827}',
@@ -555,239 +553,14 @@ fn thinking_line(frame: usize) -> Line<'static> {
     Line::from(Span::styled(format!("{ch} Thinking..."), Style::default().fg(theme::DIM)))
 }
 
-fn is_leap_year(year: i32) -> bool {
-    (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
-}
-
-fn days_in_month(year: i32, month: u32) -> u32 {
-    match month {
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-        4 | 6 | 9 | 11 => 30,
-        2 => {
-            if is_leap_year(year) {
-                29
-            } else {
-                28
-            }
-        }
-        _ => 0,
-    }
-}
-
-fn parse_date_ymd(raw: &str) -> Option<(i32, u32, u32)> {
-    let mut parts = raw.split('-');
-    let year: i32 = parts.next()?.parse().ok()?;
-    let month: u32 = parts.next()?.parse().ok()?;
-    let day: u32 = parts.next()?.parse().ok()?;
-    if parts.next().is_some() || !(1..=12).contains(&month) {
-        return None;
-    }
-    let max_day = days_in_month(year, month);
-    if day == 0 || day > max_day {
-        return None;
-    }
-    Some((year, month, day))
-}
-
-fn parse_time_hms(raw: &str) -> Option<(u32, u32, u32)> {
-    let mut parts = raw.split(':');
-    let hour: u32 = parts.next()?.parse().ok()?;
-    let minute: u32 = parts.next()?.parse().ok()?;
-    let sec_part = parts.next().unwrap_or("0");
-    if parts.next().is_some() {
-        return None;
-    }
-    let second_str = sec_part.split('.').next().unwrap_or(sec_part);
-    let second: u32 = second_str.parse().ok()?;
-    if hour > 23 || minute > 59 || second > 59 {
-        return None;
-    }
-    Some((hour, minute, second))
-}
-
-fn parse_timezone_offset_seconds(raw: &str) -> Option<i64> {
-    if raw.eq_ignore_ascii_case("Z") {
-        return Some(0);
-    }
-    if raw.len() != 6 || (!raw.starts_with('+') && !raw.starts_with('-')) {
-        return None;
-    }
-    let bytes = raw.as_bytes();
-    if bytes.get(3).copied() != Some(b':') {
-        return None;
-    }
-    let hours: i64 = raw[1..3].parse().ok()?;
-    let minutes: i64 = raw[4..6].parse().ok()?;
-    if hours > 23 || minutes > 59 {
-        return None;
-    }
-    let sign = if raw.starts_with('-') { -1 } else { 1 };
-    Some(sign * (hours * 3600 + minutes * 60))
-}
-
-fn days_since_unix_epoch(year: i32, month: u32, day: u32) -> Option<i64> {
-    let month_i32 = i32::try_from(month).ok()?;
-    let day_i32 = i32::try_from(day).ok()?;
-    let y = if month <= 2 { year - 1 } else { year };
-    let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = y - era * 400;
-    let mp = month_i32 + if month > 2 { -3 } else { 9 };
-    let doy = (153 * mp + 2) / 5 + day_i32 - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    Some(i64::from(era) * 146_097 + i64::from(doe) - 719_468)
-}
-
-fn parse_timestamp_epoch_seconds(raw: &str) -> Option<i64> {
-    let trimmed = raw.trim();
-    let (date_raw, time_and_zone_raw) =
-        trimmed.split_once('T').or_else(|| trimmed.split_once(' '))?;
-    let (year, month, day) = parse_date_ymd(date_raw)?;
-
-    let tz_split = time_and_zone_raw
-        .char_indices()
-        .find(|(idx, ch)| *idx >= 5 && matches!(ch, 'Z' | 'z' | '+' | '-'))
-        .map(|(idx, _)| idx);
-
-    let (time_raw, tz_raw) = match tz_split {
-        Some(idx) => (&time_and_zone_raw[..idx], Some(&time_and_zone_raw[idx..])),
-        None => (time_and_zone_raw, None),
-    };
-    let (hour, minute, second) = parse_time_hms(time_raw)?;
-    let tz_offset = tz_raw.map_or(Some(0), parse_timezone_offset_seconds)?;
-
-    let days = days_since_unix_epoch(year, month, day)?;
-    let seconds_in_day = i64::from(hour) * 3600 + i64::from(minute) * 60 + i64::from(second);
-    days.checked_mul(86_400)?.checked_add(seconds_in_day)?.checked_sub(tz_offset)
-}
-
-fn now_epoch_seconds() -> i64 {
-    match SystemTime::now().duration_since(UNIX_EPOCH) {
-        Ok(duration) => i64::try_from(duration.as_secs()).unwrap_or(i64::MAX),
-        Err(_) => 0,
-    }
-}
-
-fn format_relative_age(epoch_seconds: i64, now_seconds: i64) -> String {
-    let delta_seconds = if now_seconds >= epoch_seconds {
-        now_seconds - epoch_seconds
-    } else {
-        epoch_seconds - now_seconds
-    };
-
-    if delta_seconds < 5 * 60 {
-        return "<5m".to_owned();
-    }
-    if delta_seconds < 60 * 60 {
-        let minutes = delta_seconds / 60;
-        return format!("{minutes}m");
-    }
-    if delta_seconds < 24 * 60 * 60 {
-        let hours = delta_seconds / (60 * 60);
-        return format!("{hours}h");
-    }
-
-    let total_hours = delta_seconds / (60 * 60);
-    let days = total_hours / 24;
-    let hours = total_hours % 24;
-    format!("{days}d {hours}h")
-}
-
-fn format_recent_updated_at(raw: Option<&str>) -> String {
-    let Some(ts) = raw else {
-        return "--".to_owned();
-    };
-    let Some(epoch_seconds) = parse_timestamp_epoch_seconds(ts) else {
-        return ts.to_owned();
-    };
-    format_relative_age(epoch_seconds, now_epoch_seconds())
-}
-
-fn truncate_recent_title(title: &str, max_chars: usize) -> String {
-    let count = title.chars().count();
-    if count <= max_chars {
-        return title.to_owned();
-    }
-    if max_chars <= 3 {
-        return ".".repeat(max_chars);
-    }
-    let keep = max_chars - 3;
-    let mut out: String = title.chars().take(keep).collect();
-    out.push_str("...");
-    out
-}
-
-fn welcome_recent_lines(block: &WelcomeBlock) -> Vec<String> {
-    if block.recent_sessions.is_empty() {
-        return Vec::new();
-    }
-    let mut lines = Vec::with_capacity(block.recent_sessions.len().min(5) * 2 + 1);
-    lines.push("Recent sessions:".to_owned());
-    for session in block.recent_sessions.iter().take(5) {
-        let time = format_recent_updated_at(session.updated_at.as_deref());
-        let title = session.title.as_deref().map_or("", str::trim);
-        let title = if title.is_empty() {
-            "(no message)".to_owned()
-        } else {
-            truncate_recent_title(title, 56)
-        };
-        lines.push(format!("{time} - {title}"));
-        lines.push(session.session_id.clone());
-    }
-    lines
-}
-
-fn two_column_line(
-    left: String,
-    left_style: Style,
-    right: Option<String>,
-    right_style: Style,
-    right_start_col: usize,
-) -> Line<'static> {
-    let Some(right_text) = right else {
-        return Line::from(Span::styled(left, left_style));
-    };
-    let left_w = UnicodeWidthStr::width(left.as_str());
-    if left_w + 2 >= right_start_col {
-        return Line::from(Span::styled(left, left_style));
-    }
-    let gap = " ".repeat(right_start_col - left_w);
-    Line::from(vec![
-        Span::styled(left, left_style),
-        Span::raw(gap),
-        Span::styled(right_text, right_style),
-    ])
-}
-
-fn welcome_lines(block: &WelcomeBlock, width: u16) -> Vec<Line<'static>> {
+fn welcome_lines(block: &WelcomeBlock, _width: u16) -> Vec<Line<'static>> {
     let pad = "  ";
     let mut lines = Vec::new();
-    let right_lines = welcome_recent_lines(block);
-    let can_render_right = !right_lines.is_empty() && width >= 90;
-    let right_column_start = ((width as usize) * 56 / 100).clamp(50, 72);
-    let recent_style = Style::default().fg(Color::Rgb(205, 205, 205));
-    let recent_header_style = recent_style.add_modifier(Modifier::BOLD);
-
-    for (idx, art_line) in FERRIS_SAYS.iter().enumerate() {
-        let right = if can_render_right { right_lines.get(idx).cloned() } else { None };
-        let right_style = if idx == 0 { recent_header_style } else { recent_style };
-        lines.push(two_column_line(
+    for art_line in FERRIS_SAYS {
+        lines.push(Line::from(Span::styled(
             format!("{pad}{art_line}"),
             Style::default().fg(theme::RUST_ORANGE),
-            right,
-            right_style,
-            right_column_start,
-        ));
-    }
-    if can_render_right && right_lines.len() > FERRIS_SAYS.len() {
-        for row in right_lines.iter().skip(FERRIS_SAYS.len()) {
-            lines.push(two_column_line(
-                pad.to_owned(),
-                Style::default(),
-                Some(row.clone()),
-                recent_style,
-                right_column_start,
-            ));
-        }
+        )));
     }
 
     lines.push(Line::default());
@@ -812,14 +585,6 @@ fn welcome_lines(block: &WelcomeBlock, width: u16) -> Vec<Line<'static>> {
         ),
         Style::default().fg(theme::DIM),
     )));
-
-    if !can_render_right && !right_lines.is_empty() {
-        lines.push(Line::default());
-        lines.push(Line::from(Span::styled(format!("{pad}Recent sessions:"), recent_header_style)));
-        for row in right_lines.into_iter().skip(1).take(10) {
-            lines.push(Line::from(Span::styled(format!("{pad}{row}"), recent_style)));
-        }
-    }
     lines.push(Line::default());
 
     lines
@@ -1014,9 +779,7 @@ fn force_markdown_line_breaks(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{
-        ChatMessage, IncrementalMarkdown, MessageBlock, RecentSessionInfo, WelcomeBlock,
-    };
+    use crate::app::{ChatMessage, IncrementalMarkdown, MessageBlock};
     use pretty_assertions::assert_eq;
     use ratatui::widgets::{Paragraph, Wrap};
 
@@ -1182,107 +945,26 @@ mod tests {
     }
 
     #[test]
-    fn parse_timestamp_epoch_seconds_supports_utc_iso() {
-        let parsed = parse_timestamp_epoch_seconds("1970-01-01T00:00:00Z");
-        assert_eq!(parsed, Some(0));
-    }
-
-    #[test]
-    fn parse_timestamp_epoch_seconds_supports_offset_iso() {
-        let parsed = parse_timestamp_epoch_seconds("1970-01-01T01:00:00+01:00");
-        assert_eq!(parsed, Some(0));
-    }
-
-    #[test]
-    fn format_relative_age_uses_minutes_hours_and_days_steps() {
-        assert_eq!(format_relative_age(1_000, 1_000 + 60), "<5m");
-        assert_eq!(format_relative_age(1_000, 1_000 + 5 * 60), "5m");
-        assert_eq!(format_relative_age(1_000, 1_000 + 3 * 60 * 60), "3h");
-        assert_eq!(format_relative_age(1_000, 1_000 + 49 * 60 * 60), "2d 1h");
-    }
-
-    #[test]
-    fn welcome_recent_lines_limits_to_five_and_uses_time_then_id_rows() {
-        let block = WelcomeBlock {
-            model_name: "m".to_owned(),
-            cwd: "/cwd".to_owned(),
-            recent_sessions: vec![
-                RecentSessionInfo {
-                    session_id: "11111111-1111-1111-1111-111111111111".to_owned(),
-                    cwd: "/a".to_owned(),
-                    title: Some("Fix bug".to_owned()),
-                    updated_at: None,
-                },
-                RecentSessionInfo {
-                    session_id: "22222222-2222-2222-2222-222222222222".to_owned(),
-                    cwd: "/b".to_owned(),
-                    title: None,
-                    updated_at: None,
-                },
-                RecentSessionInfo {
-                    session_id: "33333333-3333-3333-3333-333333333333".to_owned(),
-                    cwd: "/c".to_owned(),
-                    title: Some("Refactor".to_owned()),
-                    updated_at: None,
-                },
-                RecentSessionInfo {
-                    session_id: "44444444-4444-4444-4444-444444444444".to_owned(),
-                    cwd: "/d".to_owned(),
-                    title: Some("Fourth".to_owned()),
-                    updated_at: None,
-                },
-                RecentSessionInfo {
-                    session_id: "55555555-5555-5555-5555-555555555555".to_owned(),
-                    cwd: "/e".to_owned(),
-                    title: Some("Fifth".to_owned()),
-                    updated_at: None,
-                },
-                RecentSessionInfo {
-                    session_id: "66666666-6666-6666-6666-666666666666".to_owned(),
-                    cwd: "/f".to_owned(),
-                    title: Some("Should be hidden".to_owned()),
-                    updated_at: None,
-                },
-            ],
-            cache: BlockCache::default(),
-        };
-
-        let lines = welcome_recent_lines(&block);
-        assert_eq!(lines[0], "Recent sessions:");
-        assert_eq!(lines[1], "-- - Fix bug");
-        assert_eq!(lines[2], "11111111-1111-1111-1111-111111111111");
-        assert_eq!(lines[3], "-- - (no message)");
-        assert_eq!(lines[4], "22222222-2222-2222-2222-222222222222");
-        assert_eq!(lines[5], "-- - Refactor");
-        assert_eq!(lines[6], "33333333-3333-3333-3333-333333333333");
-        assert_eq!(lines[7], "-- - Fourth");
-        assert_eq!(lines[8], "44444444-4444-4444-4444-444444444444");
-        assert_eq!(lines[9], "-- - Fifth");
-        assert_eq!(lines[10], "55555555-5555-5555-5555-555555555555");
-        assert_eq!(lines.len(), 11);
-    }
-
-    #[test]
-    fn welcome_recent_lines_truncates_long_title() {
-        let long_title =
-            "A very long title that should be truncated for readability in the overview panel";
-        let block = WelcomeBlock {
-            model_name: "m".to_owned(),
-            cwd: "/cwd".to_owned(),
-            recent_sessions: vec![RecentSessionInfo {
+    fn welcome_lines_do_not_render_recent_sessions_section() {
+        let message = ChatMessage::welcome_with_recent(
+            "claude-sonnet-4-5",
+            "/cwd",
+            &[crate::app::RecentSessionInfo {
                 session_id: "11111111-1111-1111-1111-111111111111".to_owned(),
                 cwd: "/a".to_owned(),
-                title: Some(long_title.to_owned()),
+                title: Some("Title".to_owned()),
                 updated_at: None,
             }],
-            cache: BlockCache::default(),
+        );
+        let MessageBlock::Welcome(block) = &message.blocks[0] else {
+            panic!("expected welcome block");
         };
-
-        let lines = welcome_recent_lines(&block);
-        assert_eq!(lines[0], "Recent sessions:");
-        assert!(lines[1].starts_with("-- - "));
-        assert!(lines[1].ends_with("..."));
-        assert_eq!(lines[2], "11111111-1111-1111-1111-111111111111");
+        let rendered = welcome_lines(block, 120);
+        let lines: Vec<String> = rendered
+            .into_iter()
+            .map(|line| line.spans.into_iter().map(|s| s.content).collect())
+            .collect();
+        assert!(!lines.iter().any(|line| line.contains("Recent sessions")));
     }
 
     // force_markdown_line_breaks

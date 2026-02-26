@@ -124,7 +124,13 @@ pub fn render(frame: &mut Frame, input_area: Rect, app: &App) {
         Dropdown::Slash(s) => {
             let visible_count = s.candidates.len().min(MAX_VISIBLE);
             let (start, end) = s.dialog.visible_range(s.candidates.len(), MAX_VISIBLE);
-            (visible_count, start, end, format!(" Commands ({}) ", s.candidates.len()))
+            let title = match &s.context {
+                slash::SlashContext::CommandName => format!(" Commands ({}) ", s.candidates.len()),
+                slash::SlashContext::Argument { command, .. } => {
+                    format!(" {} Args ({}) ", command, s.candidates.len())
+                }
+            };
+            (visible_count, start, end, title)
         }
     };
 
@@ -168,6 +174,8 @@ pub fn render(frame: &mut Frame, input_area: Rect, app: &App) {
             }
         }
         Dropdown::Slash(s) => {
+            let query_lower = s.query.to_lowercase();
+            let command_context = matches!(s.context, slash::SlashContext::CommandName);
             for (i, candidate) in s.candidates[start..end].iter().enumerate() {
                 let global_idx = start + i;
                 let is_selected = global_idx == s.dialog.selected;
@@ -181,18 +189,35 @@ pub fn render(frame: &mut Frame, input_area: Rect, app: &App) {
                     spans.push(Span::raw("   "));
                 }
 
-                let query = &s.query;
-                let command_name = &candidate.name;
-                let command_body = command_name.strip_prefix('/').unwrap_or(command_name);
-                if query.is_empty() {
-                    spans.push(Span::raw(command_name.clone()));
+                if s.query.is_empty() {
+                    spans.push(Span::raw(candidate.primary.clone()));
+                } else if command_context {
+                    let command_name = &candidate.primary;
+                    let command_body = command_name.strip_prefix('/').unwrap_or(command_name);
+                    if let Some(match_start) = command_body.to_lowercase().find(&query_lower) {
+                        let start_idx = 1 + match_start;
+                        let before = &command_name[..start_idx];
+                        let matched = &command_name[start_idx..start_idx + s.query.len()];
+                        let after = &command_name[start_idx + s.query.len()..];
+                        if !before.is_empty() {
+                            spans.push(Span::raw(before.to_owned()));
+                        }
+                        spans.push(Span::styled(
+                            matched.to_owned(),
+                            Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
+                        ));
+                        if !after.is_empty() {
+                            spans.push(Span::raw(after.to_owned()));
+                        }
+                    } else {
+                        spans.push(Span::raw(command_name.clone()));
+                    }
                 } else if let Some(match_start) =
-                    command_body.to_lowercase().find(&query.to_lowercase())
+                    candidate.primary.to_lowercase().find(&query_lower)
                 {
-                    let start_idx = 1 + match_start;
-                    let before = &command_name[..start_idx];
-                    let matched = &command_name[start_idx..start_idx + query.len()];
-                    let after = &command_name[start_idx + query.len()..];
+                    let before = &candidate.primary[..match_start];
+                    let matched = &candidate.primary[match_start..match_start + s.query.len()];
+                    let after = &candidate.primary[match_start + s.query.len()..];
                     if !before.is_empty() {
                         spans.push(Span::raw(before.to_owned()));
                     }
@@ -204,15 +229,12 @@ pub fn render(frame: &mut Frame, input_area: Rect, app: &App) {
                         spans.push(Span::raw(after.to_owned()));
                     }
                 } else {
-                    spans.push(Span::raw(command_name.clone()));
+                    spans.push(Span::raw(candidate.primary.clone()));
                 }
 
-                if !candidate.description.is_empty() {
+                if let Some(secondary) = &candidate.secondary {
                     spans.push(Span::styled("  ", Style::default().fg(theme::DIM)));
-                    spans.push(Span::styled(
-                        candidate.description.clone(),
-                        Style::default().fg(theme::DIM),
-                    ));
+                    spans.push(Span::styled(secondary.clone(), Style::default().fg(theme::DIM)));
                 }
                 lines.push(Line::from(spans));
             }

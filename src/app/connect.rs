@@ -453,7 +453,15 @@ fn map_session_update(update: types::SessionUpdate) -> Option<model::SessionUpda
             model::SessionUpdate::AvailableCommandsUpdate(model::AvailableCommandsUpdate::new(
                 commands
                     .into_iter()
-                    .map(|cmd| model::AvailableCommand::new(cmd.name, cmd.description))
+                    .map(|cmd| {
+                        let mut mapped = model::AvailableCommand::new(cmd.name, cmd.description);
+                        if let Some(input_hint) = cmd.input_hint
+                            && !input_hint.trim().is_empty()
+                        {
+                            mapped = mapped.input_hint(input_hint);
+                        }
+                        mapped
+                    })
                     .collect(),
             )),
         ),

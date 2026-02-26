@@ -633,11 +633,7 @@ fn handle_slash_key(app: &mut App, key: KeyEvent) {
         }
         (KeyCode::Char(c), m) if is_printable_text_modifiers(m) => {
             let _ = app.input.textarea_insert_char(c);
-            if c.is_whitespace() {
-                slash::deactivate(app);
-            } else {
-                slash::update_query(app);
-            }
+            slash::update_query(app);
         }
         _ => {
             slash::deactivate(app);
