@@ -9,6 +9,7 @@ import {
   createToolCall,
   extractSessionHistoryUpdatesFromJsonl,
   looksLikeAuthRequired,
+  normalizeToolResultText,
   normalizeToolKind,
   parseCommandEnvelope,
   permissionOptionsFromSuggestions,
@@ -112,6 +113,42 @@ test("buildToolResultFields extracts plain-text output", () => {
   assert.equal(fields.raw_output, "line 1\nline 2");
   assert.deepEqual(fields.content, [
     { type: "content", content: { type: "text", text: "line 1\nline 2" } },
+  ]);
+});
+
+test("normalizeToolResultText collapses persisted-output payload to first meaningful line", () => {
+  const normalized = normalizeToolResultText(`
+<persisted-output>
+  │ Output too large (132.5KB). Full output saved to: C:\\tmp\\tool-results\\bbf63b9.txt
+  │
+  │ Preview (first 2KB):
+  │
+  │ {"huge":"payload"}
+  │ ...
+  │ </persisted-output>
+`);
+  assert.equal(normalized, "Output too large (132.5KB). Full output saved to: C:\\tmp\\tool-results\\bbf63b9.txt");
+});
+
+test("buildToolResultFields uses normalized persisted-output text", () => {
+  const fields = buildToolResultFields(
+    false,
+    `<persisted-output>
+      │ Output too large (14KB). Full output saved to: C:\\tmp\\tool-results\\x.txt
+      │
+      │ Preview (first 2KB):
+      │ {"k":"v"}
+      │ </persisted-output>`,
+  );
+  assert.equal(fields.raw_output, "Output too large (14KB). Full output saved to: C:\\tmp\\tool-results\\x.txt");
+  assert.deepEqual(fields.content, [
+    {
+      type: "content",
+      content: {
+        type: "text",
+        text: "Output too large (14KB). Full output saved to: C:\\tmp\\tool-results\\x.txt",
+      },
+    },
   ]);
 });
 

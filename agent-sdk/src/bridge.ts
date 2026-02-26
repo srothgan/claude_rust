@@ -1000,6 +1000,50 @@ export function extractText(value: unknown): string {
   return "";
 }
 
+const PERSISTED_OUTPUT_OPEN_TAG = "<persisted-output>";
+const PERSISTED_OUTPUT_CLOSE_TAG = "</persisted-output>";
+
+function extractPersistedOutputInnerText(text: string): string | null {
+  const lower = text.toLowerCase();
+  const openIdx = lower.indexOf(PERSISTED_OUTPUT_OPEN_TAG);
+  if (openIdx < 0) {
+    return null;
+  }
+  const bodyStart = openIdx + PERSISTED_OUTPUT_OPEN_TAG.length;
+  const closeIdx = lower.indexOf(PERSISTED_OUTPUT_CLOSE_TAG, bodyStart);
+  if (closeIdx < 0) {
+    return null;
+  }
+  return text.slice(bodyStart, closeIdx);
+}
+
+function persistedOutputFirstLine(text: string): string | null {
+  const inner = extractPersistedOutputInnerText(text);
+  if (inner === null) {
+    return null;
+  }
+
+  for (const line of inner.split(/\r?\n/)) {
+    const cleaned = line.replace(/^[\s|│┃║]+/u, "").trim();
+    if (cleaned.length > 0) {
+      return cleaned;
+    }
+  }
+  return null;
+}
+
+export function normalizeToolResultText(value: unknown): string {
+  const text = extractText(value);
+  if (!text) {
+    return "";
+  }
+  const persistedLine = persistedOutputFirstLine(text);
+  if (persistedLine) {
+    return persistedLine;
+  }
+  return text;
+}
+
 function emitToolCall(session: SessionState, toolUseId: string, name: string, input: Record<string, unknown>): void {
   const toolCall = createToolCall(toolUseId, name, input);
   const status: ToolCall["status"] = "in_progress";
@@ -1153,7 +1197,7 @@ export function buildToolResultFields(
   rawContent: unknown,
   base?: ToolCall,
 ): ToolCallUpdateFields {
-  const rawOutput = extractText(rawContent);
+  const rawOutput = normalizeToolResultText(rawContent);
   const toolName = resolveToolName(base);
   const fields: ToolCallUpdateFields = {
     status: isError ? "failed" : "completed",
