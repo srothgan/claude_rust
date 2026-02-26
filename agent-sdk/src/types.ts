@@ -98,6 +98,7 @@ export type SessionUpdate =
 export interface PermissionOption {
   option_id: string;
   name: string;
+  description?: string;
   kind: string;
 }
 

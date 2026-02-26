@@ -38,7 +38,8 @@ import type {
 type ConnectEventKind = "connected" | "session_replaced";
 
 type PendingPermission = {
-  resolve: (result: PermissionResult) => void;
+  resolve?: (result: PermissionResult) => void;
+  onOutcome?: (outcome: PermissionOutcome) => void;
   toolName: string;
   inputData: Record<string, unknown>;
   suggestions?: PermissionUpdate[];
@@ -1926,11 +1927,191 @@ export function permissionOptionsFromSuggestions(
   return options;
 }
 
+type AskUserQuestionOption = {
+  label: string;
+  description: string;
+};
+
+type AskUserQuestionPrompt = {
+  question: string;
+  header: string;
+  multiSelect: boolean;
+  options: AskUserQuestionOption[];
+};
+
+const ASK_USER_QUESTION_TOOL_NAME = "AskUserQuestion";
+const QUESTION_CHOICE_KIND = "question_choice";
+
+function parseAskUserQuestionPrompts(inputData: Record<string, unknown>): AskUserQuestionPrompt[] {
+  const rawQuestions = Array.isArray(inputData.questions) ? inputData.questions : [];
+  const prompts: AskUserQuestionPrompt[] = [];
+
+  for (const rawQuestion of rawQuestions) {
+    const questionRecord = asRecordOrNull(rawQuestion);
+    if (!questionRecord) {
+      continue;
+    }
+    const question = typeof questionRecord.question === "string" ? questionRecord.question.trim() : "";
+    if (!question) {
+      continue;
+    }
+    const headerRaw = typeof questionRecord.header === "string" ? questionRecord.header.trim() : "";
+    const header = headerRaw || `Q${prompts.length + 1}`;
+    const multiSelect = Boolean(questionRecord.multiSelect);
+    const rawOptions = Array.isArray(questionRecord.options) ? questionRecord.options : [];
+    const options: AskUserQuestionOption[] = [];
+    for (const rawOption of rawOptions) {
+      const optionRecord = asRecordOrNull(rawOption);
+      if (!optionRecord) {
+        continue;
+      }
+      const label = typeof optionRecord.label === "string" ? optionRecord.label.trim() : "";
+      const description =
+        typeof optionRecord.description === "string" ? optionRecord.description.trim() : "";
+      if (!label) {
+        continue;
+      }
+      options.push({ label, description });
+    }
+    if (options.length < 2) {
+      continue;
+    }
+    prompts.push({ question, header, multiSelect, options });
+  }
+
+  return prompts;
+}
+
+function askUserQuestionOptions(prompt: AskUserQuestionPrompt): PermissionOption[] {
+  return prompt.options.map((option, index) => ({
+    option_id: `question_${index}`,
+    name: option.label,
+    description: option.description,
+    kind: QUESTION_CHOICE_KIND,
+  }));
+}
+
+function askUserQuestionPromptToolCall(
+  base: ToolCall,
+  prompt: AskUserQuestionPrompt,
+  index: number,
+  total: number,
+): ToolCall {
+  return {
+    ...base,
+    title: prompt.question,
+    raw_input: {
+      questions: [
+        {
+          question: prompt.question,
+          header: prompt.header,
+          multiSelect: prompt.multiSelect,
+          options: prompt.options,
+        },
+      ],
+      question_index: index,
+      total_questions: total,
+    },
+  };
+}
+
+function askUserQuestionTranscript(
+  answers: Array<{ header: string; question: string; answer: string }>,
+): string {
+  return answers.map((entry) => `${entry.header}: ${entry.answer}\n  ${entry.question}`).join("\n");
+}
+
+async function requestAskUserQuestionAnswers(
+  session: SessionState,
+  toolUseId: string,
+  toolName: string,
+  inputData: Record<string, unknown>,
+  baseToolCall: ToolCall,
+): Promise<PermissionResult> {
+  const prompts = parseAskUserQuestionPrompts(inputData);
+  if (prompts.length === 0) {
+    return { behavior: "allow", updatedInput: inputData, toolUseID: toolUseId };
+  }
+
+  const answers: Record<string, string> = {};
+  const transcript: Array<{ header: string; question: string; answer: string }> = [];
+
+  for (const [index, prompt] of prompts.entries()) {
+    const promptToolCall = askUserQuestionPromptToolCall(baseToolCall, prompt, index, prompts.length);
+    const fields: ToolCallUpdateFields = {
+      title: promptToolCall.title,
+      status: "in_progress",
+      raw_input: promptToolCall.raw_input,
+    };
+    emitSessionUpdate(session.sessionId, {
+      type: "tool_call_update",
+      tool_call_update: { tool_call_id: toolUseId, fields },
+    });
+    const tracked = session.toolCalls.get(toolUseId);
+    if (tracked) {
+      tracked.title = promptToolCall.title;
+      tracked.status = "in_progress";
+      tracked.raw_input = promptToolCall.raw_input;
+    }
+
+    const request: PermissionRequest = {
+      tool_call: promptToolCall,
+      options: askUserQuestionOptions(prompt),
+    };
+
+    const outcome = await new Promise<PermissionOutcome>((resolve) => {
+      session.pendingPermissions.set(toolUseId, {
+        onOutcome: resolve,
+        toolName,
+        inputData,
+      });
+      writeEvent({ event: "permission_request", session_id: session.sessionId, request });
+    });
+
+    if (outcome.outcome !== "selected") {
+      setToolCallStatus(session, toolUseId, "failed", "Question cancelled");
+      return { behavior: "deny", message: "Question cancelled", toolUseID: toolUseId };
+    }
+
+    const selected = request.options.find((option) => option.option_id === outcome.option_id);
+    if (!selected) {
+      setToolCallStatus(session, toolUseId, "failed", "Question answer was invalid");
+      return { behavior: "deny", message: "Question answer was invalid", toolUseID: toolUseId };
+    }
+
+    answers[prompt.question] = selected.name;
+    transcript.push({ header: prompt.header, question: prompt.question, answer: selected.name });
+
+    const summary = askUserQuestionTranscript(transcript);
+    const progressFields: ToolCallUpdateFields = {
+      status: index + 1 >= prompts.length ? "completed" : "in_progress",
+      raw_output: summary,
+      content: [{ type: "content", content: { type: "text", text: summary } }],
+    };
+    emitSessionUpdate(session.sessionId, {
+      type: "tool_call_update",
+      tool_call_update: { tool_call_id: toolUseId, fields: progressFields },
+    });
+    if (tracked) {
+      tracked.status = progressFields.status ?? tracked.status;
+      tracked.raw_output = summary;
+      tracked.content = progressFields.content ?? tracked.content;
+    }
+  }
+
+  return {
+    behavior: "allow",
+    updatedInput: { ...inputData, answers },
+    toolUseID: toolUseId,
+  };
+}
+
 async function closeSession(session: SessionState): Promise<void> {
   session.input.close();
   session.query.close();
   for (const pending of session.pendingPermissions.values()) {
-    pending.resolve({ behavior: "deny", message: "Session closed" });
+    pending.resolve?.({ behavior: "deny", message: "Session closed" });
+    pending.onOutcome?.({ outcome: "cancelled" });
   }
   session.pendingPermissions.clear();
 }
@@ -1966,6 +2147,16 @@ async function createSession(params: {
         `decision_reason=${options.decisionReason ?? "<none>"} suggestions=${formatPermissionUpdates(options.suggestions)}`,
     );
     const existing = ensureToolCallVisible(session, toolUseId, toolName, inputData);
+
+    if (toolName === ASK_USER_QUESTION_TOOL_NAME) {
+      return await requestAskUserQuestionAnswers(
+        session,
+        toolUseId,
+        toolName,
+        inputData,
+        existing,
+      );
+    }
 
     const request: PermissionRequest = {
       tool_call: existing,
@@ -2197,6 +2388,16 @@ function handlePermissionResponse(command: Extract<BridgeCommand, { command: "pe
   session.pendingPermissions.delete(command.tool_call_id);
 
   const outcome = command.outcome as PermissionOutcome;
+  if (resolver.onOutcome) {
+    resolver.onOutcome(outcome);
+    return;
+  }
+  if (!resolver.resolve) {
+    logPermissionDebug(
+      `response dropped: resolver missing callback session_id=${command.session_id} tool_call_id=${command.tool_call_id}`,
+    );
+    return;
+  }
   const selectedOption = outcome.outcome === "selected" ? outcome.option_id : "cancelled";
   logPermissionDebug(
     `response session_id=${command.session_id} tool_call_id=${command.tool_call_id} tool=${resolver.toolName} ` +

@@ -531,12 +531,14 @@ pub enum PermissionOptionKind {
     AllowAlways,
     RejectOnce,
     RejectAlways,
+    QuestionChoice,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PermissionOption {
     pub option_id: String,
     pub name: String,
+    pub description: Option<String>,
     pub kind: PermissionOptionKind,
 }
 
@@ -547,7 +549,13 @@ impl PermissionOption {
         name: impl Into<String>,
         kind: PermissionOptionKind,
     ) -> Self {
-        Self { option_id: option_id.into(), name: name.into(), kind }
+        Self { option_id: option_id.into(), name: name.into(), description: None, kind }
+    }
+
+    #[must_use]
+    pub fn description(mut self, description: Option<String>) -> Self {
+        self.description = description;
+        self
     }
 }
 

@@ -149,6 +149,27 @@ fn focused_permission_is_active(app: &App) -> bool {
     tc.pending_permission.as_ref().is_some_and(|p| p.focused)
 }
 
+fn focused_permission_is_question_prompt(app: &App) -> bool {
+    let Some(tool_id) = app.pending_permission_ids.first() else {
+        return false;
+    };
+    let Some((mi, bi)) = app.tool_call_index.get(tool_id).copied() else {
+        return false;
+    };
+    let Some(MessageBlock::ToolCall(tc)) = app.messages.get(mi).and_then(|m| m.blocks.get(bi))
+    else {
+        return false;
+    };
+    let Some(pending) = tc.pending_permission.as_ref() else {
+        return false;
+    };
+    !pending.options.is_empty()
+        && pending
+            .options
+            .iter()
+            .all(|opt| matches!(opt.kind, PermissionOptionKind::QuestionChoice))
+}
+
 fn handle_permission_focus_cycle(
     app: &mut App,
     key: KeyEvent,
@@ -161,6 +182,10 @@ fn handle_permission_focus_cycle(
         return None;
     }
     if app.pending_permission_ids.len() <= 1 {
+        if focused_permission_is_question_prompt(app) {
+            // For AskUserQuestion prompts, Up/Down are option navigation keys.
+            return None;
+        }
         // Single pending permission: consume navigation keys so they do not
         // leak into normal chat/input scrolling.
         return Some(true);
@@ -221,6 +246,7 @@ fn handle_permission_option_keys(
     key: KeyEvent,
     permission_has_focus: bool,
     option_count: usize,
+    question_prompt: bool,
 ) -> Option<bool> {
     if !permission_has_focus {
         return None;
@@ -234,11 +260,23 @@ fn handle_permission_option_keys(
             move_permission_option_right(app, option_count);
             Some(true)
         }
+        KeyCode::Up if question_prompt && option_count > 0 => {
+            move_permission_option_left(app);
+            Some(true)
+        }
+        KeyCode::Down if question_prompt && option_count > 0 => {
+            move_permission_option_right(app, option_count);
+            Some(true)
+        }
         KeyCode::Enter if option_count > 0 => {
             respond_permission(app, None);
             Some(true)
         }
         KeyCode::Esc => {
+            if question_prompt {
+                respond_permission_cancel(app);
+                return Some(true);
+            }
             if let Some(idx) = focused_option_index_by_kind(app, PermissionOptionKind::RejectOnce)
                 .or_else(|| focused_option_index_by_kind(app, PermissionOptionKind::RejectAlways))
                 .or_else(|| focused_option_index_where(app, option_is_reject_fallback))
@@ -260,6 +298,13 @@ fn handle_permission_option_keys(
 fn handle_permission_quick_shortcuts(app: &mut App, key: KeyEvent) -> Option<bool> {
     if !matches!(key.code, KeyCode::Char(_)) {
         return None;
+    }
+    if focused_permission_is_question_prompt(app)
+        && (is_ctrl_char_shortcut(key, 'y')
+            || is_ctrl_char_shortcut(key, 'a')
+            || is_ctrl_char_shortcut(key, 'n'))
+    {
+        return Some(true);
     }
     if is_ctrl_char_shortcut(key, 'y') {
         if let Some(idx) = focused_option_index_by_kind(app, PermissionOptionKind::AllowOnce)
@@ -303,12 +348,13 @@ pub(super) fn handle_permission_key(app: &mut App, key: KeyEvent) -> bool {
         .and_then(|tc| tc.pending_permission.as_ref())
         .map_or(0, |p| p.options.len());
     let permission_has_focus = focused_permission_is_active(app);
+    let question_prompt = focused_permission_is_question_prompt(app);
 
     if let Some(consumed) = handle_permission_focus_cycle(app, key, permission_has_focus) {
         return consumed;
     }
     if let Some(consumed) =
-        handle_permission_option_keys(app, key, permission_has_focus, option_count)
+        handle_permission_option_keys(app, key, permission_has_focus, option_count, question_prompt)
     {
         return consumed;
     }
@@ -374,6 +420,37 @@ fn respond_permission(app: &mut App, override_index: Option<usize>) {
     }
 }
 
+fn respond_permission_cancel(app: &mut App) {
+    if app.pending_permission_ids.is_empty() {
+        return;
+    }
+    let tool_id = app.pending_permission_ids.remove(0);
+
+    let Some((mi, bi)) = app.tool_call_index.get(&tool_id).copied() else {
+        return;
+    };
+    let Some(MessageBlock::ToolCall(tc)) =
+        app.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
+    else {
+        return;
+    };
+    let tc = tc.as_mut();
+    if let Some(pending) = tc.pending_permission.take() {
+        let _ = pending.response_tx.send(model::RequestPermissionResponse::new(
+            model::RequestPermissionOutcome::Cancelled,
+        ));
+        tc.cache.invalidate();
+        app.mark_message_layout_dirty(mi);
+    }
+
+    set_permission_focused(app, 0, true);
+    if app.pending_permission_ids.is_empty() {
+        app.release_focus_target(FocusTarget::Permission);
+    } else {
+        app.claim_focus_target(FocusTarget::Permission);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -389,6 +466,7 @@ mod tests {
             id: id.to_owned(),
             title: format!("Tool {id}"),
             sdk_tool_name: "Read".to_owned(),
+            raw_input: None,
             status: model::ToolCallStatus::InProgress,
             content: Vec::new(),
             collapsed: false,

@@ -280,7 +280,7 @@ fn render_standard_body(tc: &ToolCallInfo, lines: &mut Vec<Line<'static>>) {
 
         // Append inline permission controls if pending
         if let Some(ref perm) = tc.pending_permission {
-            content_lines.extend(render_permission_lines(perm));
+            content_lines.extend(render_permission_lines(tc, perm));
         }
 
         let last_idx = content_lines.len().saturating_sub(1);
@@ -364,7 +364,7 @@ fn render_execute_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
 
     // Inline permission controls (no border prefix)
     if let Some(ref perm) = tc.pending_permission {
-        lines.extend(render_permission_lines(perm));
+        lines.extend(render_permission_lines(tc, perm));
     }
 
     lines
@@ -426,7 +426,11 @@ fn render_execute_with_borders(
 /// Render inline permission options on a single compact line.
 /// Options are dynamic and include shortcuts only when applicable.
 /// Unfocused permissions are dimmed to indicate they don't have keyboard input.
-fn render_permission_lines(perm: &InlinePermission) -> Vec<Line<'static>> {
+fn render_permission_lines(tc: &ToolCallInfo, perm: &InlinePermission) -> Vec<Line<'static>> {
+    if is_question_permission(perm, tc) {
+        return render_question_permission_lines(tc, perm);
+    }
+
     // Unfocused permissions: show a dimmed "waiting for focus" line
     if !perm.focused {
         return vec![
@@ -490,7 +494,7 @@ fn render_permission_lines(perm: &InlinePermission) -> Vec<Line<'static>> {
             PermissionOptionKind::AllowOnce => " (Ctrl+y)",
             PermissionOptionKind::AllowSession | PermissionOptionKind::AllowAlways => " (Ctrl+a)",
             PermissionOptionKind::RejectOnce => " (Ctrl+n)",
-            PermissionOptionKind::RejectAlways => "",
+            PermissionOptionKind::RejectAlways | PermissionOptionKind::QuestionChoice => "",
         };
         spans.push(Span::styled(shortcut, Style::default().fg(theme::DIM)));
     }
@@ -503,6 +507,157 @@ fn render_permission_lines(perm: &InlinePermission) -> Vec<Line<'static>> {
             Style::default().fg(theme::DIM),
         )),
     ]
+}
+
+fn is_question_permission(perm: &InlinePermission, tc: &ToolCallInfo) -> bool {
+    tc.is_ask_question_tool()
+        || perm.options.iter().all(|opt| matches!(opt.kind, PermissionOptionKind::QuestionChoice))
+}
+
+#[derive(Default)]
+struct AskQuestionMeta {
+    header: Option<String>,
+    question: Option<String>,
+    question_index: Option<usize>,
+    total_questions: Option<usize>,
+}
+
+fn parse_ask_question_meta(raw_input: Option<&serde_json::Value>) -> AskQuestionMeta {
+    let Some(raw) = raw_input else {
+        return AskQuestionMeta::default();
+    };
+
+    let question = raw
+        .get("questions")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|items| items.first())
+        .and_then(serde_json::Value::as_object);
+
+    AskQuestionMeta {
+        header: question
+            .and_then(|q| q.get("header"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned),
+        question: question
+            .and_then(|q| q.get("question"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned),
+        question_index: raw
+            .get("question_index")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|n| usize::try_from(n).ok()),
+        total_questions: raw
+            .get("total_questions")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|n| usize::try_from(n).ok()),
+    }
+}
+
+fn render_question_permission_lines(
+    tc: &ToolCallInfo,
+    perm: &InlinePermission,
+) -> Vec<Line<'static>> {
+    let meta = parse_ask_question_meta(tc.raw_input.as_ref());
+    let header = meta.header.unwrap_or_else(|| "Question".to_owned());
+    let question_text = meta.question.unwrap_or_else(|| tc.title.clone());
+    let progress = match (meta.question_index, meta.total_questions) {
+        (Some(index), Some(total)) if total > 0 => format!(" ({}/{total})", index + 1),
+        _ => String::new(),
+    };
+
+    let mut lines = vec![
+        Line::default(),
+        Line::from(vec![
+            Span::styled("  ? ", Style::default().fg(theme::RUST_ORANGE)),
+            Span::styled(
+                format!("{header}{progress}"),
+                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+            ),
+        ]),
+    ];
+
+    for row in question_text.lines() {
+        lines.push(Line::from(vec![Span::styled(
+            format!("    {row}"),
+            Style::default().fg(Color::Gray),
+        )]));
+    }
+
+    if !perm.focused {
+        lines.push(Line::from(Span::styled(
+            "  waiting for input... (Up/Down to focus)",
+            Style::default().fg(theme::DIM),
+        )));
+        return lines;
+    }
+
+    let horizontal = perm.options.len() <= 3
+        && perm.options.iter().all(|opt| {
+            opt.description.as_deref().is_none_or(str::is_empty) && opt.name.chars().count() <= 20
+        });
+
+    if horizontal {
+        let mut spans: Vec<Span<'static>> = Vec::new();
+        for (i, opt) in perm.options.iter().enumerate() {
+            if i > 0 {
+                spans.push(Span::styled("  |  ", Style::default().fg(theme::DIM)));
+            }
+            let selected = i == perm.selected_index;
+            if selected {
+                spans.push(Span::styled(
+                    "▸ ",
+                    Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
+                ));
+            } else {
+                spans.push(Span::styled("  ", Style::default().fg(theme::DIM)));
+            }
+            let style = if selected {
+                Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Gray)
+            };
+            spans.push(Span::styled(opt.name.clone(), style));
+        }
+        lines.push(Line::from(spans));
+    } else {
+        for (i, opt) in perm.options.iter().enumerate() {
+            let selected = i == perm.selected_index;
+            let bullet = if selected { "  ▸ " } else { "  ○ " };
+            let name_style = if selected {
+                Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Gray)
+            };
+            lines.push(Line::from(vec![
+                Span::styled(
+                    bullet,
+                    if selected {
+                        Style::default().fg(theme::RUST_ORANGE)
+                    } else {
+                        Style::default().fg(theme::DIM)
+                    },
+                ),
+                Span::styled(opt.name.clone(), name_style),
+            ]));
+            if let Some(desc) = opt.description.as_ref().map(|d| d.trim()).filter(|d| !d.is_empty())
+            {
+                lines.push(Line::from(Span::styled(
+                    format!("      {desc}"),
+                    Style::default().fg(theme::DIM),
+                )));
+            }
+        }
+    }
+
+    lines.push(Line::from(Span::styled(
+        "  Left/Right or Up/Down select  Enter confirm  Esc cancel",
+        Style::default().fg(theme::DIM),
+    )));
+    lines
 }
 
 fn markdown_inline_spans(input: &str) -> Vec<Span<'static>> {
@@ -970,6 +1125,7 @@ mod tests {
             title: "echo very long command title with markdown **bold** and path /a/b/c/d/e/f"
                 .into(),
             sdk_tool_name: "Bash".into(),
+            raw_input: None,
             status: model::ToolCallStatus::Pending,
             content: Vec::new(),
             collapsed: false,
@@ -1038,6 +1194,7 @@ mod tests {
             id: "tc-1".into(),
             title: "Bash".into(),
             sdk_tool_name: "Bash".into(),
+            raw_input: None,
             status: model::ToolCallStatus::Completed,
             content: Vec::new(),
             collapsed: true,
@@ -1058,6 +1215,7 @@ mod tests {
             id: "tc-1".into(),
             title: "Bash".into(),
             sdk_tool_name: "Bash".into(),
+            raw_input: None,
             status: model::ToolCallStatus::Failed,
             content: Vec::new(),
             collapsed: true,
@@ -1078,6 +1236,7 @@ mod tests {
             id: "tc-2".into(),
             title: "Bash".into(),
             sdk_tool_name: "Bash".into(),
+            raw_input: None,
             status: model::ToolCallStatus::Failed,
             content: Vec::new(),
             collapsed: true,
@@ -1100,6 +1259,7 @@ mod tests {
             id: "tc-3".into(),
             title: "Bash".into(),
             sdk_tool_name: "Bash".into(),
+            raw_input: None,
             status: model::ToolCallStatus::Failed,
             content: Vec::new(),
             collapsed: false,

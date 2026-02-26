@@ -1035,6 +1035,7 @@ pub struct ToolCallInfo {
     /// The SDK tool name from `meta.claudeCode.toolName` when available.
     /// Falls back to a derived name when metadata is absent.
     pub sdk_tool_name: String,
+    pub raw_input: Option<serde_json::Value>,
     pub status: model::ToolCallStatus,
     pub content: Vec<model::ToolCallContent>,
     pub collapsed: bool,
@@ -1060,11 +1061,21 @@ impl ToolCallInfo {
     pub fn is_execute_tool(&self) -> bool {
         is_execute_tool_name(&self.sdk_tool_name)
     }
+
+    #[must_use]
+    pub fn is_ask_question_tool(&self) -> bool {
+        is_ask_question_tool_name(&self.sdk_tool_name)
+    }
 }
 
 #[must_use]
 pub fn is_execute_tool_name(tool_name: &str) -> bool {
     tool_name.eq_ignore_ascii_case("bash")
+}
+
+#[must_use]
+pub fn is_ask_question_tool_name(tool_name: &str) -> bool {
+    tool_name.eq_ignore_ascii_case("askuserquestion")
 }
 
 /// Permission state stored inline on a `ToolCallInfo`, so the permission

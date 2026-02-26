@@ -144,6 +144,7 @@ pub enum SessionUpdate {
 pub struct PermissionOption {
     pub option_id: String,
     pub name: String,
+    pub description: Option<String>,
     pub kind: String,
 }
 

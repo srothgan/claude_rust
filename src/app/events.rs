@@ -895,6 +895,7 @@ fn handle_tool_call(app: &mut App, tc: model::ToolCall) {
         id: id_str,
         title: shorten_tool_title(&tc.title, &app.cwd_raw),
         sdk_tool_name,
+        raw_input: tc.raw_input,
         status: tc.status,
         content: tc.content,
         collapsed: app.tools_collapsed,
@@ -928,6 +929,7 @@ fn handle_tool_call(app: &mut App, tc: model::ToolCall) {
                 existing.status = tool_info.status;
                 existing.content.clone_from(&tool_info.content);
                 existing.sdk_tool_name.clone_from(&tool_info.sdk_tool_name);
+                existing.raw_input.clone_from(&tool_info.raw_input);
                 existing.cache.invalidate();
                 layout_dirty = true;
             }
@@ -1069,6 +1071,9 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
                             }
                         }
                         tc.content = content;
+                    }
+                    if let Some(raw_input) = tcu.fields.raw_input.as_ref() {
+                        tc.raw_input = Some(raw_input.clone());
                     }
                     // Keep updating Execute output from raw_output so long-running commands
                     // can stream visible terminal text before completion.
@@ -1466,6 +1471,7 @@ mod tests {
             id: id.into(),
             title: id.into(),
             sdk_tool_name: "Read".into(),
+            raw_input: None,
             status,
             content: vec![],
             collapsed: false,
