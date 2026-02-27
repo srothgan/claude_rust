@@ -26,9 +26,11 @@ use crate::agent::events::{ClientEvent, TerminalMap};
 use crate::agent::model;
 use crate::agent::types;
 use crate::agent::wire::{BridgeCommand, BridgeEvent, CommandEnvelope, EventEnvelope};
+use crate::error::AppError;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::time::Duration;
 use tokio::sync::mpsc;
 
 /// Shorten cwd for display: use `~` for the home directory prefix.
@@ -47,6 +49,10 @@ fn resolve_startup_cwd(cli: &Cli) -> PathBuf {
     cli.dir
         .clone()
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+}
+
+fn extract_app_error(err: &anyhow::Error) -> Option<AppError> {
+    err.chain().find_map(|cause| cause.downcast_ref::<AppError>().cloned())
 }
 
 /// Create the `App` struct in `Connecting` state. No I/O - returns immediately.
@@ -70,6 +76,7 @@ pub fn create_app(cli: &Cli) -> App {
         status: AppStatus::Connecting,
         resuming_session_id: None,
         should_quit: false,
+        exit_error: None,
         session_id: None,
         conn: None,
         model_name: initial_model_name,
@@ -151,6 +158,7 @@ pub fn start_connection(app: &App, cli: &Cli) {
     let yolo = cli.yolo;
     let model_override = cli.model.clone();
     let resume_id = cli.resume.clone();
+    let resume_requested = cli.resume.is_some();
 
     let conn_slot: Rc<std::cell::RefCell<Option<ConnectionSlot>>> =
         Rc::new(std::cell::RefCell::new(None));
@@ -163,9 +171,12 @@ pub fn start_connection(app: &App, cli: &Cli) {
             Ok(launcher) => launcher,
             Err(err) => {
                 tracing::error!("failed to resolve bridge launcher: {err}");
-                let _ = event_tx.send(ClientEvent::ConnectionFailed(format!(
-                    "Failed to resolve bridge launcher: {err}"
-                )));
+                let app_error = extract_app_error(&err).unwrap_or(AppError::ConnectionFailed);
+                emit_connection_failed(
+                    &event_tx,
+                    format!("Failed to resolve bridge launcher: {err}"),
+                    app_error,
+                );
                 return;
             }
         };
@@ -175,13 +186,18 @@ pub fn start_connection(app: &App, cli: &Cli) {
             Ok(client) => client,
             Err(err) => {
                 tracing::error!("failed to spawn bridge process: {err}");
-                let _ = event_tx
-                    .send(ClientEvent::ConnectionFailed(format!("Failed to spawn bridge: {err}")));
+                let app_error = extract_app_error(&err).unwrap_or(AppError::AdapterCrashed);
+                emit_connection_failed(
+                    &event_tx,
+                    format!("Failed to spawn bridge: {err}"),
+                    app_error,
+                );
                 return;
             }
         };
         tracing::debug!("bridge process spawned");
 
+        let mut connected_once = false;
         let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<CommandEnvelope>();
         *conn_slot_writer.borrow_mut() =
             Some(ConnectionSlot { conn: Rc::new(AgentConnection::new(cmd_tx.clone())) });
@@ -195,11 +211,30 @@ pub fn start_connection(app: &App, cli: &Cli) {
         };
         if let Err(err) = bridge.send(init_cmd).await {
             tracing::error!("failed to send initialize command to bridge: {err}");
-            let _ = event_tx
-                .send(ClientEvent::ConnectionFailed(format!("Failed to initialize bridge: {err}")));
+            emit_connection_failed(
+                &event_tx,
+                format!("Failed to initialize bridge: {err}"),
+                AppError::ConnectionFailed,
+            );
             return;
         }
         tracing::debug!("sent initialize command to bridge");
+        if let Err(app_error) = wait_for_bridge_initialized(
+            &mut bridge,
+            &event_tx,
+            &cmd_tx,
+            &mut connected_once,
+            resume_requested,
+        )
+        .await
+        {
+            emit_connection_failed(
+                &event_tx,
+                "Bridge did not complete initialization".to_owned(),
+                app_error,
+            );
+            return;
+        }
 
         let create_cmd = if let Some(resume) = resume_id {
             CommandEnvelope {
@@ -223,42 +258,55 @@ pub fn start_connection(app: &App, cli: &Cli) {
         };
         if let Err(err) = bridge.send(create_cmd).await {
             tracing::error!("failed to send create/load session command to bridge: {err}");
-            let _ = event_tx.send(ClientEvent::ConnectionFailed(format!(
-                "Failed to create bridge session: {err}"
-            )));
+            emit_connection_failed(
+                &event_tx,
+                format!("Failed to create bridge session: {err}"),
+                AppError::ConnectionFailed,
+            );
             return;
         }
         tracing::debug!("sent create/load session command to bridge");
 
-        let mut connected_once = false;
         loop {
             tokio::select! {
                 Some(cmd) = cmd_rx.recv() => {
                     if let Err(err) = bridge.send(cmd).await {
                         tracing::error!("failed to forward command to bridge: {err}");
-                        let _ = event_tx.send(ClientEvent::ConnectionFailed(format!(
-                            "Failed to send bridge command: {err}"
-                        )));
+                        emit_connection_failed(
+                            &event_tx,
+                            format!("Failed to send bridge command: {err}"),
+                            AppError::ConnectionFailed,
+                        );
                         break;
                     }
                 }
                 event = bridge.recv() => {
                     match event {
                         Ok(Some(envelope)) => {
-                            handle_bridge_event(&event_tx, &cmd_tx, &mut connected_once, envelope);
+                            handle_bridge_event(
+                                &event_tx,
+                                &cmd_tx,
+                                &mut connected_once,
+                                resume_requested,
+                                envelope,
+                            );
                         }
                         Ok(None) => {
                             tracing::error!("bridge stdout closed unexpectedly");
-                            let _ = event_tx.send(ClientEvent::ConnectionFailed(
+                            emit_connection_failed(
+                                &event_tx,
                                 "Bridge process exited unexpectedly".to_owned(),
-                            ));
+                                AppError::ConnectionFailed,
+                            );
                             break;
                         }
                         Err(err) => {
                             tracing::error!("bridge communication failure: {err}");
-                            let _ = event_tx.send(ClientEvent::ConnectionFailed(format!(
-                                "Bridge communication failure: {err}"
-                            )));
+                            emit_connection_failed(
+                                &event_tx,
+                                format!("Bridge communication failure: {err}"),
+                                AppError::ConnectionFailed,
+                            );
                             break;
                         }
                     }
@@ -276,10 +324,59 @@ pub fn start_connection(app: &App, cli: &Cli) {
     });
 }
 
+fn emit_connection_failed(
+    event_tx: &mpsc::UnboundedSender<ClientEvent>,
+    message: String,
+    app_error: AppError,
+) {
+    let _ = event_tx.send(ClientEvent::ConnectionFailed(message));
+    let _ = event_tx.send(ClientEvent::FatalError(app_error));
+}
+
+async fn wait_for_bridge_initialized(
+    bridge: &mut BridgeClient,
+    event_tx: &mpsc::UnboundedSender<ClientEvent>,
+    cmd_tx: &mpsc::UnboundedSender<CommandEnvelope>,
+    connected_once: &mut bool,
+    resume_requested: bool,
+) -> Result<(), AppError> {
+    let timeout = Duration::from_secs(10);
+    let started = tokio::time::Instant::now();
+    loop {
+        let elapsed = tokio::time::Instant::now().saturating_duration_since(started);
+        let remaining = timeout.saturating_sub(elapsed);
+        if remaining.is_zero() {
+            return Err(AppError::ConnectionFailed);
+        }
+
+        let event = tokio::time::timeout(remaining, bridge.recv()).await;
+        match event {
+            Ok(Ok(Some(envelope))) => {
+                if matches!(envelope.event, BridgeEvent::Initialized { .. }) {
+                    return Ok(());
+                }
+                if matches!(envelope.event, BridgeEvent::ConnectionFailed { .. }) {
+                    handle_bridge_event(
+                        event_tx,
+                        cmd_tx,
+                        connected_once,
+                        resume_requested,
+                        envelope,
+                    );
+                    return Err(AppError::ConnectionFailed);
+                }
+                handle_bridge_event(event_tx, cmd_tx, connected_once, resume_requested, envelope);
+            }
+            Ok(Ok(None) | Err(_)) | Err(_) => return Err(AppError::ConnectionFailed),
+        }
+    }
+}
+
 fn handle_bridge_event(
     event_tx: &mpsc::UnboundedSender<ClientEvent>,
     cmd_tx: &mpsc::UnboundedSender<CommandEnvelope>,
     connected_once: &mut bool,
+    resume_requested: bool,
     envelope: EventEnvelope,
 ) {
     match envelope.event {
@@ -304,7 +401,7 @@ fn handle_bridge_event(
         }
         BridgeEvent::ConnectionFailed { message } => {
             tracing::error!("bridge connection_failed: {message}");
-            let _ = event_tx.send(ClientEvent::ConnectionFailed(message));
+            emit_connection_failed(event_tx, message, AppError::ConnectionFailed);
         }
         BridgeEvent::SessionUpdate { update, .. } => {
             if let Some(update) = map_session_update(update) {
@@ -327,6 +424,13 @@ fn handle_bridge_event(
         }
         BridgeEvent::SlashError { message, .. } => {
             tracing::warn!("bridge slash_error: {message}");
+            if resume_requested
+                && !*connected_once
+                && message.to_ascii_lowercase().contains("unknown session")
+            {
+                let _ = event_tx.send(ClientEvent::FatalError(AppError::SessionNotFound));
+                return;
+            }
             let _ = event_tx.send(ClientEvent::SlashCommandError(message));
         }
         BridgeEvent::SessionReplaced { session_id, cwd, model_name, mode, history_updates } => {

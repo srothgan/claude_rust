@@ -16,6 +16,7 @@
 
 pub mod agent;
 pub mod app;
+pub mod error;
 pub mod perf;
 pub mod ui;
 

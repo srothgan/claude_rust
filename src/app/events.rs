@@ -29,6 +29,7 @@ use crate::agent::events::ClientEvent;
 use crate::agent::model;
 use crate::app::input::parse_paste_placeholder_before_cursor;
 use crate::app::todos::{apply_plan_todos, parse_todos_if_present, set_todos};
+use crate::error::AppError;
 #[cfg(test)]
 use crossterm::event::KeyEvent;
 use crossterm::event::{Event, KeyEventKind, MouseEvent, MouseEventKind};
@@ -557,6 +558,12 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
                 "Update available: v{latest_version} (current v{current_version})  Ctrl+U to hide"
             ));
         }
+        ClientEvent::FatalError(error) => {
+            app.exit_error = Some(error);
+            app.should_quit = true;
+            app.status = AppStatus::Error;
+            app.pending_submit = false;
+        }
     }
 }
 
@@ -635,6 +642,8 @@ fn handle_turn_error_event(app: &mut App, msg: &str, classified: Option<TurnErro
                 error_preview = %summary,
                 "Turn error indicates authentication is required"
             );
+            app.exit_error = Some(AppError::AuthRequired);
+            app.should_quit = true;
         }
         TurnErrorClass::Internal => {
             tracing::debug!(
@@ -1564,7 +1573,7 @@ fn session_update_name(update: &model::SessionUpdate) -> &'static str {
 #[cfg(test)]
 mod tests {
     // =====
-    // TESTS: 38
+    // TESTS: 40
     // =====
 
     use super::*;
@@ -2673,6 +2682,34 @@ mod tests {
         };
         assert!(text.contains("Turn blocked by account or plan limits"));
         assert!(text.contains("Next steps:"));
+    }
+
+    #[test]
+    fn classified_turn_error_auth_required_sets_exit_error_and_quits() {
+        let mut app = make_test_app();
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::TurnErrorClassified {
+                message: "auth required".into(),
+                class: TurnErrorClass::AuthRequired,
+            },
+        );
+
+        assert!(matches!(app.status, AppStatus::Error));
+        assert!(app.should_quit);
+        assert_eq!(app.exit_error, Some(AppError::AuthRequired));
+    }
+
+    #[test]
+    fn fatal_event_sets_exit_error_and_quits() {
+        let mut app = make_test_app();
+
+        handle_client_event(&mut app, ClientEvent::FatalError(AppError::ConnectionFailed));
+
+        assert!(matches!(app.status, AppStatus::Error));
+        assert!(app.should_quit);
+        assert_eq!(app.exit_error, Some(AppError::ConnectionFailed));
     }
 
     #[test]

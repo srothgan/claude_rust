@@ -16,10 +16,23 @@
 
 use clap::Parser;
 use claude_code_rust::Cli;
+use claude_code_rust::error::AppError;
 use std::fs::OpenOptions;
 use std::time::Instant;
 
-fn main() -> anyhow::Result<()> {
+#[allow(clippy::exit)]
+fn main() {
+    if let Err(err) = run() {
+        if let Some(app_error) = extract_app_error(&err) {
+            eprintln!("{}", app_error.user_message());
+            std::process::exit(app_error.exit_code());
+        }
+        eprintln!("{err}");
+        std::process::exit(1);
+    }
+}
+
+fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
     init_tracing(&cli)?;
 
@@ -29,18 +42,13 @@ fn main() -> anyhow::Result<()> {
     }
 
     let resolve_started = Instant::now();
-    match claude_code_rust::agent::bridge::resolve_bridge_launcher(cli.bridge_script.as_deref()) {
-        Ok(bridge_launcher) => {
-            tracing::info!(
-                "Resolved agent bridge launcher in {:?}: {}",
-                resolve_started.elapsed(),
-                bridge_launcher.describe()
-            );
-        }
-        Err(err) => {
-            tracing::warn!("Agent bridge launcher unavailable: {err}");
-        }
-    }
+    let bridge_launcher =
+        claude_code_rust::agent::bridge::resolve_bridge_launcher(cli.bridge_script.as_deref())?;
+    tracing::info!(
+        "Resolved agent bridge launcher in {:?}: {}",
+        resolve_started.elapsed(),
+        bridge_launcher.describe()
+    );
 
     let rt = tokio::runtime::Runtime::new()?;
     let local_set = tokio::task::LocalSet::new();
@@ -58,8 +66,16 @@ fn main() -> anyhow::Result<()> {
         // Kill any spawned terminal child processes before exiting
         claude_code_rust::agent::events::kill_all_terminals(&app.terminals);
 
+        if let Some(app_error) = app.exit_error.take() {
+            return Err(anyhow::Error::new(app_error));
+        }
+
         result
     }))
+}
+
+fn extract_app_error(err: &anyhow::Error) -> Option<AppError> {
+    err.chain().find_map(|cause| cause.downcast_ref::<AppError>().cloned())
 }
 
 fn init_tracing(cli: &Cli) -> anyhow::Result<()> {
