@@ -50,7 +50,7 @@ Three-layer design:
 
 **Presentation** (Rust/Ratatui) - Single binary with an async event loop (Tokio) handling keyboard input and bridge client events concurrently. Virtual-scrolled chat history with syntax-highlighted code blocks.
 
-**Protocol Bridge** (stdio JSON envelopes) - Spawns `agent-sdk/dist/bridge.js` as a child process and communicates via line-delimited JSON envelopes over stdin/stdout. Bidirectional streaming for user messages, tool updates, and permission requests.
+**Agent SDK Bridge** (stdio JSON envelopes) - Spawns `agent-sdk/dist/bridge.js` as a child process and communicates via line-delimited JSON envelopes over stdin/stdout. Bidirectional streaming for user messages, tool updates, and permission requests.
 
 **Agent Runtime** (Anthropic Agent SDK) - The TypeScript bridge drives `@anthropic-ai/claude-agent-sdk`, which manages authentication, session/query lifecycle, and tool execution.
 
@@ -67,7 +67,7 @@ This project is pre-1.0 and under active development. See [CONTRIBUTING.md](CONT
 ## License
 
 This project is licensed under the [GNU Affero General Public License v3.0 or later](LICENSE).
-This license was chosen because Claude Code is not open-source and this license allows everyone to use it while stopping Antrophic from implementing it in their clsosed-source version.
+This license was chosen because Claude Code is not open-source and this license allows everyone to use it while stopping Anthropic from implementing it in their closed-source version.
 
 By using this software, you agree to the terms of the AGPL-3.0. If you modify this software and make it available over a network, you must offer the source code to users of that service.
 

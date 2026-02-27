@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.0] - 2026-02-27 [Changes][v0.5.0]
+
+### Features
+
+- **Paste handling overhaul** (#53): Character-count threshold (1000 chars) replaces line-count; placeholder label updated; session identity tracking prevents append across separate pastes; burst finalization scoped to newly pasted range only
+- **Turn error classification** (#54): `TurnError` strings matched against known patterns (rate limit, plan limit, max turns, quota, 429); actionable recovery hint pushed as a system message in chat; unclassified errors preserve existing behavior
+
+### Fixes
+
+- **Typed `AppError` enum** (#54): `NodeNotFound`, `AdapterCrashed`, `AuthRequired`, `ConnectionFailed`, `SessionNotFound` variants with per-variant exit codes and user-facing messages
+
+### Performance
+
+- **Unified cache budgeting + LRU history retention** (#52): Single cache budget across all message blocks; LRU eviction for long sessions; reduces memory growth on extended conversations
+
+### UI
+
+- **Footer three-column layout**: Update hint and context percentage now render in separate right-aligned columns simultaneously instead of either-or
+
 ## [0.4.1] - 2026-02-27 [Changes][v0.4.1]
 
 ### Fixes
@@ -194,6 +213,7 @@ Performance optimization was a major release theme across recent commits:
   - `PromptResponse.usage` is `None`
 - Session resume (`--resume`) is blocked on an upstream adapter release that contains a Windows path encoding fix
 
+[v0.5.0]: https://github.com/srothgan/claude-code-rust/compare/v0.4.1...v0.5.0
 [v0.4.1]: https://github.com/srothgan/claude-code-rust/compare/v0.4.0...v0.4.1
 [v0.4.0]: https://github.com/srothgan/claude-code-rust/compare/v0.3.0...v0.4.0
 [v0.3.0]: https://github.com/srothgan/claude-code-rust/compare/v0.2.0...v0.3.0
