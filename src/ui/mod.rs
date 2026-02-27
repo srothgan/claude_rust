@@ -150,12 +150,27 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &mut App) {
     }
 
     if let Some(line) = &app.cached_footer_line {
-        if let Some((right_text, right_color)) = footer_right_text(app) {
-            let (left_area, right_area) = split_footer_columns(padded);
-            frame.render_widget(Paragraph::new(line.clone()), left_area);
-            render_footer_right_info(frame, right_area, &right_text, right_color);
-        } else {
-            frame.render_widget(Paragraph::new(line.clone()), padded);
+        let (telemetry, update_hint) = footer_right_items(app);
+        match (telemetry, update_hint) {
+            (Some((telem_text, telem_color)), Some((hint_text, hint_color))) => {
+                let (left_area, mid_area, right_area) = split_footer_three_columns(padded);
+                frame.render_widget(Paragraph::new(line.clone()), left_area);
+                render_footer_right_info(frame, mid_area, &hint_text, hint_color);
+                render_footer_right_info(frame, right_area, &telem_text, telem_color);
+            }
+            (Some((telem_text, telem_color)), None) => {
+                let (left_area, right_area) = split_footer_columns(padded);
+                frame.render_widget(Paragraph::new(line.clone()), left_area);
+                render_footer_right_info(frame, right_area, &telem_text, telem_color);
+            }
+            (None, Some((hint_text, hint_color))) => {
+                let (left_area, right_area) = split_footer_columns(padded);
+                frame.render_widget(Paragraph::new(line.clone()), left_area);
+                render_footer_right_info(frame, right_area, &hint_text, hint_color);
+            }
+            (None, None) => {
+                frame.render_widget(Paragraph::new(line.clone()), padded);
+            }
         }
     }
 }
@@ -210,12 +225,15 @@ fn footer_telemetry_text(app: &App) -> Option<String> {
     Some(text)
 }
 
-fn footer_right_text(app: &App) -> Option<(String, Color)> {
-    if let Some(text) = footer_telemetry_text(app) {
+/// Returns `(telemetry, update_hint)` -- either or both may be `None`.
+fn footer_right_items(app: &App) -> (Option<(String, Color)>, Option<(String, Color)>) {
+    let telemetry = footer_telemetry_text(app).map(|text| {
         let color = if app.is_compacting { theme::RUST_ORANGE } else { theme::DIM };
-        return Some((text, color));
-    }
-    app.update_check_hint.as_ref().map(|hint| (hint.clone(), theme::RUST_ORANGE))
+        (text, color)
+    });
+    let update_hint =
+        app.update_check_hint.as_ref().map(|hint| (hint.clone(), theme::RUST_ORANGE));
+    (telemetry, update_hint)
 }
 
 fn split_footer_columns(area: Rect) -> (Rect, Rect) {
@@ -235,6 +253,40 @@ fn split_footer_columns(area: Rect) -> (Rect, Rect) {
         ..area
     };
     (left, right)
+}
+
+/// Three-column split: left (mode/shortcuts) | mid (update hint) | right (context/telemetry).
+/// Mid and right are each ~quarter width, both intended for right-aligned content.
+fn split_footer_three_columns(area: Rect) -> (Rect, Rect, Rect) {
+    if area.width == 0 {
+        let zero = Rect { width: 0, ..area };
+        return (area, zero, zero);
+    }
+
+    let gap = if area.width > 4 { FOOTER_COLUMN_GAP } else { 0 };
+    let usable = area.width.saturating_sub(gap.saturating_mul(2));
+    let left_width = usable.saturating_add(1) / 2;
+    let right_half = usable.saturating_sub(left_width);
+    let mid_width = right_half.saturating_add(1) / 2;
+    let right_width = right_half.saturating_sub(mid_width);
+
+    let left = Rect { width: left_width, ..area };
+    let mid = Rect {
+        x: area.x.saturating_add(left_width).saturating_add(gap),
+        width: mid_width,
+        ..area
+    };
+    let right = Rect {
+        x: area
+            .x
+            .saturating_add(left_width)
+            .saturating_add(gap)
+            .saturating_add(mid_width)
+            .saturating_add(gap),
+        width: right_width,
+        ..area
+    };
+    (left, mid, right)
 }
 
 fn fit_footer_right_text(text: &str, max_width: usize) -> Option<String> {
@@ -345,6 +397,34 @@ mod tests {
         assert_eq!(left.width.saturating_add(right.width).saturating_add(FOOTER_COLUMN_GAP), 80);
         assert_eq!(left.width, 40);
         assert_eq!(right.width, 39);
+    }
+
+    #[test]
+    fn split_footer_three_columns_preserves_total_width() {
+        let area = Rect::new(0, 0, 80, 1);
+        let (left, mid, right) = split_footer_three_columns(area);
+        // left + gap + mid + gap + right == 80
+        assert_eq!(
+            left.width
+                .saturating_add(FOOTER_COLUMN_GAP)
+                .saturating_add(mid.width)
+                .saturating_add(FOOTER_COLUMN_GAP)
+                .saturating_add(right.width),
+            80
+        );
+        // left gets ~half, mid and right each get ~quarter
+        assert_eq!(left.width, 39);
+        assert_eq!(mid.width, 20);
+        assert_eq!(right.width, 19);
+    }
+
+    #[test]
+    fn split_footer_three_columns_zero_width() {
+        let area = Rect::new(0, 0, 0, 1);
+        let (left, mid, right) = split_footer_three_columns(area);
+        assert_eq!(left.width, 0);
+        assert_eq!(mid.width, 0);
+        assert_eq!(right.width, 0);
     }
 
     #[test]
