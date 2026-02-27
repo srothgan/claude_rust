@@ -308,7 +308,19 @@ fn dispatch_key_by_focus(app: &mut App, key: KeyEvent) {
 pub fn handle_client_event(app: &mut App, event: ClientEvent) {
     app.needs_redraw = true;
     match event {
-        ClientEvent::SessionUpdate(update) => handle_session_update(app, update),
+        ClientEvent::SessionUpdate(update) => {
+            let needs_history_retention = matches!(
+                &update,
+                model::SessionUpdate::AgentMessageChunk(_)
+                    | model::SessionUpdate::ToolCall(_)
+                    | model::SessionUpdate::ToolCallUpdate(_)
+                    | model::SessionUpdate::CompactionBoundary(_)
+            );
+            handle_session_update(app, update);
+            if needs_history_retention {
+                app.enforce_history_retention();
+            }
+        }
         ClientEvent::PermissionRequest { request, response_tx } => {
             let tool_id = request.tool_call.tool_call_id.clone();
             if let Some((mi, bi)) = app.lookup_tool_call(&tool_id) {
@@ -483,6 +495,7 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
             app.pending_compact_clear = false;
             app.is_compacting = false;
             app.session_usage = super::SessionUsageState::default();
+            app.history_retention_stats = super::state::HistoryRetentionStats::default();
             app.cancelled_turn_pending_hint = false;
             app.pending_cancel_origin = None;
             app.queued_submission = None;
@@ -542,6 +555,7 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
                 )],
                 usage: None,
             });
+            app.enforce_history_retention();
             app.viewport.engage_auto_scroll();
             app.status = AppStatus::Ready;
             app.resuming_session_id = None;
@@ -577,6 +591,7 @@ fn push_interrupted_hint(app: &mut App) {
         )],
         usage: None,
     });
+    app.enforce_history_retention();
     app.viewport.engage_auto_scroll();
 }
 
@@ -600,6 +615,7 @@ fn push_turn_error_message(app: &mut App, error: &str) {
         )],
         usage: None,
     });
+    app.enforce_history_retention();
     app.viewport.engage_auto_scroll();
 }
 
@@ -614,6 +630,7 @@ fn push_connection_error_message(app: &mut App, error: &str) {
         )],
         usage: None,
     });
+    app.enforce_history_retention();
     app.viewport.engage_auto_scroll();
 }
 
@@ -755,6 +772,7 @@ fn append_resume_user_message_chunk(app: &mut App, chunk: &model::ContentChunk) 
 
 fn load_resume_history(app: &mut App, history_updates: &[model::SessionUpdate]) {
     app.messages.clear();
+    app.history_retention_stats = super::state::HistoryRetentionStats::default();
     app.messages.push(ChatMessage::welcome_with_recent(
         &app.model_name,
         &app.cwd,
@@ -773,6 +791,7 @@ fn load_resume_history(app: &mut App, history_updates: &[model::SessionUpdate]) 
         app.session_usage.cost_is_since_resume = true;
     }
     let _ = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Failed);
+    app.enforce_history_retention();
     app.viewport = super::ChatViewport::new();
     app.viewport.engage_auto_scroll();
 }
@@ -800,6 +819,7 @@ fn reset_for_new_session(
     app.queued_submission = None;
 
     app.messages.clear();
+    app.history_retention_stats = super::state::HistoryRetentionStats::default();
     app.messages.push(ChatMessage::welcome_with_recent(
         &app.model_name,
         &app.cwd,

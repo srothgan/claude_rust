@@ -21,7 +21,6 @@ use super::{
 use crate::agent::events::ClientEvent;
 use crate::agent::model;
 use crate::app::slash;
-use std::rc::Rc;
 
 pub(super) fn submit_input(app: &mut App) {
     if matches!(app.status, AppStatus::Connecting | AppStatus::Resuming | AppStatus::Error) {
@@ -120,7 +119,7 @@ fn dispatch_prompt_turn(app: &mut App, text: String) {
     // so their spinners don't continue during this turn.
     let _ = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Failed);
 
-    let Some(ref conn) = app.conn else { return };
+    let Some(conn) = app.conn.clone() else { return };
 
     app.messages.push(ChatMessage {
         role: MessageRole::User,
@@ -137,10 +136,10 @@ fn dispatch_prompt_turn(app: &mut App, text: String) {
         blocks: Vec::new(),
         usage: None,
     });
+    app.enforce_history_retention();
     app.status = AppStatus::Thinking;
     app.viewport.engage_auto_scroll();
 
-    let conn = Rc::clone(conn);
     let Some(sid) = app.session_id.clone() else {
         return;
     };

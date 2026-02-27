@@ -124,10 +124,13 @@ impl SessionUsageState {
 }
 
 pub const DEFAULT_RENDER_CACHE_BUDGET_BYTES: usize = 24 * 1024 * 1024;
-// TODO(perf): Re-evaluate long-session memory policy. Decide whether to:
-// - tune `DEFAULT_RENDER_CACHE_BUDGET_BYTES`, and
-// - introduce message-history retention limits (drop or disk-spill oldest messages)
-//   so total app memory remains bounded beyond render-cache eviction.
+pub const DEFAULT_HISTORY_RETENTION_MAX_BYTES: usize = 64 * 1024 * 1024;
+
+const HISTORY_HIDDEN_MARKER_PREFIX: &str = "Older messages hidden to keep memory bounded";
+const HISTORY_ESTIMATE_MESSAGE_OVERHEAD_BYTES: usize = 64;
+const HISTORY_ESTIMATE_BLOCK_OVERHEAD_BYTES: usize = 48;
+const HISTORY_ESTIMATE_TOOLCALL_OVERHEAD_BYTES: usize = 256;
+const HISTORY_ESTIMATE_WELCOME_OVERHEAD_BYTES: usize = 96;
 static CACHE_ACCESS_TICK: AtomicU64 = AtomicU64::new(1);
 
 fn next_cache_access_tick() -> u64 {
@@ -153,6 +156,27 @@ impl Default for RenderCacheBudget {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HistoryRetentionPolicy {
+    pub max_bytes: usize,
+}
+
+impl Default for HistoryRetentionPolicy {
+    fn default() -> Self {
+        Self { max_bytes: DEFAULT_HISTORY_RETENTION_MAX_BYTES }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct HistoryRetentionStats {
+    pub total_before_bytes: usize,
+    pub total_after_bytes: usize,
+    pub dropped_messages: usize,
+    pub dropped_bytes: usize,
+    pub total_dropped_messages: usize,
+    pub total_dropped_bytes: usize,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct CacheBudgetEnforceStats {
     pub total_before_bytes: usize,
@@ -167,6 +191,13 @@ struct CacheSlotCandidate {
     block_idx: usize,
     bytes: usize,
     last_access_tick: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct HistoryDropCandidate {
+    msg_idx: usize,
+    bytes: usize,
+    approx_rows: usize,
 }
 
 #[allow(clippy::struct_excessive_bools)]
@@ -302,6 +333,10 @@ pub struct App {
     pub perf: Option<crate::perf::PerfLogger>,
     /// Global in-memory budget for rendered block caches (message + tool + welcome).
     pub render_cache_budget: RenderCacheBudget,
+    /// Byte budget for source conversation history retained in memory.
+    pub history_retention: HistoryRetentionPolicy,
+    /// Last history-retention enforcement statistics.
+    pub history_retention_stats: HistoryRetentionStats,
     /// Smoothed frames-per-second (EMA of presented frame cadence).
     pub fps_ema: Option<f32>,
     /// Timestamp of the previous presented frame.
@@ -456,6 +491,334 @@ impl App {
         changed
     }
 
+    #[must_use]
+    fn is_history_hidden_marker_message(msg: &ChatMessage) -> bool {
+        if !matches!(msg.role, MessageRole::System) {
+            return false;
+        }
+        let Some(MessageBlock::Text(text, _, _)) = msg.blocks.first() else {
+            return false;
+        };
+        text.starts_with(HISTORY_HIDDEN_MARKER_PREFIX)
+    }
+
+    #[must_use]
+    fn is_history_protected_message(msg: &ChatMessage) -> bool {
+        if matches!(msg.role, MessageRole::Welcome) {
+            return true;
+        }
+        msg.blocks.iter().any(|block| {
+            if let MessageBlock::ToolCall(tc) = block {
+                tc.pending_permission.is_some()
+                    || matches!(
+                        tc.status,
+                        model::ToolCallStatus::Pending | model::ToolCallStatus::InProgress
+                    )
+            } else {
+                false
+            }
+        })
+    }
+
+    #[must_use]
+    fn estimate_tool_content_bytes(content: &model::ToolCallContent) -> usize {
+        match content {
+            model::ToolCallContent::Content(inner) => match &inner.content {
+                model::ContentBlock::Text(text) => text.text.len(),
+                model::ContentBlock::Image(image) => {
+                    image.data.len().saturating_add(image.mime_type.len())
+                }
+            },
+            model::ToolCallContent::Diff(diff) => diff
+                .path
+                .to_string_lossy()
+                .len()
+                .saturating_add(diff.old_text.as_ref().map_or(0, String::len))
+                .saturating_add(diff.new_text.len()),
+            model::ToolCallContent::Terminal(term) => term.terminal_id.len(),
+        }
+    }
+
+    #[must_use]
+    fn estimate_json_value_bytes(value: &serde_json::Value) -> usize {
+        serde_json::to_string(value).map_or(0, |json| json.len())
+    }
+
+    #[must_use]
+    fn estimate_tool_call_bytes(tc: &ToolCallInfo) -> usize {
+        let mut total = HISTORY_ESTIMATE_TOOLCALL_OVERHEAD_BYTES
+            .saturating_add(tc.id.len())
+            .saturating_add(tc.title.len())
+            .saturating_add(tc.sdk_tool_name.len())
+            .saturating_add(tc.terminal_id.as_ref().map_or(0, String::len))
+            .saturating_add(tc.terminal_command.as_ref().map_or(0, String::len))
+            .saturating_add(tc.terminal_output.as_ref().map_or(0, String::len));
+
+        if let Some(raw_input) = &tc.raw_input {
+            total = total.saturating_add(Self::estimate_json_value_bytes(raw_input));
+        }
+        for content in &tc.content {
+            total = total.saturating_add(Self::estimate_tool_content_bytes(content));
+        }
+        if let Some(permission) = &tc.pending_permission {
+            total = total.saturating_add(64);
+            for option in &permission.options {
+                total = total
+                    .saturating_add(option.option_id.len())
+                    .saturating_add(option.name.len())
+                    .saturating_add(option.description.as_ref().map_or(0, String::len));
+            }
+        }
+
+        total
+    }
+
+    #[must_use]
+    pub fn estimate_message_bytes(msg: &ChatMessage) -> usize {
+        let mut total = HISTORY_ESTIMATE_MESSAGE_OVERHEAD_BYTES;
+        if msg.usage.is_some() {
+            total = total.saturating_add(32);
+        }
+
+        for block in &msg.blocks {
+            total = total.saturating_add(HISTORY_ESTIMATE_BLOCK_OVERHEAD_BYTES);
+            match block {
+                MessageBlock::Text(text, _, _) => {
+                    // Text block source is currently held in both the plain String and
+                    // IncrementalMarkdown source; estimate both copies.
+                    total = total.saturating_add(text.len().saturating_mul(2));
+                }
+                MessageBlock::ToolCall(tc) => {
+                    total = total.saturating_add(Self::estimate_tool_call_bytes(tc));
+                }
+                MessageBlock::Welcome(welcome) => {
+                    total = total
+                        .saturating_add(HISTORY_ESTIMATE_WELCOME_OVERHEAD_BYTES)
+                        .saturating_add(welcome.model_name.len())
+                        .saturating_add(welcome.cwd.len());
+                    for session in &welcome.recent_sessions {
+                        total = total
+                            .saturating_add(session.session_id.len())
+                            .saturating_add(session.cwd.len())
+                            .saturating_add(session.title.as_ref().map_or(0, String::len))
+                            .saturating_add(session.updated_at.as_ref().map_or(0, String::len));
+                    }
+                }
+            }
+        }
+        total
+    }
+
+    #[must_use]
+    pub fn estimate_history_bytes(&self) -> usize {
+        self.messages.iter().map(Self::estimate_message_bytes).sum()
+    }
+
+    fn rebuild_tool_indices_and_terminal_refs(&mut self) {
+        self.tool_call_index.clear();
+        self.terminal_tool_calls.clear();
+
+        let mut pending_permission_ids = Vec::new();
+        for (msg_idx, msg) in self.messages.iter_mut().enumerate() {
+            for (block_idx, block) in msg.blocks.iter_mut().enumerate() {
+                if let MessageBlock::ToolCall(tc) = block {
+                    let tc = tc.as_mut();
+                    self.tool_call_index.insert(tc.id.clone(), (msg_idx, block_idx));
+                    if let Some(terminal_id) = tc.terminal_id.clone() {
+                        self.terminal_tool_calls.push((terminal_id, msg_idx, block_idx));
+                    }
+                    if let Some(permission) = tc.pending_permission.as_mut() {
+                        permission.focused = false;
+                        pending_permission_ids.push(tc.id.clone());
+                    }
+                }
+            }
+        }
+
+        let permission_set: HashSet<&str> =
+            pending_permission_ids.iter().map(String::as_str).collect();
+        self.pending_permission_ids.retain(|id| permission_set.contains(id.as_str()));
+        for id in pending_permission_ids {
+            if !self.pending_permission_ids.iter().any(|existing| existing == &id) {
+                self.pending_permission_ids.push(id);
+            }
+        }
+
+        if let Some(first_id) = self.pending_permission_ids.first().cloned() {
+            self.claim_focus_target(FocusTarget::Permission);
+            if let Some((msg_idx, block_idx)) = self.lookup_tool_call(&first_id)
+                && let Some(MessageBlock::ToolCall(tc)) =
+                    self.messages.get_mut(msg_idx).and_then(|m| m.blocks.get_mut(block_idx))
+                && let Some(permission) = tc.pending_permission.as_mut()
+            {
+                permission.focused = true;
+            }
+        } else {
+            self.release_focus_target(FocusTarget::Permission);
+        }
+        self.normalize_focus_stack();
+    }
+
+    #[must_use]
+    fn format_mib_tenths(bytes: usize) -> String {
+        let tenths =
+            (u128::try_from(bytes).unwrap_or(u128::MAX).saturating_mul(10) + 524_288) / 1_048_576;
+        format!("{}.{}", tenths / 10, tenths % 10)
+    }
+
+    #[must_use]
+    fn history_hidden_marker_text(
+        total_dropped_messages: usize,
+        total_dropped_bytes: usize,
+    ) -> String {
+        format!(
+            "{HISTORY_HIDDEN_MARKER_PREFIX} (dropped {total_dropped_messages} messages, {} MiB).",
+            Self::format_mib_tenths(total_dropped_bytes)
+        )
+    }
+
+    fn upsert_history_hidden_marker(&mut self) {
+        let marker_idx = self.messages.iter().position(Self::is_history_hidden_marker_message);
+        if self.history_retention_stats.total_dropped_messages == 0 {
+            if let Some(idx) = marker_idx {
+                self.messages.remove(idx);
+                self.mark_message_layout_dirty(idx);
+                self.rebuild_tool_indices_and_terminal_refs();
+            }
+            return;
+        }
+
+        let marker_text = Self::history_hidden_marker_text(
+            self.history_retention_stats.total_dropped_messages,
+            self.history_retention_stats.total_dropped_bytes,
+        );
+
+        if let Some(idx) = marker_idx {
+            if let Some(MessageBlock::Text(text, cache, incr)) =
+                self.messages.get_mut(idx).and_then(|m| m.blocks.get_mut(0))
+                && *text != marker_text
+            {
+                text.clone_from(&marker_text);
+                *incr = IncrementalMarkdown::from_complete(&marker_text);
+                cache.invalidate();
+                self.mark_message_layout_dirty(idx);
+            }
+            return;
+        }
+
+        let insert_idx = usize::from(
+            self.messages.first().is_some_and(|msg| matches!(msg.role, MessageRole::Welcome)),
+        );
+        self.messages.insert(
+            insert_idx,
+            ChatMessage {
+                role: MessageRole::System,
+                blocks: vec![MessageBlock::Text(
+                    marker_text.clone(),
+                    BlockCache::default(),
+                    IncrementalMarkdown::from_complete(&marker_text),
+                )],
+                usage: None,
+            },
+        );
+        self.mark_message_layout_dirty(insert_idx);
+        self.rebuild_tool_indices_and_terminal_refs();
+    }
+
+    #[allow(clippy::cast_precision_loss)]
+    pub fn enforce_history_retention(&mut self) -> HistoryRetentionStats {
+        let mut stats = HistoryRetentionStats::default();
+        let max_bytes = self.history_retention.max_bytes.max(1);
+        stats.total_before_bytes = self.estimate_history_bytes();
+        stats.total_after_bytes = stats.total_before_bytes;
+
+        if stats.total_before_bytes > max_bytes {
+            let mut candidates = Vec::new();
+            for (msg_idx, msg) in self.messages.iter().enumerate() {
+                if Self::is_history_hidden_marker_message(msg)
+                    || Self::is_history_protected_message(msg)
+                {
+                    continue;
+                }
+                let bytes = Self::estimate_message_bytes(msg);
+                if bytes == 0 {
+                    continue;
+                }
+                candidates.push(HistoryDropCandidate {
+                    msg_idx,
+                    bytes,
+                    approx_rows: self.viewport.message_height(msg_idx),
+                });
+            }
+
+            let mut drop_candidates = Vec::new();
+            for candidate in candidates {
+                if stats.total_after_bytes <= max_bytes {
+                    break;
+                }
+                stats.total_after_bytes = stats.total_after_bytes.saturating_sub(candidate.bytes);
+                stats.dropped_bytes = stats.dropped_bytes.saturating_add(candidate.bytes);
+                stats.dropped_messages = stats.dropped_messages.saturating_add(1);
+                drop_candidates.push(candidate);
+            }
+
+            if !drop_candidates.is_empty() {
+                let mut dropped_rows = 0usize;
+                let drop_set: HashSet<usize> = drop_candidates
+                    .iter()
+                    .map(|candidate| {
+                        dropped_rows = dropped_rows.saturating_add(candidate.approx_rows);
+                        candidate.msg_idx
+                    })
+                    .collect();
+
+                let mut retained =
+                    Vec::with_capacity(self.messages.len().saturating_sub(drop_set.len()));
+                for (msg_idx, msg) in self.messages.drain(..).enumerate() {
+                    if !drop_set.contains(&msg_idx) {
+                        retained.push(msg);
+                    }
+                }
+                self.messages = retained;
+
+                if !self.viewport.auto_scroll && dropped_rows > 0 {
+                    self.viewport.scroll_target =
+                        self.viewport.scroll_target.saturating_sub(dropped_rows);
+                    self.viewport.scroll_offset =
+                        self.viewport.scroll_offset.saturating_sub(dropped_rows);
+                    let dropped_rows_f = dropped_rows as f32;
+                    self.viewport.scroll_pos = if self.viewport.scroll_pos > dropped_rows_f {
+                        self.viewport.scroll_pos - dropped_rows_f
+                    } else {
+                        0.0
+                    };
+                }
+                self.rebuild_tool_indices_and_terminal_refs();
+                self.mark_all_message_layout_dirty();
+                self.needs_redraw = true;
+            }
+        }
+
+        self.history_retention_stats.total_before_bytes = stats.total_before_bytes;
+        self.history_retention_stats.total_dropped_messages = self
+            .history_retention_stats
+            .total_dropped_messages
+            .saturating_add(stats.dropped_messages);
+        self.history_retention_stats.total_dropped_bytes =
+            self.history_retention_stats.total_dropped_bytes.saturating_add(stats.dropped_bytes);
+
+        self.upsert_history_hidden_marker();
+
+        stats.total_after_bytes = self.estimate_history_bytes();
+        self.history_retention_stats.total_after_bytes = stats.total_after_bytes;
+        self.history_retention_stats.dropped_messages = stats.dropped_messages;
+        self.history_retention_stats.dropped_bytes = stats.dropped_bytes;
+
+        stats.total_dropped_messages = self.history_retention_stats.total_dropped_messages;
+        stats.total_dropped_bytes = self.history_retention_stats.total_dropped_bytes;
+        stats
+    }
+
     pub fn enforce_render_cache_budget(&mut self) -> CacheBudgetEnforceStats {
         let mut stats = CacheBudgetEnforceStats::default();
         let is_streaming = matches!(self.status, AppStatus::Thinking | AppStatus::Running);
@@ -607,6 +970,8 @@ impl App {
             needs_redraw: true,
             perf: None,
             render_cache_budget: RenderCacheBudget::default(),
+            history_retention: HistoryRetentionPolicy::default(),
+            history_retention_stats: HistoryRetentionStats::default(),
             fps_ema: None,
             last_frame_at: None,
         }
@@ -1684,6 +2049,45 @@ mod tests {
         )
     }
 
+    fn user_text_message(text: &str) -> ChatMessage {
+        ChatMessage {
+            role: MessageRole::User,
+            blocks: vec![assistant_text_block(text)],
+            usage: None,
+        }
+    }
+
+    fn assistant_tool_message(id: &str, status: model::ToolCallStatus) -> ChatMessage {
+        ChatMessage {
+            role: MessageRole::Assistant,
+            blocks: vec![MessageBlock::ToolCall(Box::new(ToolCallInfo {
+                id: id.to_owned(),
+                title: format!("tool {id}"),
+                sdk_tool_name: "Read".to_owned(),
+                raw_input: None,
+                status,
+                content: Vec::new(),
+                collapsed: false,
+                hidden: false,
+                terminal_id: None,
+                terminal_command: None,
+                terminal_output: Some("x".repeat(1024)),
+                terminal_output_len: 1024,
+                terminal_bytes_seen: 1024,
+                terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
+                render_epoch: 0,
+                layout_epoch: 0,
+                last_measured_width: 0,
+                last_measured_height: 0,
+                last_measured_layout_epoch: 0,
+                last_measured_layout_generation: 0,
+                cache: BlockCache::default(),
+                pending_permission: None,
+            }))],
+            usage: None,
+        }
+    }
+
     #[test]
     fn enforce_render_cache_budget_evicts_lru_block() {
         let mut app = make_test_app();
@@ -1758,6 +2162,94 @@ mod tests {
         } else {
             panic!("expected text block");
         }
+    }
+
+    #[test]
+    fn enforce_history_retention_noop_under_budget() {
+        let mut app = make_test_app();
+        app.messages = vec![
+            ChatMessage::welcome("model", "/cwd"),
+            user_text_message("small message"),
+            user_text_message("another message"),
+        ];
+        app.history_retention.max_bytes = usize::MAX / 4;
+
+        let stats = app.enforce_history_retention();
+        assert_eq!(stats.dropped_messages, 0);
+        assert_eq!(stats.total_dropped_messages, 0);
+        assert!(!app.messages.iter().any(App::is_history_hidden_marker_message));
+    }
+
+    #[test]
+    fn enforce_history_retention_drops_oldest_and_adds_marker() {
+        let mut app = make_test_app();
+        app.messages = vec![
+            ChatMessage::welcome("model", "/cwd"),
+            user_text_message("first old message"),
+            user_text_message("second old message"),
+            user_text_message("third old message"),
+        ];
+        app.history_retention.max_bytes = 1;
+
+        let stats = app.enforce_history_retention();
+        assert_eq!(stats.dropped_messages, 3);
+        assert!(matches!(app.messages[0].role, MessageRole::Welcome));
+        assert!(app.messages.iter().any(App::is_history_hidden_marker_message));
+        assert_eq!(app.messages.len(), 2);
+    }
+
+    #[test]
+    fn enforce_history_retention_preserves_in_progress_tool_message() {
+        let mut app = make_test_app();
+        app.messages = vec![
+            ChatMessage::welcome("model", "/cwd"),
+            user_text_message("droppable"),
+            assistant_tool_message("tool-keep", model::ToolCallStatus::InProgress),
+        ];
+        app.history_retention.max_bytes = 1;
+
+        let stats = app.enforce_history_retention();
+        assert_eq!(stats.dropped_messages, 1);
+        assert!(app.messages.iter().any(|msg| {
+            msg.blocks.iter().any(|block| {
+                matches!(
+                    block,
+                    MessageBlock::ToolCall(tc) if tc.id == "tool-keep"
+                        && matches!(tc.status, model::ToolCallStatus::InProgress)
+                )
+            })
+        }));
+    }
+
+    #[test]
+    fn enforce_history_retention_rebuilds_tool_index_after_prune() {
+        let mut app = make_test_app();
+        app.messages = vec![
+            ChatMessage::welcome("model", "/cwd"),
+            user_text_message("drop this"),
+            assistant_tool_message("tool-idx", model::ToolCallStatus::InProgress),
+        ];
+        app.index_tool_call("tool-idx".to_owned(), 99, 99);
+        app.history_retention.max_bytes = 1;
+
+        let _ = app.enforce_history_retention();
+        assert_eq!(app.lookup_tool_call("tool-idx"), Some((2, 0)));
+    }
+
+    #[test]
+    fn enforce_history_retention_keeps_single_marker_on_repeat() {
+        let mut app = make_test_app();
+        app.messages = vec![ChatMessage::welcome("model", "/cwd"), user_text_message("drop me")];
+        app.history_retention.max_bytes = 1;
+
+        let first = app.enforce_history_retention();
+        let second = app.enforce_history_retention();
+        let marker_count =
+            app.messages.iter().filter(|msg| App::is_history_hidden_marker_message(msg)).count();
+
+        assert_eq!(first.dropped_messages, 1);
+        assert_eq!(second.dropped_messages, 0);
+        assert_eq!(marker_count, 1);
     }
 
     #[test]

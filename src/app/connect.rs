@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use super::state::RenderCacheBudget;
+use super::state::{HistoryRetentionPolicy, HistoryRetentionStats, RenderCacheBudget};
 use super::{
     App, AppStatus, ChatViewport, FocusManager, HelpView, ModeInfo, ModeState, SelectionState,
     TodoItem,
@@ -127,6 +127,8 @@ pub fn create_app(cli: &Cli) -> App {
             .as_deref()
             .and_then(|path| crate::perf::PerfLogger::open(path, cli.perf_append)),
         render_cache_budget: RenderCacheBudget::default(),
+        history_retention: HistoryRetentionPolicy::default(),
+        history_retention_stats: HistoryRetentionStats::default(),
         fps_ema: None,
         last_frame_at: None,
     };

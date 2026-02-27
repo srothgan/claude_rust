@@ -184,6 +184,7 @@ fn push_system_message(app: &mut App, text: impl Into<String>) {
         )],
         usage: None,
     });
+    app.enforce_history_retention();
     app.viewport.engage_auto_scroll();
 }
 
@@ -198,6 +199,7 @@ fn push_user_message(app: &mut App, text: impl Into<String>) {
         )],
         usage: None,
     });
+    app.enforce_history_retention();
     app.viewport.engage_auto_scroll();
 }
 
@@ -241,6 +243,8 @@ pub(crate) fn clear_conversation_history(app: &mut App) {
         &app.cwd,
         &app.recent_sessions,
     ));
+    app.history_retention_stats = super::state::HistoryRetentionStats::default();
+    app.enforce_history_retention();
     app.viewport = ChatViewport::new();
 
     app.tool_call_index.clear();
