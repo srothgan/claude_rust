@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.1] - 2026-02-27 [Changes][v0.4.1]
+
+### Fixes
+
+- **Dynamic bridge log levels** (`client.rs`): Bridge stderr lines are now routed to the correct tracing level -- `[sdk error]`/panic lines go to `error!`, `[sdk warn]` lines to `warn!`, and ordinary SDK chatter to `debug!` -- instead of unconditionally emitting `error!` for every line
+- **Height cache invalidated on interruption** (`events.rs`): `TurnComplete` and `TurnError` now call `mark_message_layout_dirty` on the tail assistant message so the height cache is re-measured after a cancelled or failed turn, fixing stale layout after interruption
+
 ## [0.4.0] - 2026-02-27 [Changes][v0.4.0]
 
 ### Features
@@ -187,6 +194,7 @@ Performance optimization was a major release theme across recent commits:
   - `PromptResponse.usage` is `None`
 - Session resume (`--resume`) is blocked on an upstream adapter release that contains a Windows path encoding fix
 
+[v0.4.1]: https://github.com/srothgan/claude-code-rust/compare/v0.4.0...v0.4.1
 [v0.4.0]: https://github.com/srothgan/claude-code-rust/compare/v0.3.0...v0.4.0
 [v0.3.0]: https://github.com/srothgan/claude-code-rust/compare/v0.2.0...v0.3.0
 [v0.2.0]: https://github.com/srothgan/claude-code-rust/compare/v0.1.3...v0.2.0

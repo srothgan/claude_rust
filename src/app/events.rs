@@ -386,6 +386,9 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
             let _ = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Failed);
         }
         ClientEvent::TurnComplete => {
+            let tail_assistant_idx =
+                app.messages.iter().rposition(|m| matches!(m.role, MessageRole::Assistant));
+            let turn_was_active = matches!(app.status, AppStatus::Thinking | AppStatus::Running);
             let should_compact_clear = app.pending_compact_clear;
             app.pending_compact_clear = false;
             app.is_compacting = false;
@@ -408,10 +411,15 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
             }
             if should_compact_clear {
                 super::slash::clear_conversation_history(app);
+            } else if turn_was_active || cancelled_requested {
+                mark_turn_exit_assistant_layout_dirty(app, tail_assistant_idx);
             }
             super::input_submit::drain_queued_submission(app);
         }
         ClientEvent::TurnError(msg) => {
+            let tail_assistant_idx =
+                app.messages.iter().rposition(|m| matches!(m.role, MessageRole::Assistant));
+            let turn_was_active = matches!(app.status, AppStatus::Thinking | AppStatus::Running);
             let should_compact_clear = app.pending_compact_clear;
             app.pending_compact_clear = false;
             app.is_compacting = false;
@@ -428,6 +436,8 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
                 );
                 if should_compact_clear {
                     super::slash::clear_conversation_history(app);
+                } else {
+                    mark_turn_exit_assistant_layout_dirty(app, tail_assistant_idx);
                 }
                 let _ = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Failed);
                 app.input.clear();
@@ -458,6 +468,9 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
             app.pending_submit = false;
             app.status = AppStatus::Error;
             push_turn_error_message(app, &msg);
+            if !should_compact_clear && turn_was_active {
+                mark_turn_exit_assistant_layout_dirty(app, tail_assistant_idx);
+            }
         }
         ClientEvent::Connected { session_id, cwd, model_name, mode, history_updates } => {
             // Grab connection from the shared slot
@@ -567,6 +580,15 @@ fn push_interrupted_hint(app: &mut App) {
         usage: None,
     });
     app.viewport.engage_auto_scroll();
+}
+
+fn mark_turn_exit_assistant_layout_dirty(app: &mut App, idx: Option<usize>) {
+    let Some(idx) = idx else {
+        return;
+    };
+    if app.messages.get(idx).is_some_and(|msg| matches!(msg.role, MessageRole::Assistant)) {
+        app.mark_message_layout_dirty(idx);
+    }
 }
 
 fn push_turn_error_message(app: &mut App, error: &str) {
@@ -2325,6 +2347,50 @@ mod tests {
     }
 
     #[test]
+    fn turn_complete_after_manual_cancel_marks_tail_assistant_layout_dirty() {
+        let mut app = make_test_app();
+        app.status = AppStatus::Thinking;
+        app.messages.push(user_msg("build app"));
+        app.messages.push(assistant_msg(vec![MessageBlock::Text(
+            "partial output".into(),
+            BlockCache::default(),
+            IncrementalMarkdown::from_complete("partial output"),
+        )]));
+        app.pending_cancel_origin = Some(CancelOrigin::Manual);
+
+        handle_client_event(&mut app, ClientEvent::TurnComplete);
+
+        assert!(matches!(app.status, AppStatus::Ready));
+        assert_eq!(app.viewport.dirty_from, Some(1));
+        let Some(last) = app.messages.last() else {
+            panic!("expected interruption hint message");
+        };
+        assert!(matches!(last.role, MessageRole::System));
+    }
+
+    #[test]
+    fn turn_complete_after_auto_cancel_marks_tail_assistant_layout_dirty() {
+        let mut app = make_test_app();
+        app.status = AppStatus::Running;
+        app.messages.push(user_msg("build app"));
+        app.messages.push(assistant_msg(vec![MessageBlock::Text(
+            "partial output".into(),
+            BlockCache::default(),
+            IncrementalMarkdown::from_complete("partial output"),
+        )]));
+        app.pending_cancel_origin = Some(CancelOrigin::AutoQueue);
+
+        handle_client_event(&mut app, ClientEvent::TurnComplete);
+
+        assert!(matches!(app.status, AppStatus::Ready));
+        assert_eq!(app.viewport.dirty_from, Some(1));
+        let Some(last) = app.messages.last() else {
+            panic!("expected assistant message");
+        };
+        assert!(matches!(last.role, MessageRole::Assistant));
+    }
+
+    #[test]
     fn connected_updates_welcome_model_while_pristine() {
         let mut app = make_test_app();
         app.messages.push(ChatMessage::welcome("Connecting...", "/test"));
@@ -2736,6 +2802,32 @@ mod tests {
             panic!("expected text block");
         };
         assert_eq!(text, CONVERSATION_INTERRUPTED_HINT);
+    }
+
+    #[test]
+    fn turn_error_after_auto_cancel_marks_tail_assistant_layout_dirty() {
+        let mut app = make_test_app();
+        app.status = AppStatus::Running;
+        app.messages.push(user_msg("build app"));
+        app.messages.push(assistant_msg(vec![MessageBlock::Text(
+            "partial output".into(),
+            BlockCache::default(),
+            IncrementalMarkdown::from_complete("partial output"),
+        )]));
+        app.pending_cancel_origin = Some(CancelOrigin::AutoQueue);
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::TurnError("Error: Request was aborted.\n    at stack line".into()),
+        );
+
+        assert!(matches!(app.status, AppStatus::Ready));
+        assert_eq!(app.viewport.dirty_from, Some(1));
+        assert_eq!(app.messages.len(), 2);
+        let Some(last) = app.messages.last() else {
+            panic!("expected assistant message");
+        };
+        assert!(matches!(last.role, MessageRole::Assistant));
     }
 
     #[test]
