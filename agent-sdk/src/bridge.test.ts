@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
+  CACHE_SPLIT_POLICY,
   buildToolResultFields,
   buildUsageUpdateFromResult,
   createToolCall,
@@ -14,6 +15,7 @@ import {
   parseCommandEnvelope,
   permissionOptionsFromSuggestions,
   permissionResultFromOutcome,
+  previewKilobyteLabel,
   unwrapToolUseResult,
 } from "./bridge.js";
 
@@ -128,6 +130,13 @@ test("normalizeToolResultText collapses persisted-output payload to first meanin
   │ </persisted-output>
 `);
   assert.equal(normalized, "Output too large (132.5KB). Full output saved to: C:\\tmp\\tool-results\\bbf63b9.txt");
+});
+
+test("cache split policy defaults stay aligned with UI thresholds", () => {
+  assert.equal(CACHE_SPLIT_POLICY.softLimitBytes, 1536);
+  assert.equal(CACHE_SPLIT_POLICY.hardLimitBytes, 4096);
+  assert.equal(CACHE_SPLIT_POLICY.previewLimitBytes, 2048);
+  assert.equal(previewKilobyteLabel(CACHE_SPLIT_POLICY), "2KB");
 });
 
 test("buildToolResultFields uses normalized persisted-output text", () => {

@@ -165,13 +165,9 @@ pub fn measure_tool_call_height_cached(
             tc.record_measured_height(width, h, layout_generation);
             return (h, 0);
         }
-        if let Some(cached_lines) = tc.cache.get().cloned() {
-            let h = Paragraph::new(Text::from(cached_lines.clone()))
-                .wrap(Wrap { trim: false })
-                .line_count(width);
-            tc.cache.set_height(h, width);
+        if let Some(h) = tc.cache.measure_and_set_height(width) {
             tc.record_measured_height(width, h, layout_generation);
-            return (h, cached_lines.len());
+            return (h, tc.cache.get().map_or(0, Vec::len));
         }
         let fresh = render_tool_call(tc, width, spinner_frame);
         let h =
@@ -192,14 +188,10 @@ pub fn measure_tool_call_height_cached(
         tc.record_measured_height(width, total, layout_generation);
         return (total, 1);
     }
-    if let Some(cached_body) = tc.cache.get().cloned() {
-        let body_h = Paragraph::new(Text::from(cached_body.clone()))
-            .wrap(Wrap { trim: false })
-            .line_count(width);
-        tc.cache.set_height(body_h, width);
+    if let Some(body_h) = tc.cache.measure_and_set_height(width) {
         let total = title_h + body_h;
         tc.record_measured_height(width, total, layout_generation);
-        return (total, cached_body.len() + 1);
+        return (total, tc.cache.get().map_or(1, |b| b.len() + 1));
     }
 
     let body = render_tool_call_body(tc);

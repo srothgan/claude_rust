@@ -16,8 +16,10 @@
 
 use crate::agent::events::ClientEvent;
 use crate::agent::model;
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 use tokio::sync::mpsc;
 
@@ -119,6 +121,83 @@ impl SessionUsageState {
         let cache_write = self.latest_cache_write_tokens.unwrap_or(0);
         Some(input.saturating_add(output).saturating_add(cache_read).saturating_add(cache_write))
     }
+}
+
+pub const DEFAULT_RENDER_CACHE_BUDGET_BYTES: usize = 24 * 1024 * 1024;
+pub const DEFAULT_HISTORY_RETENTION_MAX_BYTES: usize = 64 * 1024 * 1024;
+
+const HISTORY_HIDDEN_MARKER_PREFIX: &str = "Older messages hidden to keep memory bounded";
+const HISTORY_ESTIMATE_MESSAGE_OVERHEAD_BYTES: usize = 64;
+const HISTORY_ESTIMATE_BLOCK_OVERHEAD_BYTES: usize = 48;
+const HISTORY_ESTIMATE_TOOLCALL_OVERHEAD_BYTES: usize = 256;
+const HISTORY_ESTIMATE_WELCOME_OVERHEAD_BYTES: usize = 96;
+static CACHE_ACCESS_TICK: AtomicU64 = AtomicU64::new(1);
+
+fn next_cache_access_tick() -> u64 {
+    CACHE_ACCESS_TICK.fetch_add(1, Ordering::Relaxed)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RenderCacheBudget {
+    pub max_bytes: usize,
+    pub last_total_bytes: usize,
+    pub last_evicted_bytes: usize,
+    pub total_evictions: usize,
+}
+
+impl Default for RenderCacheBudget {
+    fn default() -> Self {
+        Self {
+            max_bytes: DEFAULT_RENDER_CACHE_BUDGET_BYTES,
+            last_total_bytes: 0,
+            last_evicted_bytes: 0,
+            total_evictions: 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HistoryRetentionPolicy {
+    pub max_bytes: usize,
+}
+
+impl Default for HistoryRetentionPolicy {
+    fn default() -> Self {
+        Self { max_bytes: DEFAULT_HISTORY_RETENTION_MAX_BYTES }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct HistoryRetentionStats {
+    pub total_before_bytes: usize,
+    pub total_after_bytes: usize,
+    pub dropped_messages: usize,
+    pub dropped_bytes: usize,
+    pub total_dropped_messages: usize,
+    pub total_dropped_bytes: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CacheBudgetEnforceStats {
+    pub total_before_bytes: usize,
+    pub total_after_bytes: usize,
+    pub evicted_bytes: usize,
+    pub evicted_blocks: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CacheSlotCandidate {
+    msg_idx: usize,
+    block_idx: usize,
+    bytes: usize,
+    last_access_tick: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct HistoryDropCandidate {
+    msg_idx: usize,
+    bytes: usize,
+    approx_rows: usize,
 }
 
 #[allow(clippy::struct_excessive_bools)]
@@ -252,6 +331,12 @@ pub struct App {
     /// Taken out (`Option::take`) during render, used, then put back to avoid
     /// borrow conflicts with `&mut App`.
     pub perf: Option<crate::perf::PerfLogger>,
+    /// Global in-memory budget for rendered block caches (message + tool + welcome).
+    pub render_cache_budget: RenderCacheBudget,
+    /// Byte budget for source conversation history retained in memory.
+    pub history_retention: HistoryRetentionPolicy,
+    /// Last history-retention enforcement statistics.
+    pub history_retention_stats: HistoryRetentionStats,
     /// Smoothed frames-per-second (EMA of presented frame cadence).
     pub fps_ema: Option<f32>,
     /// Timestamp of the previous presented frame.
@@ -406,6 +491,417 @@ impl App {
         changed
     }
 
+    #[must_use]
+    fn is_history_hidden_marker_message(msg: &ChatMessage) -> bool {
+        if !matches!(msg.role, MessageRole::System) {
+            return false;
+        }
+        let Some(MessageBlock::Text(text, _, _)) = msg.blocks.first() else {
+            return false;
+        };
+        text.starts_with(HISTORY_HIDDEN_MARKER_PREFIX)
+    }
+
+    #[must_use]
+    fn is_history_protected_message(msg: &ChatMessage) -> bool {
+        if matches!(msg.role, MessageRole::Welcome) {
+            return true;
+        }
+        msg.blocks.iter().any(|block| {
+            if let MessageBlock::ToolCall(tc) = block {
+                tc.pending_permission.is_some()
+                    || matches!(
+                        tc.status,
+                        model::ToolCallStatus::Pending | model::ToolCallStatus::InProgress
+                    )
+            } else {
+                false
+            }
+        })
+    }
+
+    #[must_use]
+    fn estimate_tool_content_bytes(content: &model::ToolCallContent) -> usize {
+        match content {
+            model::ToolCallContent::Content(inner) => match &inner.content {
+                model::ContentBlock::Text(text) => text.text.len(),
+                model::ContentBlock::Image(image) => {
+                    image.data.len().saturating_add(image.mime_type.len())
+                }
+            },
+            model::ToolCallContent::Diff(diff) => diff
+                .path
+                .to_string_lossy()
+                .len()
+                .saturating_add(diff.old_text.as_ref().map_or(0, String::len))
+                .saturating_add(diff.new_text.len()),
+            model::ToolCallContent::Terminal(term) => term.terminal_id.len(),
+        }
+    }
+
+    #[must_use]
+    fn estimate_json_value_bytes(value: &serde_json::Value) -> usize {
+        serde_json::to_string(value).map_or(0, |json| json.len())
+    }
+
+    #[must_use]
+    fn estimate_tool_call_bytes(tc: &ToolCallInfo) -> usize {
+        let mut total = HISTORY_ESTIMATE_TOOLCALL_OVERHEAD_BYTES
+            .saturating_add(tc.id.len())
+            .saturating_add(tc.title.len())
+            .saturating_add(tc.sdk_tool_name.len())
+            .saturating_add(tc.terminal_id.as_ref().map_or(0, String::len))
+            .saturating_add(tc.terminal_command.as_ref().map_or(0, String::len))
+            .saturating_add(tc.terminal_output.as_ref().map_or(0, String::len));
+
+        if let Some(raw_input) = &tc.raw_input {
+            total = total.saturating_add(Self::estimate_json_value_bytes(raw_input));
+        }
+        for content in &tc.content {
+            total = total.saturating_add(Self::estimate_tool_content_bytes(content));
+        }
+        if let Some(permission) = &tc.pending_permission {
+            total = total.saturating_add(64);
+            for option in &permission.options {
+                total = total
+                    .saturating_add(option.option_id.len())
+                    .saturating_add(option.name.len())
+                    .saturating_add(option.description.as_ref().map_or(0, String::len));
+            }
+        }
+
+        total
+    }
+
+    #[must_use]
+    pub fn estimate_message_bytes(msg: &ChatMessage) -> usize {
+        let mut total = HISTORY_ESTIMATE_MESSAGE_OVERHEAD_BYTES;
+        if msg.usage.is_some() {
+            total = total.saturating_add(32);
+        }
+
+        for block in &msg.blocks {
+            total = total.saturating_add(HISTORY_ESTIMATE_BLOCK_OVERHEAD_BYTES);
+            match block {
+                MessageBlock::Text(text, _, _) => {
+                    // Text block source is currently held in both the plain String and
+                    // IncrementalMarkdown source; estimate both copies.
+                    total = total.saturating_add(text.len().saturating_mul(2));
+                }
+                MessageBlock::ToolCall(tc) => {
+                    total = total.saturating_add(Self::estimate_tool_call_bytes(tc));
+                }
+                MessageBlock::Welcome(welcome) => {
+                    total = total
+                        .saturating_add(HISTORY_ESTIMATE_WELCOME_OVERHEAD_BYTES)
+                        .saturating_add(welcome.model_name.len())
+                        .saturating_add(welcome.cwd.len());
+                    for session in &welcome.recent_sessions {
+                        total = total
+                            .saturating_add(session.session_id.len())
+                            .saturating_add(session.cwd.len())
+                            .saturating_add(session.title.as_ref().map_or(0, String::len))
+                            .saturating_add(session.updated_at.as_ref().map_or(0, String::len));
+                    }
+                }
+            }
+        }
+        total
+    }
+
+    #[must_use]
+    pub fn estimate_history_bytes(&self) -> usize {
+        self.messages.iter().map(Self::estimate_message_bytes).sum()
+    }
+
+    fn rebuild_tool_indices_and_terminal_refs(&mut self) {
+        self.tool_call_index.clear();
+        self.terminal_tool_calls.clear();
+
+        let mut pending_permission_ids = Vec::new();
+        for (msg_idx, msg) in self.messages.iter_mut().enumerate() {
+            for (block_idx, block) in msg.blocks.iter_mut().enumerate() {
+                if let MessageBlock::ToolCall(tc) = block {
+                    let tc = tc.as_mut();
+                    self.tool_call_index.insert(tc.id.clone(), (msg_idx, block_idx));
+                    if let Some(terminal_id) = tc.terminal_id.clone() {
+                        self.terminal_tool_calls.push((terminal_id, msg_idx, block_idx));
+                    }
+                    if let Some(permission) = tc.pending_permission.as_mut() {
+                        permission.focused = false;
+                        pending_permission_ids.push(tc.id.clone());
+                    }
+                }
+            }
+        }
+
+        let permission_set: HashSet<&str> =
+            pending_permission_ids.iter().map(String::as_str).collect();
+        self.pending_permission_ids.retain(|id| permission_set.contains(id.as_str()));
+        for id in pending_permission_ids {
+            if !self.pending_permission_ids.iter().any(|existing| existing == &id) {
+                self.pending_permission_ids.push(id);
+            }
+        }
+
+        if let Some(first_id) = self.pending_permission_ids.first().cloned() {
+            self.claim_focus_target(FocusTarget::Permission);
+            if let Some((msg_idx, block_idx)) = self.lookup_tool_call(&first_id)
+                && let Some(MessageBlock::ToolCall(tc)) =
+                    self.messages.get_mut(msg_idx).and_then(|m| m.blocks.get_mut(block_idx))
+                && let Some(permission) = tc.pending_permission.as_mut()
+            {
+                permission.focused = true;
+            }
+        } else {
+            self.release_focus_target(FocusTarget::Permission);
+        }
+        self.normalize_focus_stack();
+    }
+
+    #[must_use]
+    fn format_mib_tenths(bytes: usize) -> String {
+        let tenths =
+            (u128::try_from(bytes).unwrap_or(u128::MAX).saturating_mul(10) + 524_288) / 1_048_576;
+        format!("{}.{}", tenths / 10, tenths % 10)
+    }
+
+    #[must_use]
+    fn history_hidden_marker_text(
+        total_dropped_messages: usize,
+        total_dropped_bytes: usize,
+    ) -> String {
+        format!(
+            "{HISTORY_HIDDEN_MARKER_PREFIX} (dropped {total_dropped_messages} messages, {} MiB).",
+            Self::format_mib_tenths(total_dropped_bytes)
+        )
+    }
+
+    fn upsert_history_hidden_marker(&mut self) {
+        let marker_idx = self.messages.iter().position(Self::is_history_hidden_marker_message);
+        if self.history_retention_stats.total_dropped_messages == 0 {
+            if let Some(idx) = marker_idx {
+                self.messages.remove(idx);
+                self.mark_message_layout_dirty(idx);
+                self.rebuild_tool_indices_and_terminal_refs();
+            }
+            return;
+        }
+
+        let marker_text = Self::history_hidden_marker_text(
+            self.history_retention_stats.total_dropped_messages,
+            self.history_retention_stats.total_dropped_bytes,
+        );
+
+        if let Some(idx) = marker_idx {
+            if let Some(MessageBlock::Text(text, cache, incr)) =
+                self.messages.get_mut(idx).and_then(|m| m.blocks.get_mut(0))
+                && *text != marker_text
+            {
+                text.clone_from(&marker_text);
+                *incr = IncrementalMarkdown::from_complete(&marker_text);
+                cache.invalidate();
+                self.mark_message_layout_dirty(idx);
+            }
+            return;
+        }
+
+        let insert_idx = usize::from(
+            self.messages.first().is_some_and(|msg| matches!(msg.role, MessageRole::Welcome)),
+        );
+        self.messages.insert(
+            insert_idx,
+            ChatMessage {
+                role: MessageRole::System,
+                blocks: vec![MessageBlock::Text(
+                    marker_text.clone(),
+                    BlockCache::default(),
+                    IncrementalMarkdown::from_complete(&marker_text),
+                )],
+                usage: None,
+            },
+        );
+        self.mark_message_layout_dirty(insert_idx);
+        self.rebuild_tool_indices_and_terminal_refs();
+    }
+
+    #[allow(clippy::cast_precision_loss)]
+    pub fn enforce_history_retention(&mut self) -> HistoryRetentionStats {
+        let mut stats = HistoryRetentionStats::default();
+        let max_bytes = self.history_retention.max_bytes.max(1);
+        stats.total_before_bytes = self.estimate_history_bytes();
+        stats.total_after_bytes = stats.total_before_bytes;
+
+        if stats.total_before_bytes > max_bytes {
+            let mut candidates = Vec::new();
+            for (msg_idx, msg) in self.messages.iter().enumerate() {
+                if Self::is_history_hidden_marker_message(msg)
+                    || Self::is_history_protected_message(msg)
+                {
+                    continue;
+                }
+                let bytes = Self::estimate_message_bytes(msg);
+                if bytes == 0 {
+                    continue;
+                }
+                candidates.push(HistoryDropCandidate {
+                    msg_idx,
+                    bytes,
+                    approx_rows: self.viewport.message_height(msg_idx),
+                });
+            }
+
+            let mut drop_candidates = Vec::new();
+            for candidate in candidates {
+                if stats.total_after_bytes <= max_bytes {
+                    break;
+                }
+                stats.total_after_bytes = stats.total_after_bytes.saturating_sub(candidate.bytes);
+                stats.dropped_bytes = stats.dropped_bytes.saturating_add(candidate.bytes);
+                stats.dropped_messages = stats.dropped_messages.saturating_add(1);
+                drop_candidates.push(candidate);
+            }
+
+            if !drop_candidates.is_empty() {
+                let mut dropped_rows = 0usize;
+                let drop_set: HashSet<usize> = drop_candidates
+                    .iter()
+                    .map(|candidate| {
+                        dropped_rows = dropped_rows.saturating_add(candidate.approx_rows);
+                        candidate.msg_idx
+                    })
+                    .collect();
+
+                let mut retained =
+                    Vec::with_capacity(self.messages.len().saturating_sub(drop_set.len()));
+                for (msg_idx, msg) in self.messages.drain(..).enumerate() {
+                    if !drop_set.contains(&msg_idx) {
+                        retained.push(msg);
+                    }
+                }
+                self.messages = retained;
+
+                if !self.viewport.auto_scroll && dropped_rows > 0 {
+                    self.viewport.scroll_target =
+                        self.viewport.scroll_target.saturating_sub(dropped_rows);
+                    self.viewport.scroll_offset =
+                        self.viewport.scroll_offset.saturating_sub(dropped_rows);
+                    let dropped_rows_f = dropped_rows as f32;
+                    self.viewport.scroll_pos = if self.viewport.scroll_pos > dropped_rows_f {
+                        self.viewport.scroll_pos - dropped_rows_f
+                    } else {
+                        0.0
+                    };
+                }
+                self.rebuild_tool_indices_and_terminal_refs();
+                self.mark_all_message_layout_dirty();
+                self.needs_redraw = true;
+            }
+        }
+
+        self.history_retention_stats.total_before_bytes = stats.total_before_bytes;
+        self.history_retention_stats.total_dropped_messages = self
+            .history_retention_stats
+            .total_dropped_messages
+            .saturating_add(stats.dropped_messages);
+        self.history_retention_stats.total_dropped_bytes =
+            self.history_retention_stats.total_dropped_bytes.saturating_add(stats.dropped_bytes);
+
+        self.upsert_history_hidden_marker();
+
+        stats.total_after_bytes = self.estimate_history_bytes();
+        self.history_retention_stats.total_after_bytes = stats.total_after_bytes;
+        self.history_retention_stats.dropped_messages = stats.dropped_messages;
+        self.history_retention_stats.dropped_bytes = stats.dropped_bytes;
+
+        stats.total_dropped_messages = self.history_retention_stats.total_dropped_messages;
+        stats.total_dropped_bytes = self.history_retention_stats.total_dropped_bytes;
+        stats
+    }
+
+    pub fn enforce_render_cache_budget(&mut self) -> CacheBudgetEnforceStats {
+        let mut stats = CacheBudgetEnforceStats::default();
+        let is_streaming = matches!(self.status, AppStatus::Thinking | AppStatus::Running);
+        let msg_count = self.messages.len();
+        let mut evictable = Vec::new();
+
+        for (msg_idx, msg) in self.messages.iter().enumerate() {
+            let protect_message_tail = is_streaming && (msg_idx + 1 == msg_count);
+            for (block_idx, block) in msg.blocks.iter().enumerate() {
+                let (cache, protect_block) = match block {
+                    MessageBlock::Text(_, cache, _) => (cache, false),
+                    MessageBlock::Welcome(welcome) => (&welcome.cache, false),
+                    MessageBlock::ToolCall(tc) => (
+                        &tc.cache,
+                        matches!(
+                            tc.status,
+                            model::ToolCallStatus::Pending | model::ToolCallStatus::InProgress
+                        ),
+                    ),
+                };
+
+                let bytes = cache.cached_bytes();
+                if bytes == 0 {
+                    continue;
+                }
+                stats.total_before_bytes = stats.total_before_bytes.saturating_add(bytes);
+
+                if !(protect_message_tail || protect_block) {
+                    evictable.push(CacheSlotCandidate {
+                        msg_idx,
+                        block_idx,
+                        bytes,
+                        last_access_tick: cache.last_access_tick(),
+                    });
+                }
+            }
+        }
+
+        if stats.total_before_bytes <= self.render_cache_budget.max_bytes {
+            self.render_cache_budget.last_total_bytes = stats.total_before_bytes;
+            self.render_cache_budget.last_evicted_bytes = 0;
+            stats.total_after_bytes = stats.total_before_bytes;
+            return stats;
+        }
+
+        evictable.sort_by_key(|slot| (slot.last_access_tick, std::cmp::Reverse(slot.bytes)));
+        stats.total_after_bytes = stats.total_before_bytes;
+
+        for slot in evictable {
+            if stats.total_after_bytes <= self.render_cache_budget.max_bytes {
+                break;
+            }
+            let removed = self.evict_cache_slot(slot.msg_idx, slot.block_idx);
+            if removed == 0 {
+                continue;
+            }
+            stats.total_after_bytes = stats.total_after_bytes.saturating_sub(removed);
+            stats.evicted_bytes = stats.evicted_bytes.saturating_add(removed);
+            stats.evicted_blocks = stats.evicted_blocks.saturating_add(1);
+        }
+
+        self.render_cache_budget.last_total_bytes = stats.total_after_bytes;
+        self.render_cache_budget.last_evicted_bytes = stats.evicted_bytes;
+        self.render_cache_budget.total_evictions =
+            self.render_cache_budget.total_evictions.saturating_add(stats.evicted_blocks);
+
+        stats
+    }
+
+    fn evict_cache_slot(&mut self, msg_idx: usize, block_idx: usize) -> usize {
+        let Some(msg) = self.messages.get_mut(msg_idx) else {
+            return 0;
+        };
+        let Some(block) = msg.blocks.get_mut(block_idx) else {
+            return 0;
+        };
+        match block {
+            MessageBlock::Text(_, cache, _) => cache.evict_cached_render(),
+            MessageBlock::Welcome(welcome) => welcome.cache.evict_cached_render(),
+            MessageBlock::ToolCall(tc) => tc.cache.evict_cached_render(),
+        }
+    }
+
     /// Build a minimal `App` for unit/integration tests.
     /// All fields get sensible defaults; the `mpsc` channel is wired up internally.
     #[doc(hidden)]
@@ -473,6 +969,9 @@ impl App {
             terminal_tool_calls: Vec::new(),
             needs_redraw: true,
             perf: None,
+            render_cache_budget: RenderCacheBudget::default(),
+            history_retention: HistoryRetentionPolicy::default(),
+            history_retention_stats: HistoryRetentionStats::default(),
             fps_ema: None,
             last_frame_at: None,
         }
@@ -828,30 +1327,82 @@ impl ChatMessage {
 pub struct BlockCache {
     version: u64,
     lines: Option<Vec<ratatui::text::Line<'static>>>,
+    /// Segmentation metadata for KB-sized cache chunks shared across message/tool caches.
+    segments: Vec<CacheLineSegment>,
+    /// Approximate UTF-8 byte size of cached rendered lines.
+    cached_bytes: usize,
     /// Wrapped line count of the cached lines at `wrapped_width`.
     /// Computed via `Paragraph::line_count(width)` on the same lines stored in `lines`.
     wrapped_height: usize,
     /// The viewport width used to compute `wrapped_height`.
     wrapped_width: u16,
+    wrapped_height_valid: bool,
+    last_access_tick: Cell<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CacheLineSegment {
+    start: usize,
+    end: usize,
+    wrapped_height: usize,
+    wrapped_width: u16,
+    wrapped_height_valid: bool,
+}
+
+impl CacheLineSegment {
+    #[must_use]
+    fn new(start: usize, end: usize) -> Self {
+        Self { start, end, wrapped_height: 0, wrapped_width: 0, wrapped_height_valid: false }
+    }
 }
 
 impl BlockCache {
+    fn touch(&self) {
+        self.last_access_tick.set(next_cache_access_tick());
+    }
+
     /// Bump the version to invalidate cached lines and height.
     pub fn invalidate(&mut self) {
         self.version += 1;
+        self.wrapped_height_valid = false;
     }
 
     /// Get a reference to the cached lines, if fresh.
     #[must_use]
     pub fn get(&self) -> Option<&Vec<ratatui::text::Line<'static>>> {
-        if self.version == 0 { self.lines.as_ref() } else { None }
+        if self.version == 0 {
+            let lines = self.lines.as_ref();
+            if lines.is_some() {
+                self.touch();
+            }
+            lines
+        } else {
+            None
+        }
     }
 
     /// Store freshly rendered lines, marking the cache as clean.
     /// Height is set separately via `set_height()` after measurement.
     pub fn store(&mut self, lines: Vec<ratatui::text::Line<'static>>) {
+        self.store_with_policy(lines, *super::default_cache_split_policy());
+    }
+
+    /// Store freshly rendered lines using a shared KB split policy.
+    pub fn store_with_policy(
+        &mut self,
+        lines: Vec<ratatui::text::Line<'static>>,
+        policy: super::CacheSplitPolicy,
+    ) {
+        let segment_limit = policy.hard_limit_bytes.max(1);
+        let (segments, cached_bytes) = build_line_segments(&lines, segment_limit);
         self.lines = Some(lines);
+        self.segments = segments;
+        self.cached_bytes = cached_bytes;
         self.version = 0;
+        self.wrapped_height = 0;
+        self.wrapped_width = 0;
+        self.wrapped_height_valid = false;
+        self.touch();
     }
 
     /// Set the wrapped height for the cached lines at the given width.
@@ -860,6 +1411,8 @@ impl BlockCache {
     pub fn set_height(&mut self, height: usize, width: u16) {
         self.wrapped_height = height;
         self.wrapped_width = width;
+        self.wrapped_height_valid = true;
+        self.touch();
     }
 
     /// Store lines and set height in one call.
@@ -877,12 +1430,116 @@ impl BlockCache {
     /// Get the cached wrapped height if cache is valid and was computed at the given width.
     #[must_use]
     pub fn height_at(&self, width: u16) -> Option<usize> {
-        if self.version == 0 && self.wrapped_width == width {
+        if self.version == 0 && self.wrapped_height_valid && self.wrapped_width == width {
+            self.touch();
             Some(self.wrapped_height)
         } else {
             None
         }
     }
+
+    /// Recompute wrapped height from cached segments and memoize it at `width`.
+    /// Returns `None` when the render cache is stale.
+    pub fn measure_and_set_height(&mut self, width: u16) -> Option<usize> {
+        if self.version != 0 {
+            return None;
+        }
+        if let Some(h) = self.height_at(width) {
+            return Some(h);
+        }
+
+        let lines = self.lines.as_ref()?;
+
+        if self.segments.is_empty() {
+            self.set_height(0, width);
+            return Some(0);
+        }
+
+        let mut total_height = 0usize;
+        for segment in &mut self.segments {
+            if segment.wrapped_height_valid && segment.wrapped_width == width {
+                total_height = total_height.saturating_add(segment.wrapped_height);
+                continue;
+            }
+            let segment_lines = lines[segment.start..segment.end].to_vec();
+            let h = ratatui::widgets::Paragraph::new(ratatui::text::Text::from(segment_lines))
+                .wrap(ratatui::widgets::Wrap { trim: false })
+                .line_count(width);
+            segment.wrapped_height = h;
+            segment.wrapped_width = width;
+            segment.wrapped_height_valid = true;
+            total_height = total_height.saturating_add(h);
+        }
+
+        self.set_height(total_height, width);
+        Some(total_height)
+    }
+
+    #[must_use]
+    pub fn segment_count(&self) -> usize {
+        self.segments.len()
+    }
+
+    #[must_use]
+    pub fn cached_bytes(&self) -> usize {
+        self.cached_bytes
+    }
+
+    #[must_use]
+    pub fn last_access_tick(&self) -> u64 {
+        self.last_access_tick.get()
+    }
+
+    pub fn evict_cached_render(&mut self) -> usize {
+        let removed = self.cached_bytes;
+        if removed == 0 {
+            return 0;
+        }
+        self.lines = None;
+        self.segments.clear();
+        self.cached_bytes = 0;
+        self.wrapped_height = 0;
+        self.wrapped_width = 0;
+        self.wrapped_height_valid = false;
+        self.version = self.version.wrapping_add(1);
+        removed
+    }
+}
+
+fn build_line_segments(
+    lines: &[ratatui::text::Line<'static>],
+    segment_limit_bytes: usize,
+) -> (Vec<CacheLineSegment>, usize) {
+    if lines.is_empty() {
+        return (Vec::new(), 0);
+    }
+
+    let limit = segment_limit_bytes.max(1);
+    let mut segments = Vec::new();
+    let mut total_bytes = 0usize;
+    let mut start = 0usize;
+    let mut acc = 0usize;
+
+    for (idx, line) in lines.iter().enumerate() {
+        let line_bytes = line_utf8_bytes(line).max(1);
+        total_bytes = total_bytes.saturating_add(line_bytes);
+
+        if idx > start && acc.saturating_add(line_bytes) > limit {
+            segments.push(CacheLineSegment::new(start, idx));
+            start = idx;
+            acc = 0;
+        }
+        acc = acc.saturating_add(line_bytes);
+    }
+
+    segments.push(CacheLineSegment::new(start, lines.len()));
+    (segments, total_bytes)
+}
+
+fn line_utf8_bytes(line: &ratatui::text::Line<'static>) -> usize {
+    let span_bytes =
+        line.spans.iter().fold(0usize, |acc, span| acc.saturating_add(span.content.len()));
+    span_bytes.saturating_add(1)
 }
 
 /// Text holder for a single message block's markdown source.
@@ -1177,6 +1834,16 @@ mod tests {
     }
 
     #[test]
+    fn cache_store_splits_into_kb_segments() {
+        let mut cache = BlockCache::default();
+        let long = "x".repeat(800);
+        let lines: Vec<Line<'static>> = (0..12).map(|_| Line::from(long.clone())).collect();
+        cache.store(lines);
+        assert!(cache.segment_count() > 1);
+        assert!(cache.cached_bytes() > 0);
+    }
+
+    #[test]
     fn cache_invalidate_without_store() {
         let mut cache = BlockCache::default();
         cache.invalidate();
@@ -1341,10 +2008,327 @@ mod tests {
         assert_eq!(cache_a.get().unwrap().len(), cache_b.get().unwrap().len());
     }
 
+    #[test]
+    fn cache_measure_and_set_height_from_segments() {
+        let mut cache = BlockCache::default();
+        let lines = vec![
+            Line::from("alpha beta gamma delta epsilon"),
+            Line::from("zeta eta theta iota kappa lambda"),
+            Line::from("mu nu xi omicron pi rho sigma"),
+        ];
+        cache.store(lines.clone());
+        let measured = cache.measure_and_set_height(16).expect("expected measured height");
+        let expected = ratatui::widgets::Paragraph::new(ratatui::text::Text::from(lines))
+            .wrap(ratatui::widgets::Wrap { trim: false })
+            .line_count(16);
+        assert_eq!(measured, expected);
+        assert_eq!(cache.height_at(16), Some(expected));
+    }
+
+    #[test]
+    fn cache_get_updates_last_access_tick() {
+        let mut cache = BlockCache::default();
+        cache.store(vec![Line::from("tick")]);
+        let before = cache.last_access_tick();
+        let _ = cache.get();
+        let after = cache.last_access_tick();
+        assert!(after > before);
+    }
+
     // App tool_call_index
 
     fn make_test_app() -> App {
         App::test_default()
+    }
+
+    fn assistant_text_block(text: &str) -> MessageBlock {
+        MessageBlock::Text(
+            text.to_owned(),
+            BlockCache::default(),
+            IncrementalMarkdown::from_complete(text),
+        )
+    }
+
+    fn user_text_message(text: &str) -> ChatMessage {
+        ChatMessage {
+            role: MessageRole::User,
+            blocks: vec![assistant_text_block(text)],
+            usage: None,
+        }
+    }
+
+    fn assistant_tool_message(id: &str, status: model::ToolCallStatus) -> ChatMessage {
+        ChatMessage {
+            role: MessageRole::Assistant,
+            blocks: vec![MessageBlock::ToolCall(Box::new(ToolCallInfo {
+                id: id.to_owned(),
+                title: format!("tool {id}"),
+                sdk_tool_name: "Read".to_owned(),
+                raw_input: None,
+                status,
+                content: Vec::new(),
+                collapsed: false,
+                hidden: false,
+                terminal_id: None,
+                terminal_command: None,
+                terminal_output: Some("x".repeat(1024)),
+                terminal_output_len: 1024,
+                terminal_bytes_seen: 1024,
+                terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
+                render_epoch: 0,
+                layout_epoch: 0,
+                last_measured_width: 0,
+                last_measured_height: 0,
+                last_measured_layout_epoch: 0,
+                last_measured_layout_generation: 0,
+                cache: BlockCache::default(),
+                pending_permission: None,
+            }))],
+            usage: None,
+        }
+    }
+
+    fn assistant_tool_message_with_pending_permission(id: &str) -> ChatMessage {
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        ChatMessage {
+            role: MessageRole::Assistant,
+            blocks: vec![MessageBlock::ToolCall(Box::new(ToolCallInfo {
+                id: id.to_owned(),
+                title: format!("tool {id}"),
+                sdk_tool_name: "Read".to_owned(),
+                raw_input: None,
+                status: model::ToolCallStatus::Completed,
+                content: Vec::new(),
+                collapsed: false,
+                hidden: false,
+                terminal_id: None,
+                terminal_command: None,
+                terminal_output: Some("x".repeat(1024)),
+                terminal_output_len: 1024,
+                terminal_bytes_seen: 1024,
+                terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
+                render_epoch: 0,
+                layout_epoch: 0,
+                last_measured_width: 0,
+                last_measured_height: 0,
+                last_measured_layout_epoch: 0,
+                last_measured_layout_generation: 0,
+                cache: BlockCache::default(),
+                pending_permission: Some(InlinePermission {
+                    options: vec![model::PermissionOption::new(
+                        "allow-once",
+                        "Allow once",
+                        model::PermissionOptionKind::AllowOnce,
+                    )],
+                    response_tx: tx,
+                    selected_index: 0,
+                    focused: false,
+                }),
+            }))],
+            usage: None,
+        }
+    }
+
+    #[test]
+    fn enforce_render_cache_budget_evicts_lru_block() {
+        let mut app = make_test_app();
+        app.messages = vec![
+            ChatMessage {
+                role: MessageRole::Assistant,
+                blocks: vec![assistant_text_block("a")],
+                usage: None,
+            },
+            ChatMessage {
+                role: MessageRole::Assistant,
+                blocks: vec![assistant_text_block("b")],
+                usage: None,
+            },
+        ];
+
+        let bytes_a = if let MessageBlock::Text(_, cache, _) = &mut app.messages[0].blocks[0] {
+            cache.store(vec![Line::from("x".repeat(2200))]);
+            cache.cached_bytes()
+        } else {
+            0
+        };
+        let bytes_b = if let MessageBlock::Text(_, cache, _) = &mut app.messages[1].blocks[0] {
+            cache.store(vec![Line::from("y".repeat(2200))]);
+            let _ = cache.get();
+            cache.cached_bytes()
+        } else {
+            0
+        };
+
+        app.render_cache_budget.max_bytes = bytes_b;
+        let stats = app.enforce_render_cache_budget();
+        assert!(stats.evicted_blocks >= 1);
+        assert!(stats.evicted_bytes >= bytes_a);
+        assert!(stats.total_after_bytes <= app.render_cache_budget.max_bytes);
+
+        if let MessageBlock::Text(_, cache, _) = &app.messages[0].blocks[0] {
+            assert_eq!(cache.cached_bytes(), 0);
+        } else {
+            panic!("expected text block");
+        }
+        if let MessageBlock::Text(_, cache, _) = &app.messages[1].blocks[0] {
+            assert_eq!(cache.cached_bytes(), bytes_b);
+        } else {
+            panic!("expected text block");
+        }
+    }
+
+    #[test]
+    fn enforce_render_cache_budget_protects_streaming_tail_message() {
+        let mut app = make_test_app();
+        app.status = AppStatus::Thinking;
+        app.messages = vec![ChatMessage {
+            role: MessageRole::Assistant,
+            blocks: vec![assistant_text_block("streaming tail")],
+            usage: None,
+        }];
+
+        let before = if let MessageBlock::Text(_, cache, _) = &mut app.messages[0].blocks[0] {
+            cache.store(vec![Line::from("z".repeat(4096))]);
+            cache.cached_bytes()
+        } else {
+            0
+        };
+        app.render_cache_budget.max_bytes = 64;
+        let stats = app.enforce_render_cache_budget();
+        assert_eq!(stats.evicted_blocks, 0);
+        assert_eq!(stats.evicted_bytes, 0);
+
+        if let MessageBlock::Text(_, cache, _) = &app.messages[0].blocks[0] {
+            assert_eq!(cache.cached_bytes(), before);
+        } else {
+            panic!("expected text block");
+        }
+    }
+
+    #[test]
+    fn enforce_history_retention_noop_under_budget() {
+        let mut app = make_test_app();
+        app.messages = vec![
+            ChatMessage::welcome("model", "/cwd"),
+            user_text_message("small message"),
+            user_text_message("another message"),
+        ];
+        app.history_retention.max_bytes = usize::MAX / 4;
+
+        let stats = app.enforce_history_retention();
+        assert_eq!(stats.dropped_messages, 0);
+        assert_eq!(stats.total_dropped_messages, 0);
+        assert!(!app.messages.iter().any(App::is_history_hidden_marker_message));
+    }
+
+    #[test]
+    fn enforce_history_retention_drops_oldest_and_adds_marker() {
+        let mut app = make_test_app();
+        app.messages = vec![
+            ChatMessage::welcome("model", "/cwd"),
+            user_text_message("first old message"),
+            user_text_message("second old message"),
+            user_text_message("third old message"),
+        ];
+        app.history_retention.max_bytes = 1;
+
+        let stats = app.enforce_history_retention();
+        assert_eq!(stats.dropped_messages, 3);
+        assert!(matches!(app.messages[0].role, MessageRole::Welcome));
+        assert!(app.messages.iter().any(App::is_history_hidden_marker_message));
+        assert_eq!(app.messages.len(), 2);
+    }
+
+    #[test]
+    fn enforce_history_retention_preserves_in_progress_tool_message() {
+        let mut app = make_test_app();
+        app.messages = vec![
+            ChatMessage::welcome("model", "/cwd"),
+            user_text_message("droppable"),
+            assistant_tool_message("tool-keep", model::ToolCallStatus::InProgress),
+        ];
+        app.history_retention.max_bytes = 1;
+
+        let stats = app.enforce_history_retention();
+        assert_eq!(stats.dropped_messages, 1);
+        assert!(app.messages.iter().any(|msg| {
+            msg.blocks.iter().any(|block| {
+                matches!(
+                    block,
+                    MessageBlock::ToolCall(tc) if tc.id == "tool-keep"
+                        && matches!(tc.status, model::ToolCallStatus::InProgress)
+                )
+            })
+        }));
+    }
+
+    #[test]
+    fn enforce_history_retention_preserves_pending_tool_message() {
+        let mut app = make_test_app();
+        app.messages = vec![
+            ChatMessage::welcome("model", "/cwd"),
+            user_text_message("droppable"),
+            assistant_tool_message("tool-pending", model::ToolCallStatus::Pending),
+        ];
+        app.history_retention.max_bytes = 1;
+
+        let stats = app.enforce_history_retention();
+        assert_eq!(stats.dropped_messages, 1);
+        assert!(app.messages.iter().any(|msg| {
+            msg.blocks
+                .iter()
+                .any(|block| matches!(block, MessageBlock::ToolCall(tc) if tc.id == "tool-pending"))
+        }));
+    }
+
+    #[test]
+    fn enforce_history_retention_preserves_permission_tool_message() {
+        let mut app = make_test_app();
+        app.messages = vec![
+            ChatMessage::welcome("model", "/cwd"),
+            user_text_message("droppable"),
+            assistant_tool_message_with_pending_permission("tool-perm"),
+        ];
+        app.history_retention.max_bytes = 1;
+
+        let stats = app.enforce_history_retention();
+        assert_eq!(stats.dropped_messages, 1);
+        assert!(app.messages.iter().any(|msg| {
+            msg.blocks
+                .iter()
+                .any(|block| matches!(block, MessageBlock::ToolCall(tc) if tc.id == "tool-perm"))
+        }));
+    }
+
+    #[test]
+    fn enforce_history_retention_rebuilds_tool_index_after_prune() {
+        let mut app = make_test_app();
+        app.messages = vec![
+            ChatMessage::welcome("model", "/cwd"),
+            user_text_message("drop this"),
+            assistant_tool_message("tool-idx", model::ToolCallStatus::InProgress),
+        ];
+        app.index_tool_call("tool-idx".to_owned(), 99, 99);
+        app.history_retention.max_bytes = 1;
+
+        let _ = app.enforce_history_retention();
+        assert_eq!(app.lookup_tool_call("tool-idx"), Some((2, 0)));
+    }
+
+    #[test]
+    fn enforce_history_retention_keeps_single_marker_on_repeat() {
+        let mut app = make_test_app();
+        app.messages = vec![ChatMessage::welcome("model", "/cwd"), user_text_message("drop me")];
+        app.history_retention.max_bytes = 1;
+
+        let first = app.enforce_history_retention();
+        let second = app.enforce_history_retention();
+        let marker_count =
+            app.messages.iter().filter(|msg| App::is_history_hidden_marker_message(msg)).count();
+
+        assert_eq!(first.dropped_messages, 1);
+        assert_eq!(second.dropped_messages, 0);
+        assert_eq!(marker_count, 1);
     }
 
     #[test]

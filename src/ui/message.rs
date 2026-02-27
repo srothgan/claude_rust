@@ -623,12 +623,8 @@ fn welcome_block_height_cached(block: &mut WelcomeBlock, width: u16) -> (usize, 
         return (h, 0);
     }
 
-    if let Some(cached_lines) = block.cache.get().cloned() {
-        let h = Paragraph::new(Text::from(cached_lines.clone()))
-            .wrap(Wrap { trim: false })
-            .line_count(width);
-        block.cache.set_height(h, width);
-        return (h, cached_lines.len());
+    if let Some(h) = block.cache.measure_and_set_height(width) {
+        return (h, block.cache.get().map_or(0, Vec::len));
     }
 
     let fresh = welcome_lines(block, width);
@@ -651,12 +647,8 @@ fn text_block_height_cached(
         return (h, 0);
     }
 
-    if let Some(cached_lines) = cache.get().cloned() {
-        let h = Paragraph::new(Text::from(cached_lines.clone()))
-            .wrap(Wrap { trim: false })
-            .line_count(width);
-        cache.set_height(h, width);
-        return (h, cached_lines.len());
+    if let Some(h) = cache.measure_and_set_height(width) {
+        return (h, cache.get().map_or(0, Vec::len));
     }
 
     let mut scratch = Vec::new();

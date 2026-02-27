@@ -20,7 +20,7 @@ use super::state::{RecentSessionInfo, ScrollbarDragState};
 use super::{
     App, AppStatus, BlockCache, CancelOrigin, ChatMessage, FocusTarget, IncrementalMarkdown,
     InlinePermission, LoginHint, MessageBlock, MessageRole, MessageUsage, SelectionKind,
-    SelectionPoint, ToolCallInfo,
+    SelectionPoint, ToolCallInfo, default_cache_split_policy, find_text_split_index,
 };
 use crate::agent::events::ClientEvent;
 use crate::agent::model;
@@ -33,8 +33,6 @@ const CONVERSATION_INTERRUPTED_HINT: &str =
     "Conversation interrupted. Tell the model how to proceed.";
 const TURN_ERROR_INPUT_LOCK_HINT: &str =
     "Input disabled after an error. Press Ctrl+Q to quit and try again.";
-const MSG_SPLIT_SOFT_LIMIT_BYTES: usize = 1536;
-const MSG_SPLIT_HARD_LIMIT_BYTES: usize = 4096;
 
 pub fn handle_terminal_event(app: &mut App, event: Event) {
     app.needs_redraw = true;
@@ -310,7 +308,19 @@ fn dispatch_key_by_focus(app: &mut App, key: KeyEvent) {
 pub fn handle_client_event(app: &mut App, event: ClientEvent) {
     app.needs_redraw = true;
     match event {
-        ClientEvent::SessionUpdate(update) => handle_session_update(app, update),
+        ClientEvent::SessionUpdate(update) => {
+            let needs_history_retention = matches!(
+                &update,
+                model::SessionUpdate::AgentMessageChunk(_)
+                    | model::SessionUpdate::ToolCall(_)
+                    | model::SessionUpdate::ToolCallUpdate(_)
+                    | model::SessionUpdate::CompactionBoundary(_)
+            );
+            handle_session_update(app, update);
+            if needs_history_retention {
+                app.enforce_history_retention();
+            }
+        }
         ClientEvent::PermissionRequest { request, response_tx } => {
             let tool_id = request.tool_call.tool_call_id.clone();
             if let Some((mi, bi)) = app.lookup_tool_call(&tool_id) {
@@ -485,6 +495,7 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
             app.pending_compact_clear = false;
             app.is_compacting = false;
             app.session_usage = super::SessionUsageState::default();
+            app.history_retention_stats = super::state::HistoryRetentionStats::default();
             app.cancelled_turn_pending_hint = false;
             app.pending_cancel_origin = None;
             app.queued_submission = None;
@@ -544,6 +555,7 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
                 )],
                 usage: None,
             });
+            app.enforce_history_retention();
             app.viewport.engage_auto_scroll();
             app.status = AppStatus::Ready;
             app.resuming_session_id = None;
@@ -579,6 +591,7 @@ fn push_interrupted_hint(app: &mut App) {
         )],
         usage: None,
     });
+    app.enforce_history_retention();
     app.viewport.engage_auto_scroll();
 }
 
@@ -602,6 +615,7 @@ fn push_turn_error_message(app: &mut App, error: &str) {
         )],
         usage: None,
     });
+    app.enforce_history_retention();
     app.viewport.engage_auto_scroll();
 }
 
@@ -616,6 +630,7 @@ fn push_connection_error_message(app: &mut App, error: &str) {
         )],
         usage: None,
     });
+    app.enforce_history_retention();
     app.viewport.engage_auto_scroll();
 }
 
@@ -757,6 +772,7 @@ fn append_resume_user_message_chunk(app: &mut App, chunk: &model::ContentChunk) 
 
 fn load_resume_history(app: &mut App, history_updates: &[model::SessionUpdate]) {
     app.messages.clear();
+    app.history_retention_stats = super::state::HistoryRetentionStats::default();
     app.messages.push(ChatMessage::welcome_with_recent(
         &app.model_name,
         &app.cwd,
@@ -775,6 +791,7 @@ fn load_resume_history(app: &mut App, history_updates: &[model::SessionUpdate]) 
         app.session_usage.cost_is_since_resume = true;
     }
     let _ = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Failed);
+    app.enforce_history_retention();
     app.viewport = super::ChatViewport::new();
     app.viewport.engage_auto_scroll();
 }
@@ -802,6 +819,7 @@ fn reset_for_new_session(
     app.queued_submission = None;
 
     app.messages.clear();
+    app.history_retention_stats = super::state::HistoryRetentionStats::default();
     app.messages.push(ChatMessage::welcome_with_recent(
         &app.model_name,
         &app.cwd,
@@ -1580,93 +1598,7 @@ fn split_tail_text_block(blocks: &mut Vec<MessageBlock>) -> usize {
 }
 
 fn find_text_block_split_index(text: &str) -> Option<usize> {
-    let bytes = text.as_bytes();
-    let mut in_fence = false;
-    let mut i = 0usize;
-
-    let mut soft_newline = None;
-    let mut soft_sentence = None;
-    let mut hard_newline = None;
-    let mut hard_sentence = None;
-    let mut post_hard_newline = None;
-    let mut post_hard_sentence = None;
-
-    while i < bytes.len() {
-        if (i == 0 || bytes[i - 1] == b'\n') && bytes[i..].starts_with(b"```") {
-            in_fence = !in_fence;
-        }
-
-        if !in_fence {
-            if i + 1 < bytes.len() && bytes[i] == b'\n' && bytes[i + 1] == b'\n' {
-                let split_at = i + 2;
-                if split_at < bytes.len() {
-                    return Some(split_at);
-                }
-                return None;
-            }
-
-            if bytes[i] == b'\n' {
-                track_text_split_candidate(
-                    i + 1,
-                    &mut soft_newline,
-                    &mut hard_newline,
-                    &mut post_hard_newline,
-                );
-            }
-
-            if is_sentence_boundary(bytes, i) {
-                track_text_split_candidate(
-                    i + 1,
-                    &mut soft_sentence,
-                    &mut hard_sentence,
-                    &mut post_hard_sentence,
-                );
-            }
-        }
-        i += 1;
-    }
-
-    if bytes.len() >= MSG_SPLIT_SOFT_LIMIT_BYTES
-        && let Some(split_at) = pick_text_split_candidate(soft_newline, soft_sentence)
-        && split_at < bytes.len()
-    {
-        return Some(split_at);
-    }
-
-    if bytes.len() >= MSG_SPLIT_HARD_LIMIT_BYTES
-        && let Some(split_at) =
-            hard_newline.or(post_hard_newline).or(hard_sentence).or(post_hard_sentence)
-        && split_at < bytes.len()
-    {
-        return Some(split_at);
-    }
-
-    None
-}
-
-fn track_text_split_candidate(
-    split_at: usize,
-    soft_slot: &mut Option<usize>,
-    hard_slot: &mut Option<usize>,
-    post_hard_slot: &mut Option<usize>,
-) {
-    if split_at <= MSG_SPLIT_SOFT_LIMIT_BYTES {
-        *soft_slot = Some(split_at);
-    }
-    if split_at <= MSG_SPLIT_HARD_LIMIT_BYTES {
-        *hard_slot = Some(split_at);
-    } else if post_hard_slot.is_none() {
-        *post_hard_slot = Some(split_at);
-    }
-}
-
-fn pick_text_split_candidate(newline: Option<usize>, sentence: Option<usize>) -> Option<usize> {
-    newline.or(sentence)
-}
-
-fn is_sentence_boundary(bytes: &[u8], i: usize) -> bool {
-    matches!(bytes[i], b'.' | b'!' | b'?')
-        && (i + 1 == bytes.len() || matches!(bytes[i + 1], b' ' | b'\t' | b'\r' | b'\n'))
+    find_text_split_index(text, *default_cache_split_policy())
 }
 
 /// Return a human-readable name for a `SessionUpdate` variant (for debug logging).
@@ -1917,7 +1849,7 @@ mod tests {
 
     #[test]
     fn split_index_soft_limit_prefers_newline() {
-        let prefix = "a".repeat(MSG_SPLIT_SOFT_LIMIT_BYTES - 1);
+        let prefix = "a".repeat(default_cache_split_policy().soft_limit_bytes - 1);
         let text = format!("{prefix}\n{}", "b".repeat(32));
         let split_at = find_text_block_split_index(&text).expect("expected split index");
         assert_eq!(&text[..split_at], format!("{prefix}\n"));
@@ -1925,7 +1857,7 @@ mod tests {
 
     #[test]
     fn split_index_hard_limit_uses_sentence_when_needed() {
-        let prefix = "a".repeat(MSG_SPLIT_HARD_LIMIT_BYTES + 32);
+        let prefix = "a".repeat(default_cache_split_policy().hard_limit_bytes + 32);
         let text = format!("{prefix}. tail");
         let split_at = find_text_block_split_index(&text).expect("expected split index");
         assert_eq!(&text[..split_at], format!("{prefix}."));

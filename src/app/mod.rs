@@ -14,6 +14,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+mod cache_policy;
 mod connect;
 mod dialog;
 mod events;
@@ -32,6 +33,10 @@ mod todos;
 mod update_check;
 
 // Re-export all public types so `crate::app::App`, `crate::app::BlockCache`, etc. still work.
+pub use cache_policy::{
+    CacheSplitPolicy, DEFAULT_CACHE_SPLIT_HARD_LIMIT_BYTES, DEFAULT_CACHE_SPLIT_SOFT_LIMIT_BYTES,
+    DEFAULT_TOOL_PREVIEW_LIMIT_BYTES, default_cache_split_policy, find_text_split_index,
+};
 pub use connect::{create_app, start_connection};
 pub use events::{handle_client_event, handle_terminal_event};
 pub use focus::{FocusManager, FocusOwner, FocusTarget};

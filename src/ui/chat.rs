@@ -502,6 +502,12 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     }
 
     render_scrollbar_overlay(frame, &mut app.viewport, area, content_height, viewport_height);
+
+    let budget_stats = app.enforce_render_cache_budget();
+    crate::perf::mark_with("cache::bytes_before", "bytes", budget_stats.total_before_bytes);
+    crate::perf::mark_with("cache::bytes_after", "bytes", budget_stats.total_after_bytes);
+    crate::perf::mark_with("cache::evicted_bytes", "bytes", budget_stats.evicted_bytes);
+    crate::perf::mark_with("cache::evicted_blocks", "count", budget_stats.evicted_blocks);
 }
 
 struct SelectionOverlay {

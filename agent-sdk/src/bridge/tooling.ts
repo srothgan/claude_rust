@@ -1,5 +1,6 @@
-import type { Json, ToolCall, ToolCallUpdateFields } from "../types.js";
+﻿import type { Json, ToolCall, ToolCallUpdateFields } from "../types.js";
 import { asRecordOrNull } from "./shared.js";
+import { CACHE_SPLIT_POLICY, previewKilobyteLabel } from "./cache_policy.js";
 
 export const TOOL_RESULT_TYPES = new Set([
   "tool_result",
@@ -150,6 +151,7 @@ export function extractText(value: unknown): string {
 
 const PERSISTED_OUTPUT_OPEN_TAG = "<persisted-output>";
 const PERSISTED_OUTPUT_CLOSE_TAG = "</persisted-output>";
+const EXPECTED_PREVIEW_LINE = `preview (first ${previewKilobyteLabel(CACHE_SPLIT_POLICY).toLowerCase()}):`;
 
 function extractPersistedOutputInnerText(text: string): string | null {
   const lower = text.toLowerCase();
@@ -174,6 +176,9 @@ function persistedOutputFirstLine(text: string): string | null {
   for (const line of inner.split(/\r?\n/)) {
     const cleaned = line.replace(/^[\s|│┃║]+/u, "").trim();
     if (cleaned.length > 0) {
+      if (cleaned.toLowerCase() === EXPECTED_PREVIEW_LINE) {
+        continue;
+      }
       return cleaned;
     }
   }
@@ -322,3 +327,4 @@ export function unwrapToolUseResult(rawResult: unknown): { isError: boolean; con
   }
   return { isError: Boolean(isError), content: rawResult };
 }
+

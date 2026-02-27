@@ -40,6 +40,7 @@ import {
   normalizeToolResultText,
   unwrapToolUseResult,
 } from "./bridge/tooling.js";
+import { CACHE_SPLIT_POLICY, previewKilobyteLabel } from "./bridge/cache_policy.js";
 import { buildUsageUpdateFromResult, buildUsageUpdateFromResultForSession } from "./bridge/usage.js";
 import {
   formatPermissionUpdates,
@@ -53,6 +54,7 @@ import {
 } from "./bridge/history.js";
 
 export {
+  CACHE_SPLIT_POLICY,
   buildToolResultFields,
   buildUsageUpdateFromResult,
   createToolCall,
@@ -63,6 +65,7 @@ export {
   parseCommandEnvelope,
   permissionOptionsFromSuggestions,
   permissionResultFromOutcome,
+  previewKilobyteLabel,
   unwrapToolUseResult,
 };
 
