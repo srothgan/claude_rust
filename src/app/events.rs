@@ -24,6 +24,7 @@ use super::{
 };
 use crate::agent::events::ClientEvent;
 use crate::agent::model;
+use crate::app::input::parse_paste_placeholder_before_cursor;
 use crate::app::todos::{apply_plan_todos, parse_todos_if_present, set_todos};
 #[cfg(test)]
 use crossterm::event::KeyEvent;
@@ -38,9 +39,11 @@ pub fn handle_terminal_event(app: &mut App, event: Event) {
     app.needs_redraw = true;
     match event {
         Event::Key(key) if key.kind == KeyEventKind::Press => {
+            app.active_paste_session = None;
             super::keys::dispatch_key_by_focus(app, key);
         }
         Event::Mouse(mouse) => {
+            app.active_paste_session = None;
             handle_mouse_event(app, mouse);
         }
         Event::Paste(text) => {
@@ -48,6 +51,25 @@ pub fn handle_terminal_event(app: &mut App, event: Event) {
             {
                 // Queue paste chunks for this drain cycle. Some terminals split a
                 // single clipboard paste into multiple `Event::Paste` payloads.
+                if app.pending_paste_text.is_empty() {
+                    let continued_session = app.active_paste_session.and_then(|session| {
+                        let current_line = app.input.lines.get(app.input.cursor_row)?;
+                        let idx = parse_paste_placeholder_before_cursor(
+                            current_line,
+                            app.input.cursor_col,
+                        )?;
+                        (session.placeholder_index == Some(idx)).then_some(session)
+                    });
+                    app.pending_paste_session = Some(continued_session.unwrap_or_else(|| {
+                        let id = app.next_paste_session_id;
+                        app.next_paste_session_id = app.next_paste_session_id.saturating_add(1);
+                        let start = app.paste_burst_start.unwrap_or(SelectionPoint {
+                            row: app.input.cursor_row,
+                            col: app.input.cursor_col,
+                        });
+                        super::state::PasteSessionState { id, start, placeholder_index: None }
+                    }));
+                }
                 app.pending_paste_text.push_str(&text);
             }
         }
@@ -832,6 +854,9 @@ fn reset_for_new_session(
     app.drain_key_count = 0;
     app.paste_burst.reset();
     app.pending_paste_text.clear();
+    app.pending_paste_session = None;
+    app.active_paste_session = None;
+    app.paste_burst_start = None;
 
     app.pending_permission_ids.clear();
     app.active_task_ids.clear();
@@ -2836,17 +2861,27 @@ mod tests {
     }
 
     #[test]
+    fn pending_paste_payload_blocks_overlapping_key_text_insertion() {
+        let mut app = make_test_app();
+        app.pending_paste_text = "clipboard".to_owned();
+
+        handle_normal_key(&mut app, KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+
+        assert_eq!(app.input.text(), "");
+    }
+
+    #[test]
     fn cleanup_leaked_char_before_placeholder_removes_prefix_line() {
         let mut app = make_test_app();
-        app.input.lines = vec!["C".into(), "[Pasted Text 1 - 11 lines]".into()];
+        app.input.lines = vec!["C".into(), "[Pasted Text 1 - 11 chars]".into()];
         app.input.cursor_row = 1;
         app.input.cursor_col = app.input.lines[1].chars().count();
 
         cleanup_leaked_char_before_placeholder(&mut app);
 
-        assert_eq!(app.input.lines, vec!["[Pasted Text 1 - 11 lines]"]);
+        assert_eq!(app.input.lines, vec!["[Pasted Text 1 - 11 chars]"]);
         assert_eq!(app.input.cursor_row, 0);
-        assert_eq!(app.input.cursor_col, "[Pasted Text 1 - 11 lines]".chars().count());
+        assert_eq!(app.input.cursor_col, "[Pasted Text 1 - 11 chars]".chars().count());
     }
 
     #[test]

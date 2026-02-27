@@ -18,7 +18,7 @@ use super::{
     App, AppStatus, CancelOrigin, FocusOwner, FocusTarget, HelpView, MessageBlock, ModeInfo,
     ModeState,
 };
-use crate::app::input::parse_paste_placeholder;
+use crate::app::input::parse_paste_placeholder_before_cursor;
 use crate::app::permissions::handle_permission_key;
 use crate::app::selection::clear_selection;
 use crate::app::{mention, slash};
@@ -245,12 +245,18 @@ pub(super) fn is_printable_text_modifiers(modifiers: KeyModifiers) -> bool {
 pub(super) fn handle_normal_key(app: &mut App, key: KeyEvent) {
     sync_help_focus(app);
     let input_version_before = app.input.version;
+    let cursor_before_key =
+        super::SelectionPoint { row: app.input.cursor_row, col: app.input.cursor_col };
 
     // Timing-based paste detection: if key events arrive faster than the
     // burst interval, this is a paste (not typing). Cancel any pending submit.
     app.drain_key_count += 1;
     let was_paste = app.paste_burst.is_paste();
+    let burst_was_active = app.paste_burst.is_active();
     let in_paste = app.paste_burst.on_key_event(app.input.lines.len());
+    if !burst_was_active {
+        app.paste_burst_start = Some(cursor_before_key);
+    }
     if in_paste && app.pending_submit {
         app.pending_submit = false;
     }
@@ -258,7 +264,7 @@ pub(super) fn handle_normal_key(app: &mut App, key: KeyEvent) {
         .input
         .lines
         .get(app.input.cursor_row)
-        .and_then(|line| parse_paste_placeholder(line))
+        .and_then(|line| parse_paste_placeholder_before_cursor(line, app.input.cursor_col))
         .is_some();
     if in_paste && on_placeholder_line {
         // First transition into paste mode: remove the known leaked leading key
@@ -274,6 +280,14 @@ pub(super) fn handle_normal_key(app: &mut App, key: KeyEvent) {
         ) {
             return;
         }
+    }
+    if !app.pending_paste_text.is_empty()
+        && matches!(
+            key.code,
+            KeyCode::Char(_) | KeyCode::Enter | KeyCode::Tab | KeyCode::Backspace | KeyCode::Delete
+        )
+    {
+        return;
     }
 
     match (key.code, key.modifiers) {

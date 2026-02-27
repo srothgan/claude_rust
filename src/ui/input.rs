@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use crate::app::input::parse_paste_placeholder_with_suffix;
+use crate::app::input::parse_paste_placeholder_ranges;
 use crate::app::mention;
 use crate::app::{App, AppStatus};
 use crate::ui::theme;
@@ -212,9 +212,9 @@ fn apply_textarea_highlights(textarea: &mut TextArea<'_>, lines: &[String]) {
             );
         }
 
-        if let Some((_, suffix_end)) = parse_paste_placeholder_with_suffix(line) {
+        for (start, end) in parse_paste_placeholder_ranges(line) {
             textarea.custom_highlight(
-                ((row, 0), (row, suffix_end)),
+                ((row, start), (row, end)),
                 paste_style,
                 HIGHLIGHT_PASTE_PRIORITY,
             );

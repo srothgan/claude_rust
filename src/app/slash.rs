@@ -263,6 +263,9 @@ pub(crate) fn clear_conversation_history(app: &mut App) {
     app.pending_submit = false;
     app.drain_key_count = 0;
     app.pending_paste_text.clear();
+    app.pending_paste_session = None;
+    app.active_paste_session = None;
+    app.paste_burst_start = None;
     app.normalize_focus_stack();
 }
 
