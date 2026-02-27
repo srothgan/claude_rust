@@ -29,8 +29,8 @@ Please include:
 
 ## Scope
 
-This policy covers the `claude_rust` binary and its direct dependencies. Vulnerabilities
-in the upstream ACP adapter (`@zed-industries/claude-code-acp`) or Claude API should be
+This policy covers the `claude-rs` binary and its direct dependencies. Vulnerabilities
+in the upstream Agent SDK (`@anthropic-ai/claude-agent-sdk`) or Claude API should be
 reported to their respective maintainers.
 
 ## Security Measures
