@@ -3,14 +3,7 @@ name: Security Audit
 on:
   schedule:
     - cron: '0 0 * * 1'
-  push:
-    paths:
-      - 'Cargo.lock'
-      - 'Cargo.toml'
-  pull_request:
-    paths:
-      - 'Cargo.lock'
-      - 'Cargo.toml'
+  workflow_dispatch:
 
 jobs:
   audit:
