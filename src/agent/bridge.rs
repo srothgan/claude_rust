@@ -14,6 +14,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use crate::error::AppError;
 use anyhow::Context as _;
 use std::path::{Path, PathBuf};
 use tokio::process::Command;
@@ -42,7 +43,9 @@ impl BridgeLauncher {
 }
 
 pub fn resolve_bridge_launcher(explicit_script: Option<&Path>) -> anyhow::Result<BridgeLauncher> {
-    let runtime = which::which("node").context("failed to resolve `node` runtime")?;
+    let runtime = which::which("node")
+        .map_err(|_| anyhow::Error::new(AppError::NodeNotFound))
+        .context("failed to resolve `node` runtime")?;
     let script = resolve_bridge_script_path(explicit_script)?;
     Ok(BridgeLauncher { runtime_path: runtime, script_path: script })
 }

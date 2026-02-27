@@ -16,6 +16,7 @@
 
 use crate::agent::bridge::BridgeLauncher;
 use crate::agent::wire::{BridgeCommand, CommandEnvelope, EventEnvelope};
+use crate::error::AppError;
 use anyhow::Context as _;
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader, BufWriter};
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout};
@@ -32,6 +33,7 @@ impl BridgeClient {
         let mut child = launcher
             .command()
             .spawn()
+            .map_err(|_| anyhow::Error::new(AppError::AdapterCrashed))
             .with_context(|| format!("failed to spawn bridge process: {}", launcher.describe()))?;
 
         let stdin = child.stdin.take().context("bridge stdin not available")?;

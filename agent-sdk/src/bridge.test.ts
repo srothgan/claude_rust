@@ -9,6 +9,7 @@ import {
   buildUsageUpdateFromResult,
   createToolCall,
   extractSessionHistoryUpdatesFromJsonl,
+  agentSdkVersionCompatibilityError,
   looksLikeAuthRequired,
   normalizeToolResultText,
   normalizeToolKind,
@@ -16,6 +17,7 @@ import {
   permissionOptionsFromSuggestions,
   permissionResultFromOutcome,
   previewKilobyteLabel,
+  resolveInstalledAgentSdkVersion,
   unwrapToolUseResult,
 } from "./bridge.js";
 
@@ -428,6 +430,11 @@ test("buildUsageUpdateFromResult includes cost and context window fields", () =>
 test("looksLikeAuthRequired detects login hints", () => {
   assert.equal(looksLikeAuthRequired("Please run /login to continue"), true);
   assert.equal(looksLikeAuthRequired("normal tool output"), false);
+});
+
+test("agent sdk version compatibility check matches pinned version", () => {
+  assert.equal(resolveInstalledAgentSdkVersion(), "0.2.52");
+  assert.equal(agentSdkVersionCompatibilityError(), undefined);
 });
 
 function withTempJsonl(lines: unknown[], run: (filePath: string) => void): void {

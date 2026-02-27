@@ -14,6 +14,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use crate::agent::error_handling::{
+    looks_like_internal_error as shared_looks_like_internal_error,
+    summarize_internal_error as shared_summarize_internal_error,
+};
 use crate::agent::model::{self as model, PermissionOptionKind};
 use crate::app::{InlinePermission, ToolCallInfo};
 use crate::ui::diff::{is_markdown_file, lang_from_title, render_diff, strip_outer_code_fence};
@@ -850,7 +854,7 @@ fn failed_execute_first_line(output: &str) -> Option<String> {
 fn render_internal_failure_content(payload: &str) -> Vec<Line<'static>> {
     let summary = summarize_internal_error(payload);
     let mut lines = vec![Line::from(Span::styled(
-        "Internal bridge/adapter error",
+        "Internal Agent SDK error",
         Style::default().fg(theme::STATUS_ERROR).add_modifier(Modifier::BOLD),
     ))];
     if !summary.is_empty() {
@@ -882,7 +886,7 @@ fn debug_failed_tool_render(tc: &ToolCallInfo) {
         _ => None,
     }) else {
         // Skip generic command failures that only have terminal stderr/stdout.
-        // We want bridge/adapter-style structured error payloads here.
+        // We want Agent SDK bridge-style structured error payloads here.
         return;
     };
     if !looks_like_internal_error(&text_payload) {
@@ -920,40 +924,7 @@ fn preview_for_log(input: &str) -> String {
 }
 
 fn looks_like_internal_error(input: &str) -> bool {
-    let lower = input.to_ascii_lowercase();
-    has_internal_error_keywords(&lower)
-        || looks_like_json_rpc_error_shape(&lower)
-        || looks_like_xml_error_shape(&lower)
-}
-
-fn has_internal_error_keywords(lower: &str) -> bool {
-    [
-        "internal error",
-        "adapter",
-        "bridge",
-        "json-rpc",
-        "rpc",
-        "protocol error",
-        "transport",
-        "handshake failed",
-        "session creation failed",
-        "connection closed",
-        "event channel closed",
-    ]
-    .iter()
-    .any(|needle| lower.contains(needle))
-}
-
-fn looks_like_json_rpc_error_shape(lower: &str) -> bool {
-    (lower.contains("\"jsonrpc\"") && lower.contains("\"error\""))
-        || lower.contains("\"code\":-32603")
-        || lower.contains("\"code\": -32603")
-}
-
-fn looks_like_xml_error_shape(lower: &str) -> bool {
-    let has_error_node = lower.contains("<error") || lower.contains("<fault");
-    let has_detail_node = lower.contains("<message>") || lower.contains("<code>");
-    has_error_node && has_detail_node
+    shared_looks_like_internal_error(input)
 }
 
 fn extract_tool_use_error_message(input: &str) -> Option<String> {
@@ -964,14 +935,7 @@ fn extract_tool_use_error_message(input: &str) -> Option<String> {
 }
 
 fn summarize_internal_error(input: &str) -> String {
-    if let Some(msg) = extract_xml_tag_value(input, "message") {
-        return preview_for_log(msg);
-    }
-    if let Some(msg) = extract_json_string_field(input, "message") {
-        return preview_for_log(&msg);
-    }
-    let fallback = input.lines().find(|line| !line.trim().is_empty()).unwrap_or(input);
-    preview_for_log(fallback.trim())
+    shared_summarize_internal_error(input)
 }
 
 fn extract_xml_tag_value<'a>(input: &'a str, tag: &str) -> Option<&'a str> {
@@ -982,41 +946,6 @@ fn extract_xml_tag_value<'a>(input: &'a str, tag: &str) -> Option<&'a str> {
     let end = start + lower[start..].find(&close)?;
     let value = input[start..end].trim();
     (!value.is_empty()).then_some(value)
-}
-
-fn extract_json_string_field(input: &str, field: &str) -> Option<String> {
-    let needle = format!("\"{field}\"");
-    let start = input.find(&needle)? + needle.len();
-    let rest = input[start..].trim_start();
-    let colon_idx = rest.find(':')?;
-    let mut chars = rest[colon_idx + 1..].trim_start().chars();
-    if chars.next()? != '"' {
-        return None;
-    }
-
-    let mut escaped = false;
-    let mut out = String::new();
-    for ch in chars {
-        if escaped {
-            let mapped = match ch {
-                'n' => '\n',
-                'r' => '\r',
-                't' => '\t',
-                '"' => '"',
-                '\\' => '\\',
-                _ => ch,
-            };
-            out.push(mapped);
-            escaped = false;
-            continue;
-        }
-        match ch {
-            '\\' => escaped = true,
-            '"' => return Some(out),
-            _ => out.push(ch),
-        }
-    }
-    None
 }
 
 #[cfg(test)]

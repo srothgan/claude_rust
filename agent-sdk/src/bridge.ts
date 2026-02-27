@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { spawn as spawnChild } from "node:child_process";
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import readline from "node:readline";
 import { pathToFileURL } from "node:url";
 import {
@@ -27,6 +28,7 @@ import type {
   ToolCall,
   ToolCallUpdate,
   ToolCallUpdateFields,
+  TurnErrorKind,
 } from "./types.js";
 import { parseCommandEnvelope, toPermissionMode, buildModeState } from "./bridge/commands.js";
 import { asRecordOrNull } from "./bridge/shared.js";
@@ -94,14 +96,43 @@ type SessionState = {
   taskToolUseIds: Map<string, string>;
   pendingPermissions: Map<string, PendingPermission>;
   authHintSent: boolean;
+  lastAssistantError?: string;
   lastTotalCostUsd?: number;
   sessionsToCloseAfterConnect?: SessionState[];
   resumeUpdates?: SessionUpdate[];
 };
 
 const sessions = new Map<string, SessionState>();
+const EXPECTED_AGENT_SDK_VERSION = "0.2.52";
+const require = createRequire(import.meta.url);
 const permissionDebugEnabled =
   process.env.CLAUDE_RS_SDK_PERMISSION_DEBUG === "1" || process.env.CLAUDE_RS_SDK_DEBUG === "1";
+
+export function resolveInstalledAgentSdkVersion(): string | undefined {
+  try {
+    const pkg = require("@anthropic-ai/claude-agent-sdk/package.json") as { version?: unknown };
+    return typeof pkg.version === "string" ? pkg.version : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function agentSdkVersionCompatibilityError(): string | undefined {
+  const installed = resolveInstalledAgentSdkVersion();
+  if (!installed) {
+    return (
+      `Agent SDK version check failed: unable to resolve installed ` +
+      `@anthropic-ai/claude-agent-sdk package.json (expected ${EXPECTED_AGENT_SDK_VERSION}).`
+    );
+  }
+  if (installed === EXPECTED_AGENT_SDK_VERSION) {
+    return undefined;
+  }
+  return (
+    `Unsupported @anthropic-ai/claude-agent-sdk version: expected ${EXPECTED_AGENT_SDK_VERSION}, ` +
+    `found ${installed}.`
+  );
+}
 
 function logPermissionDebug(message: string): void {
   if (!permissionDebugEnabled) {
@@ -596,6 +627,11 @@ function handleStreamEvent(session: SessionState, event: Record<string, unknown>
 }
 
 function handleAssistantMessage(session: SessionState, message: Record<string, unknown>): void {
+  const assistantError = typeof message.error === "string" ? message.error : "";
+  if (assistantError.length > 0) {
+    session.lastAssistantError = assistantError;
+  }
+
   const messageObject =
     message.message && typeof message.message === "object"
       ? (message.message as Record<string, unknown>)
@@ -657,6 +693,52 @@ function emitAuthRequired(session: SessionState, detail?: string): void {
   });
 }
 
+function looksLikePlanLimitError(input: string): boolean {
+  const normalized = input.toLowerCase();
+  return (
+    normalized.includes("rate limit") ||
+    normalized.includes("rate-limit") ||
+    normalized.includes("max turns") ||
+    normalized.includes("max budget") ||
+    normalized.includes("quota") ||
+    normalized.includes("plan limit") ||
+    normalized.includes("too many requests") ||
+    normalized.includes("insufficient quota") ||
+    normalized.includes("429")
+  );
+}
+
+function classifyTurnErrorKind(
+  subtype: string,
+  errors: string[],
+  assistantError?: string,
+): TurnErrorKind {
+  const combined = errors.join("\n");
+
+  if (
+    subtype === "error_max_turns" ||
+    subtype === "error_max_budget_usd" ||
+    assistantError === "billing_error" ||
+    assistantError === "rate_limit" ||
+    (combined.length > 0 && looksLikePlanLimitError(combined))
+  ) {
+    return "plan_limit";
+  }
+
+  if (
+    assistantError === "authentication_failed" ||
+    errors.some((entry) => looksLikeAuthRequired(entry))
+  ) {
+    return "auth_required";
+  }
+
+  if (assistantError === "server_error") {
+    return "internal";
+  }
+
+  return "other";
+}
+
 function numberField(record: Record<string, unknown>, ...keys: string[]): number | undefined {
   for (const key of keys) {
     const value = record[key];
@@ -675,6 +757,7 @@ function handleResultMessage(session: SessionState, message: Record<string, unkn
 
   const subtype = typeof message.subtype === "string" ? message.subtype : "";
   if (subtype === "success") {
+    session.lastAssistantError = undefined;
     finalizeOpenToolCalls(session, "completed");
     writeEvent({ event: "turn_complete", session_id: session.sessionId });
     return;
@@ -684,17 +767,26 @@ function handleResultMessage(session: SessionState, message: Record<string, unkn
     Array.isArray(message.errors) && message.errors.every((entry) => typeof entry === "string")
       ? (message.errors as string[])
       : [];
+  const assistantError = session.lastAssistantError;
   const authHint = errors.find((entry) => looksLikeAuthRequired(entry));
   if (authHint) {
     emitAuthRequired(session, authHint);
   }
+  if (assistantError === "authentication_failed") {
+    emitAuthRequired(session);
+  }
   finalizeOpenToolCalls(session, "failed");
+  const errorKind = classifyTurnErrorKind(subtype, errors, assistantError);
   const fallback = subtype ? `turn failed: ${subtype}` : "turn failed";
   writeEvent({
     event: "turn_error",
     session_id: session.sessionId,
     message: errors.length > 0 ? errors.join("\n") : fallback,
+    error_kind: errorKind,
+    ...(subtype ? { sdk_result_subtype: subtype } : {}),
+    ...(assistantError ? { assistant_error: assistantError } : {}),
   });
+  session.lastAssistantError = undefined;
 }
 
 function handleSdkMessage(session: SessionState, message: SDKMessage): void {
@@ -1314,8 +1406,18 @@ function handlePermissionResponse(command: Extract<BridgeCommand, { command: "pe
 }
 
 async function handleCommand(command: BridgeCommand, requestId?: string): Promise<void> {
+  const sdkVersionError = agentSdkVersionCompatibilityError();
+  if (sdkVersionError && command.command !== "initialize" && command.command !== "shutdown") {
+    failConnection(sdkVersionError, requestId);
+    return;
+  }
+
   switch (command.command) {
     case "initialize":
+      if (sdkVersionError) {
+        failConnection(sdkVersionError, requestId);
+        return;
+      }
       writeEvent(
         {
           event: "initialized",

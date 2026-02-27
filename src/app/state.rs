@@ -217,6 +217,8 @@ pub struct App {
     /// Session id currently being resumed via `/resume`.
     pub resuming_session_id: Option<String>,
     pub should_quit: bool,
+    /// Optional fatal app error that should be surfaced at CLI boundary.
+    pub exit_error: Option<crate::error::AppError>,
     pub session_id: Option<model::SessionId>,
     /// Agent connection handle. `None` while connecting (before bridge is ready).
     pub conn: Option<Rc<crate::agent::client::AgentConnection>>,
@@ -930,6 +932,7 @@ impl App {
             status: AppStatus::Ready,
             resuming_session_id: None,
             should_quit: false,
+            exit_error: None,
             session_id: None,
             conn: None,
             model_name: "test-model".into(),

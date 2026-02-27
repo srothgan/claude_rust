@@ -14,7 +14,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use crate::agent::error_handling::TurnErrorClass;
 use crate::agent::model;
+use crate::error::AppError;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -35,6 +37,8 @@ pub enum ClientEvent {
     TurnCancelled,
     /// A prompt turn failed with an error.
     TurnError(String),
+    /// A prompt turn failed with bridge-provided classification metadata.
+    TurnErrorClassified { message: String, class: TurnErrorClass },
     /// Background connection completed successfully.
     Connected {
         session_id: model::SessionId,
@@ -64,6 +68,8 @@ pub enum ClientEvent {
     },
     /// Startup update check found a newer published version.
     UpdateAvailable { latest_version: String, current_version: String },
+    /// Fatal app error that should terminate and map to an exit code.
+    FatalError(AppError),
 }
 
 /// Shared handle to all spawned terminal processes.
