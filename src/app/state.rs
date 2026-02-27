@@ -200,6 +200,13 @@ struct HistoryDropCandidate {
     approx_rows: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PasteSessionState {
+    pub id: u64,
+    pub start: SelectionPoint,
+    pub placeholder_index: Option<usize>,
+}
+
 #[allow(clippy::struct_excessive_bools)]
 pub struct App {
     pub messages: Vec<ChatMessage>,
@@ -305,6 +312,14 @@ pub struct App {
     /// Some terminals split one clipboard paste into multiple chunks; we merge
     /// them and apply placeholder threshold to the merged content once per cycle.
     pub pending_paste_text: String,
+    /// Pending paste session metadata for the currently queued `Event::Paste` payload.
+    pub pending_paste_session: Option<PasteSessionState>,
+    /// Most recent active placeholder paste session, used for safe chunk continuation.
+    pub active_paste_session: Option<PasteSessionState>,
+    /// Monotonic counter for paste session identifiers.
+    pub next_paste_session_id: u64,
+    /// Start cursor of the current rapid-key burst.
+    pub paste_burst_start: Option<SelectionPoint>,
     /// Cached file list from cwd (scanned on first `@` trigger).
     pub file_cache: Option<Vec<mention::FileCandidate>>,
     /// Cached todo compact line (invalidated on `set_todos()`).
@@ -958,6 +973,10 @@ impl App {
             drain_key_count: 0,
             paste_burst: super::paste_burst::PasteBurstDetector::new(),
             pending_paste_text: String::new(),
+            pending_paste_session: None,
+            active_paste_session: None,
+            next_paste_session_id: 1,
+            paste_burst_start: None,
             file_cache: None,
             cached_todo_compact: None,
             git_branch: None,
