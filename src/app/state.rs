@@ -2088,6 +2088,47 @@ mod tests {
         }
     }
 
+    fn assistant_tool_message_with_pending_permission(id: &str) -> ChatMessage {
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        ChatMessage {
+            role: MessageRole::Assistant,
+            blocks: vec![MessageBlock::ToolCall(Box::new(ToolCallInfo {
+                id: id.to_owned(),
+                title: format!("tool {id}"),
+                sdk_tool_name: "Read".to_owned(),
+                raw_input: None,
+                status: model::ToolCallStatus::Completed,
+                content: Vec::new(),
+                collapsed: false,
+                hidden: false,
+                terminal_id: None,
+                terminal_command: None,
+                terminal_output: Some("x".repeat(1024)),
+                terminal_output_len: 1024,
+                terminal_bytes_seen: 1024,
+                terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
+                render_epoch: 0,
+                layout_epoch: 0,
+                last_measured_width: 0,
+                last_measured_height: 0,
+                last_measured_layout_epoch: 0,
+                last_measured_layout_generation: 0,
+                cache: BlockCache::default(),
+                pending_permission: Some(InlinePermission {
+                    options: vec![model::PermissionOption::new(
+                        "allow-once",
+                        "Allow once",
+                        model::PermissionOptionKind::AllowOnce,
+                    )],
+                    response_tx: tx,
+                    selected_index: 0,
+                    focused: false,
+                }),
+            }))],
+            usage: None,
+        }
+    }
+
     #[test]
     fn enforce_render_cache_budget_evicts_lru_block() {
         let mut app = make_test_app();
@@ -2218,6 +2259,44 @@ mod tests {
                         && matches!(tc.status, model::ToolCallStatus::InProgress)
                 )
             })
+        }));
+    }
+
+    #[test]
+    fn enforce_history_retention_preserves_pending_tool_message() {
+        let mut app = make_test_app();
+        app.messages = vec![
+            ChatMessage::welcome("model", "/cwd"),
+            user_text_message("droppable"),
+            assistant_tool_message("tool-pending", model::ToolCallStatus::Pending),
+        ];
+        app.history_retention.max_bytes = 1;
+
+        let stats = app.enforce_history_retention();
+        assert_eq!(stats.dropped_messages, 1);
+        assert!(app.messages.iter().any(|msg| {
+            msg.blocks
+                .iter()
+                .any(|block| matches!(block, MessageBlock::ToolCall(tc) if tc.id == "tool-pending"))
+        }));
+    }
+
+    #[test]
+    fn enforce_history_retention_preserves_permission_tool_message() {
+        let mut app = make_test_app();
+        app.messages = vec![
+            ChatMessage::welcome("model", "/cwd"),
+            user_text_message("droppable"),
+            assistant_tool_message_with_pending_permission("tool-perm"),
+        ];
+        app.history_retention.max_bytes = 1;
+
+        let stats = app.enforce_history_retention();
+        assert_eq!(stats.dropped_messages, 1);
+        assert!(app.messages.iter().any(|msg| {
+            msg.blocks
+                .iter()
+                .any(|block| matches!(block, MessageBlock::ToolCall(tc) if tc.id == "tool-perm"))
         }));
     }
 
