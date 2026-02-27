@@ -21,6 +21,7 @@ use super::{
 };
 use crate::Cli;
 use crate::agent::client::{AgentConnection, BridgeClient};
+use crate::agent::error_handling::parse_turn_error_class;
 use crate::agent::events::{ClientEvent, TerminalMap};
 use crate::agent::model;
 use crate::agent::types;
@@ -316,9 +317,13 @@ fn handle_bridge_event(
         BridgeEvent::TurnComplete { .. } => {
             let _ = event_tx.send(ClientEvent::TurnComplete);
         }
-        BridgeEvent::TurnError { message, .. } => {
+        BridgeEvent::TurnError { message, error_kind, .. } => {
             tracing::warn!("bridge turn_error: {message}");
-            let _ = event_tx.send(ClientEvent::TurnError(message));
+            if let Some(class) = error_kind.as_deref().and_then(parse_turn_error_class) {
+                let _ = event_tx.send(ClientEvent::TurnErrorClassified { message, class });
+            } else {
+                let _ = event_tx.send(ClientEvent::TurnError(message));
+            }
         }
         BridgeEvent::SlashError { message, .. } => {
             tracing::warn!("bridge slash_error: {message}");

@@ -190,6 +190,8 @@ export interface InitializeResult {
   };
 }
 
+export type TurnErrorKind = "plan_limit" | "auth_required" | "internal" | "other";
+
 export type BridgeEvent =
   | {
       event: "connected";
@@ -204,7 +206,14 @@ export type BridgeEvent =
   | { event: "session_update"; session_id: string; update: SessionUpdate }
   | { event: "permission_request"; session_id: string; request: PermissionRequest }
   | { event: "turn_complete"; session_id: string }
-  | { event: "turn_error"; session_id: string; message: string }
+  | {
+      event: "turn_error";
+      session_id: string;
+      message: string;
+      error_kind?: TurnErrorKind;
+      sdk_result_subtype?: string;
+      assistant_error?: string;
+    }
   | { event: "slash_error"; session_id: string; message: string }
   | {
       event: "session_replaced";

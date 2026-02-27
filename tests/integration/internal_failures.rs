@@ -43,7 +43,7 @@ async fn failed_tool_call_with_xml_internal_error_renders_internal_banner_and_su
     assert_eq!(tool_call_text_payload(&app, tool_id).as_deref(), Some(xml_payload));
 
     let frame = render_frame_to_string(&mut app, 120, 36);
-    assert!(frame.contains("Internal bridge/adapter error"));
+    assert!(frame.contains("Internal Agent SDK error"));
     assert!(frame.contains("Adapter process crashed"));
 }
 
@@ -74,7 +74,7 @@ async fn failed_tool_call_with_jsonrpc_internal_error_renders_extracted_message(
     );
 
     let frame = render_frame_to_string(&mut app, 120, 36);
-    assert!(frame.contains("Internal bridge/adapter error"));
+    assert!(frame.contains("Internal Agent SDK error"));
     assert!(frame.contains("internal rpc fault"));
 }
 
@@ -104,7 +104,7 @@ async fn failed_tool_call_with_plain_command_error_keeps_normal_rendering() {
     );
 
     let frame = render_frame_to_string(&mut app, 120, 36);
-    assert!(!frame.contains("Internal bridge/adapter error"));
+    assert!(!frame.contains("Internal Agent SDK error"));
     assert!(frame.contains("command not found"));
 }
 

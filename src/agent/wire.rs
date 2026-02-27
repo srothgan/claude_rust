@@ -114,6 +114,9 @@ pub enum BridgeEvent {
     TurnError {
         session_id: String,
         message: String,
+        error_kind: Option<String>,
+        sdk_result_subtype: Option<String>,
+        assistant_error: Option<String>,
     },
     SlashError {
         session_id: String,
