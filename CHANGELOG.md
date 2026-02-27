@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.1] - 2026-02-27 [Changes][v0.5.1]
+
+### Fixes
+
+- **Input smoothness during rapid keys**: Restore frame rendering during non-paste active key bursts by narrowing suppression to confirmed paste bursts only; preserves paste placeholder anti-flicker behavior
+
 ## [0.5.0] - 2026-02-27 [Changes][v0.5.0]
 
 ### Features
@@ -213,6 +219,7 @@ Performance optimization was a major release theme across recent commits:
   - `PromptResponse.usage` is `None`
 - Session resume (`--resume`) is blocked on an upstream adapter release that contains a Windows path encoding fix
 
+[v0.5.1]: https://github.com/srothgan/claude-code-rust/compare/v0.5.0...v0.5.1
 [v0.5.0]: https://github.com/srothgan/claude-code-rust/compare/v0.4.1...v0.5.0
 [v0.4.1]: https://github.com/srothgan/claude-code-rust/compare/v0.4.0...v0.4.1
 [v0.4.0]: https://github.com/srothgan/claude-code-rust/compare/v0.3.0...v0.4.0

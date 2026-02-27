@@ -130,7 +130,7 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
         // - while a detected paste burst is still active, defer rendering to avoid
         //   showing raw pasted text before placeholder collapse.
         // - once the burst settles, collapse large paste content to placeholder.
-        let suppress_render_for_active_paste = app.paste_burst.is_active();
+        let suppress_render_for_active_paste = should_suppress_render_for_active_paste(app);
         if app.paste_burst.is_paste() {
             app.pending_submit = false;
             if app.paste_burst.is_settled() {
@@ -468,6 +468,11 @@ fn finalize_deferred_submit(app: &mut App) {
     input_submit::submit_input(app);
 }
 
+#[inline]
+fn should_suppress_render_for_active_paste(app: &App) -> bool {
+    app.paste_burst.is_paste() && app.paste_burst.is_active()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -565,5 +570,27 @@ mod tests {
 
         assert_eq!(app.input.lines, vec!["before[Pasted Text 1 - 1001 chars]after"]);
         assert_eq!(app.input.text(), format!("before{}after", "x".repeat(1001)));
+    }
+
+    #[test]
+    fn render_not_suppressed_for_active_non_paste_burst() {
+        let mut app = App::test_default();
+        let _ = app.paste_burst.on_key_event(app.input.lines.len());
+
+        assert!(!should_suppress_render_for_active_paste(&app));
+        assert!(app.paste_burst.is_active());
+        assert!(!app.paste_burst.is_paste());
+    }
+
+    #[test]
+    fn render_suppressed_for_active_confirmed_paste_burst() {
+        let mut app = App::test_default();
+        for _ in 0..4 {
+            let _ = app.paste_burst.on_key_event(app.input.lines.len());
+        }
+
+        assert!(should_suppress_render_for_active_paste(&app));
+        assert!(app.paste_burst.is_active());
+        assert!(app.paste_burst.is_paste());
     }
 }

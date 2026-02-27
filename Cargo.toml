@@ -1,6 +1,6 @@
 [package]
 name = "claude-code-rust"
-version = "0.5.0"
+version = "0.5.1"
 edition = "2024"
 rust-version = "1.88.0"
 license = "AGPL-3.0-or-later"
